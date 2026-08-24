@@ -124,19 +124,23 @@ final class TerminalEmulator {
     }
 
     deinit {
-        // CADisplayLink retains its target; invalidate is required to break the
-        // cycle. `displayLink` is MainActor-isolated; deinit is nonisolated, so we
-        // can't touch it directly. The view calls `stop()` on disappear; as a
-        // belt-and-braces we also rely on ARC tearing down the link once no longer
-        // scheduled. (See `stop()`.)
+        // Nothing to do here, and nothing that CAN be done: `displayLink` is
+        // MainActor-isolated and deinit is nonisolated. The link's target is a
+        // proxy holding this emulator WEAKLY, so it never kept us alive -- but a
+        // still-scheduled link goes on waking the main thread every frame. It
+        // now notices the emulator is gone on its next fire and invalidates
+        // itself (see DisplayLinkProxy.tick), so a missed `stop()` costs one
+        // frame rather than the life of the process.
     }
 
     // MARK: - Display timer
 
     private func startDisplayLink() {
         displayLink?.invalidate()
-        let link = CADisplayLink(target: DisplayLinkProxy(emulator: self),
-                                 selector: #selector(DisplayLinkProxy.tick))
+        let proxy = DisplayLinkProxy(emulator: self)
+        let link = CADisplayLink(target: proxy, selector: #selector(DisplayLinkProxy.tick))
+        // So the link can retire itself once the emulator is gone -- see tick().
+        proxy.link = link
         link.add(to: .main, forMode: .common)
         displayLink = link
     }
@@ -404,10 +408,28 @@ private final class InboundBuffer: @unchecked Sendable {
 /// be an NSObject for the `@objc` selector.
 private final class DisplayLinkProxy: NSObject {
     weak var emulator: TerminalEmulator?
+    /// The link this proxy is the target of. Weak because the run loop owns it;
+    /// a strong reference here would be a cycle the invalidation below is meant
+    /// to avoid needing.
+    weak var link: CADisplayLink?
+
     init(emulator: TerminalEmulator) { self.emulator = emulator }
 
     @MainActor @objc func tick() {
-        emulator?.tick()
+        guard let emulator else {
+            // The emulator is gone but this link is still scheduled, so it keeps
+            // waking the main thread every frame doing nothing. `stop()` is the
+            // intended teardown, but it is a call somebody has to remember, and
+            // a sheet dismissed by swipe never makes it. Left alone these
+            // accumulate for the life of the process -- which is exactly the
+            // "gets slower the longer it runs, fine after a restart" shape.
+            //
+            // A weak target cannot leak the emulator, but it also cannot stop
+            // the timer; only the timer can. So it retires itself.
+            link?.invalidate()
+            return
+        }
+        emulator.tick()
     }
 }
 

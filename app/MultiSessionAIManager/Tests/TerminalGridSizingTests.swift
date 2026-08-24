@@ -170,3 +170,58 @@ import Testing
         #expect(HerdrChromeMetrics.resizeGripClearance <= 32)
     }
 }
+
+/// The app got slower the longer it ran and was fine after a restart — the
+/// signature of something scheduled that never gets unscheduled.
+@Suite @MainActor struct TerminalRenderLoopLifecycleTests {
+
+    @Test func stoppingEndsTheRenderLoop() {
+        let emulator = TerminalEmulator(cols: 40, rows: 10)
+        #expect(emulator.isRenderLoopRunning)
+        emulator.stop()
+        #expect(!emulator.isRenderLoopRunning)
+    }
+
+    @Test func aSessionTeardownStopsItsEmulator() async throws {
+        // Closing a tab must not leave its render loop scheduled.
+        let keyStore = KeyStore(backing: InMemoryKeychain())
+        let keyID = try keyStore.generateEd25519(label: "loop")
+        let session = HerdrHostSession(
+            connection: HostConnection(
+                host: Host(name: "h", address: "192.0.2.10", username: "alice",
+                           keyID: keyID, defaultWorkdir: "/home/alice"),
+                keyStore: keyStore,
+                knownHosts: KnownHostsStore(defaults: UserDefaults(suiteName: "msam.loop.\(UUID())")!),
+                transport: FakeSSHTransport()
+            ),
+            sessionName: nil
+        )
+        #expect(session.terminal.isRenderLoopRunning)
+        await session.stop()
+        #expect(!session.terminal.isRenderLoopRunning)
+    }
+
+    @Test func anInteractiveCommandSheetStopsItsEmulatorToo() async throws {
+        // This one is dismissible by SWIPE, which never reaches the Done button.
+        let keyStore = KeyStore(backing: InMemoryKeychain())
+        let keyID = try keyStore.generateEd25519(label: "loop2")
+        let session = InteractiveCommandSession(
+            connection: HostConnection(
+                host: Host(name: "h", address: "192.0.2.10", username: "alice",
+                           keyID: keyID, defaultWorkdir: "/home/alice"),
+                keyStore: keyStore,
+                knownHosts: KnownHostsStore(defaults: UserDefaults(suiteName: "msam.loop2.\(UUID())")!),
+                transport: FakeSSHTransport()
+            ),
+            command: "true"
+        )
+        #expect(session.terminal.isRenderLoopRunning)
+        await session.stop()
+        #expect(!session.terminal.isRenderLoopRunning)
+    }
+
+    // NOTE: the belt-and-braces half of this — a link retiring ITSELF once its
+    // emulator has been deallocated — cannot be asserted here. It needs a real
+    // run loop to fire the link after the emulator is gone, which a synchronous
+    // test cannot arrange. See DisplayLinkProxy.tick().
+}

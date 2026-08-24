@@ -26,6 +26,9 @@ struct InteractiveCommandSheet: View {
         .background(HerdrTheme.background)
         .preferredColorScheme(.dark)
         .task { await session.start() }
+        // Dismissing by swipe never reaches the Done button, and would otherwise
+        // leave both the PTY channel and the render loop running.
+        .onDisappear { Task { await session.stop() } }
     }
 
     private var header: some View {
