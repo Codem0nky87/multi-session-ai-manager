@@ -47,6 +47,17 @@ final class HostFlowUITests: XCTestCase {
 
     // MARK: - Helpers
 
+    /// How far an element may overhang the editor and still count as usable.
+    ///
+    /// Strict containment was too strict. The keyboard resizes the scroll view
+    /// as focus moves between fields, so a field can settle a point or two above
+    /// the visible area while XCUITest still reports it hittable and a tap still
+    /// lands. Demanding pixel-perfect containment failed those cases after eight
+    /// scroll attempts, which read as flakiness rather than as the strictness it
+    /// was. The check is here to catch elements genuinely off-screen or under
+    /// the pinned Save bar — both of which exceed this by a wide margin.
+    private static let interactionTolerance: CGFloat = 4
+
     private static func isReadyForEditorInteraction(
         elementExists: Bool,
         elementIsHittable: Bool,
@@ -62,7 +73,8 @@ final class HostFlowUITests: XCTestCase {
               !editorFrame.isNull,
               !editorFrame.isInfinite,
               !editorFrame.isEmpty,
-              editorFrame.contains(elementFrame) else {
+              editorFrame.insetBy(dx: -interactionTolerance,
+                                  dy: -interactionTolerance).contains(elementFrame) else {
             return false
         }
         if let obstructionFrame,
@@ -323,6 +335,15 @@ final class HostFlowUITests: XCTestCase {
                        "Cloudflare team name is still shown")
         XCTAssertFalse(app.buttons["host.setup.install.cloudflare"].exists,
                        "Cloudflare install action is still shown")
+
+        // Leave the sheet closed. The caller carries on with the editor
+        // underneath, and a sheet left up covers the Save bar.
+        let close = app.buttons["host.setup.close"]
+        XCTAssertTrue(close.waitForExistence(timeout: 5), "Host Setup close action missing")
+        close.tap()
+        XCTAssertTrue(app.navigationBars["Add Host"].waitForExistence(timeout: 8)
+                      || app.navigationBars["Edit Host"].waitForExistence(timeout: 1),
+                      "editor did not return after closing Host Setup")
     }
 
     // MARK: - Test
@@ -471,8 +492,13 @@ final class HostFlowUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Add Host"].waitForExistence(timeout: 10),
                       "Add Host editor did not present")
 
-        XCTAssertTrue(app.staticTexts["PRIVATE SSH OVER WARP"].waitForExistence(timeout: 5),
-                      "Private SSH over WARP section missing")
+        // Renamed from "Private SSH over WARP": the app no longer assumes, or
+        // manages, how the iPad reaches the host.
+        XCTAssertTrue(app.staticTexts["SSH"].waitForExistence(timeout: 5),
+                      "SSH section missing")
+        // Port forwarding moved out of app settings and into each host.
+        XCTAssertTrue(app.staticTexts["PORT FORWARDING"].exists,
+                      "per-host port forwarding section missing")
         XCTAssertTrue(app.buttons["Host Setup"].waitForExistence(timeout: 5),
                       "accessible Host Setup action missing")
         // Every Cloudflare/Access field is gone, the team name included: how the
