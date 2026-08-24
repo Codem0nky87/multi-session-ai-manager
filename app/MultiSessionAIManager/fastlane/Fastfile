@@ -1,0 +1,160 @@
+# Build and ship the no-hub MultiSessionAIManager (AI Manager 2.0) to TestFlight.
+#
+# Same bundle id as the legacy hub app (com.codem0nky87.MultiSessionAIManager), so
+# this lands as the next build of the SAME App Store Connect app and supersedes the
+# 1.x hub version for testers.
+#
+# One-time setup (already done on this Mac):
+#   brew install fastlane xcodegen
+#   App Store Connect API key (role: App Manager) exported in the shell:
+#     export ASC_KEY_ID=...; export ASC_ISSUER_ID=...; export ASC_KEY_PATH=...AuthKey_*.p8
+#
+# Ship a build:
+#   cd app/MultiSessionAIManager && fastlane beta
+# (In this sandbox, prefix with: env -u GIT_CONFIG_COUNT -u GIT_CONFIG_KEY_0 -u GIT_CONFIG_VALUE_0
+#  so SwiftPM can resolve the Citadel / swift-nio-ssh fork.)
+
+require "fileutils"
+require "open3"
+require "securerandom"
+
+default_platform(:ios)
+
+TEAM_ID = "QPSC76D8WL" # Swart Cyber Security Systems (Pty) Ltd — paid org
+PROJECT = "MultiSessionAIManager.xcodeproj"
+SCHEME  = "MultiSessionAIManager"
+PLIST   = "App/Info.plist"
+APP_IDENTIFIER = "com.codem0nky87.MultiSessionAIManager"
+APPSTORE_PROFILE_NAME = "com.codem0nky87.MultiSessionAIManager AppStore"
+PROJECT_ROOT = File.expand_path("..", __dir__)
+LOCAL_DISTRIBUTION_CERT = File.join(PROJECT_ROOT, "73GT6G2NZA.cer")
+LOCAL_DISTRIBUTION_KEY = File.join(PROJECT_ROOT, "73GT6G2NZA.p12")
+BUILD_KEYCHAIN_PATH = "/private/tmp/msam-build-signing.keychain-db"
+
+def run_command(*args, error_label: nil)
+  stdout, stderr, status = Open3.capture3(*args)
+  return stdout if status.success?
+
+  UI.user_error!("#{error_label || args.join(' ')} failed\n#{stdout}#{stderr}")
+end
+
+def install_local_distribution_identity
+  return unless File.exist?(LOCAL_DISTRIBUTION_CERT) && File.exist?(LOCAL_DISTRIBUTION_KEY)
+
+  password = "msam-#{SecureRandom.uuid}"
+  FileUtils.rm_f(BUILD_KEYCHAIN_PATH)
+
+  run_command("security", "create-keychain", "-p", password, BUILD_KEYCHAIN_PATH,
+              error_label: "security create-keychain")
+  run_command("security", "set-keychain-settings", "-lut", "21600", BUILD_KEYCHAIN_PATH)
+  run_command("security", "unlock-keychain", "-p", password, BUILD_KEYCHAIN_PATH,
+              error_label: "security unlock-keychain")
+  run_command("security", "import", LOCAL_DISTRIBUTION_CERT, "-k", BUILD_KEYCHAIN_PATH,
+              "-T", "/usr/bin/codesign", "-T", "/usr/bin/security", "-T", "/usr/bin/xcodebuild")
+  run_command("security", "import", LOCAL_DISTRIBUTION_KEY, "-k", BUILD_KEYCHAIN_PATH, "-f", "openssl",
+              "-T", "/usr/bin/codesign", "-T", "/usr/bin/security", "-T", "/usr/bin/xcodebuild")
+  run_command("security", "set-key-partition-list", "-S", "apple-tool:,apple:,codesign:",
+              "-s", "-k", password, BUILD_KEYCHAIN_PATH,
+              error_label: "security set-key-partition-list")
+
+  current_keychains = run_command("security", "list-keychains", "-d", "user")
+                      .scan(/"([^"]+)"/)
+                      .flatten
+                      .reject { |path| path == BUILD_KEYCHAIN_PATH || path == "/tmp/msam-build-signing.keychain-db" }
+  run_command("security", "list-keychains", "-d", "user", "-s", BUILD_KEYCHAIN_PATH, *current_keychains)
+
+  identities = run_command("security", "find-identity", "-v", "-p", "codesigning", BUILD_KEYCHAIN_PATH)
+  UI.user_error!("Imported local distribution key, but no valid codesigning identity was found") unless identities.include?("Apple Distribution")
+  UI.message("Using local distribution identity from #{LOCAL_DISTRIBUTION_CERT}")
+end
+
+platform :ios do
+  desc "Archive and upload a build to TestFlight (internal)"
+  lane :beta do
+    api_key = app_store_connect_api_key(
+      key_id: ENV.fetch("ASC_KEY_ID"),
+      issuer_id: ENV.fetch("ASC_ISSUER_ID"),
+      key_filepath: ENV.fetch("ASC_KEY_PATH")
+    )
+
+    # The .xcodeproj is generated from project.yml — regenerate it (and its shared
+    # scheme) so the build matches the spec. fastlane runs `sh` from fastlane/, so
+    # ".." is the project dir.
+    sh("xcodegen", "generate", "--spec", "../project.yml", "--project", "..")
+
+    # Unique, monotonic build number → App Store Connect never rejects a dupe.
+    build_number = Time.now.strftime("%Y%m%d%H%M")
+    set_info_plist_value(path: PLIST, key: "CFBundleVersion", value: build_number)
+    UI.message("Build number #{build_number}")
+
+    install_local_distribution_identity
+
+    # Create/install an Apple Distribution cert only when this Mac does not
+    # already have the org distribution identity. Re-importing an existing cert
+    # can fail in non-interactive shells when the keychain prompts for access.
+    distribution_identity = "Apple Distribution: SWART CYBER SECURITY SYSTEMS (PTY) LTD (QPSC76D8WL)"
+    identities = `security find-identity -v -p codesigning`
+    if identities.include?(distribution_identity)
+      UI.message("Using installed signing identity: #{distribution_identity}")
+    else
+      cert(api_key: api_key)
+    end
+
+    get_provisioning_profile(
+      api_key: api_key,
+      app_identifier: APP_IDENTIFIER,
+      team_id: TEAM_ID,
+      provisioning_name: APPSTORE_PROFILE_NAME,
+      filename: "MultiSessionAIManager_AppStore.mobileprovision",
+      output_path: "build/profiles",
+      force: false
+    )
+    appstore_profile_name = lane_context[SharedValues::SIGH_NAME]
+    UI.message("Using provisioning profile: #{appstore_profile_name}")
+
+    update_code_signing_settings(
+      path: PROJECT,
+      use_automatic_signing: false,
+      team_id: TEAM_ID,
+      targets: [SCHEME],
+      build_configurations: ["Release"],
+      code_sign_identity: "Apple Distribution",
+      profile_name: appstore_profile_name,
+      bundle_identifier: APP_IDENTIFIER
+    )
+
+    # Pass the App Store Connect API key straight to xcodebuild so
+    # -allowProvisioningUpdates can mint the distribution cert + app-store profile
+    # with no Apple ID signed into Xcode. gym applies xcargs to BOTH archive and
+    # export, so set them here only (not export_xcargs → would double the flags).
+    auth = %(-authenticationKeyPath "#{ENV.fetch('ASC_KEY_PATH')}" ) +
+           %(-authenticationKeyID #{ENV.fetch('ASC_KEY_ID')} ) +
+           %(-authenticationKeyIssuerID #{ENV.fetch('ASC_ISSUER_ID')} ) +
+           %(-allowProvisioningUpdates)
+
+    build_app(
+      project: PROJECT,
+      scheme: SCHEME,
+      configuration: "Release",
+      output_directory: "build",
+      export_method: "app-store",
+      xcargs: auth,
+      export_options: {
+        method: "app-store",
+        teamID: TEAM_ID,
+        signingStyle: "manual",
+        provisioningProfiles: {
+          APP_IDENTIFIER => appstore_profile_name
+        }
+      }
+    )
+
+    upload_to_testflight(
+      api_key: api_key,
+      skip_waiting_for_build_processing: true,
+      distribute_external: false
+    )
+
+    UI.success("Uploaded build #{build_number} to TestFlight ✈️")
+  end
+end

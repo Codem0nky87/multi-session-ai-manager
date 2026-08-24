@@ -1,0 +1,16 @@
+name: ci
+on: { push: { branches: [main] }, pull_request: {} }
+jobs:
+  app:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install xcodegen
+      - run: cd app/MultiSessionAIManager && xcodegen generate
+      - run: |
+          xcodebuild \
+            -project app/MultiSessionAIManager/MultiSessionAIManager.xcodeproj \
+            -scheme MultiSessionAIManager \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO \
+            build

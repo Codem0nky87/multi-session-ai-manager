@@ -1,0 +1,127 @@
+name: MultiSessionAIManager
+options:
+  bundleIdPrefix: com.codem0nky87
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    DEVELOPMENT_TEAM: "QPSC76D8WL"
+    CODE_SIGN_STYLE: Automatic
+    MARKETING_VERSION: "1.0"          # first public release of the Herdr client
+    CURRENT_PROJECT_VERSION: "1"      # build number; overridden per-build by fastlane
+targets:
+  MultiSessionAIManager:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+      - path: UI
+        optional: true
+      - path: Core
+        optional: true
+      - path: Resources
+        optional: true
+    info:
+      path: App/Info.plist
+      properties:
+        ITSAppUsesNonExemptEncryption: false
+        UIApplicationSupportsIndirectInputEvents: true
+        UILaunchScreen: {}
+        # Full-screen terminal: the status bar costs ~24pt of top safe area in
+        # the same dark colour as the host tab strip, so the two read as one
+        # oversized bar. SwiftUI's .statusBarHidden() alone is NOT enough on
+        # iPadOS -- a multi-scene app is treated as multitasking-capable and the
+        # system ignores a view's prefersStatusBarHidden. These two keys make
+        # the plist authoritative instead.
+        CFBundleDisplayName: AI Manager
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        NSLocalNetworkUsageDescription: "AI Manager connects to Herdr servers and your machines on the local network."
+        LSApplicationQueriesSchemes:
+          - cf1app
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.codem0nky87.MultiSessionAIManager
+        TARGETED_DEVICE_FAMILY: "2"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+      # Release inherits Automatic signing + DEVELOPMENT_TEAM from settings.base.
+      #
+      # This file is the ONLY place signing persists: the .xcodeproj is generated
+      # by XcodeGen, so ticking "Automatically manage signing" in Xcode's UI is
+      # overwritten by the next `xcodegen generate`.
+      #
+      # Previously Release pinned CODE_SIGN_STYLE: Manual with
+      # CODE_SIGN_IDENTITY: Apple Distribution and
+      # PROVISIONING_PROFILE_SPECIFIER: "com.codem0nky87.MultiSessionAIManager AppStore"
+      # for the fastlane TestFlight pipeline. fastlane still forces
+      # signingStyle: "manual" with that profile at EXPORT (see fastlane/Fastfile
+      # export_options) and passes -allowProvisioningUpdates, so archiving with
+      # automatic signing should still export correctly -- but if `fastlane beta`
+      # fails to sign, restoring those three lines here is the fix.
+    dependencies:
+      - package: SwiftTerm
+        product: SwiftTerm
+      - package: SwiftNIOSSH
+        product: NIOSSH
+      - package: Citadel
+        product: Citadel
+  MultiSessionAIManagerTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.codem0nky87.MultiSessionAIManagerTests
+        TARGETED_DEVICE_FAMILY: "2"
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: MultiSessionAIManager
+  MultiSessionAIManagerUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: UITests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.codem0nky87.MultiSessionAIManagerUITests
+        TARGETED_DEVICE_FAMILY: "2"
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: MultiSessionAIManager
+    dependencies:
+      - target: MultiSessionAIManager
+schemes:
+  MultiSessionAIManager:
+    build:
+      targets:
+        MultiSessionAIManager: all
+        MultiSessionAIManagerTests: [test]
+        MultiSessionAIManagerUITests: [test]
+    test:
+      targets:
+        - MultiSessionAIManagerTests
+        - MultiSessionAIManagerUITests
+packages:
+  SwiftTerm:
+    url: https://github.com/migueldeicaza/SwiftTerm.git
+    from: 1.2.0
+  SwiftNIOSSH:
+    # Citadel depends on a fork of swift-nio-ssh (orlandos-nl/Wellz26) that
+    # re-exports the SPI symbols Citadel needs (NIOSSHTransportProtection, etc.).
+    # We must point the swift-nio-ssh package at the SAME fork + tag Citadel
+    # pins, otherwise SPM substitutes apple/swift-nio-ssh and Citadel fails to
+    # compile. apple's upstream does NOT have a 0.3.4 tag.
+    url: https://github.com/Wellz26/swift-nio-ssh.git
+    exactVersion: 0.3.4
+  Citadel:
+    url: https://github.com/orlandos-nl/Citadel.git
+    from: 0.12.1

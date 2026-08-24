@@ -1,0 +1,9 @@
+# Xcode / SPM build artifacts
+DerivedData/
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/*
+# but pin the shared workspace Package.resolved in-tree for reproducibility
+# (fragile Citadel/swift-nio-ssh fork coupling)
+!*.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+.build/
