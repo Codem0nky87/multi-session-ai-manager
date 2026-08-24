@@ -304,30 +304,25 @@ final class HostFlowUITests: XCTestCase {
 
     /// Exercises the help content without tapping any action that leaves the test
     /// app or contacts a live Cloudflare/private-network endpoint.
-    private func assertHostSetupSheet(endpoint: String, teamName: String) {
+    /// Asserts the Host Setup sheet as it exists now.
+    ///
+    /// It used to assert Cloudflare install/enrol buttons, a team name, and
+    /// `brew install cloudflared`. All of that was removed with the Cloudflare
+    /// integration — how the iPad reaches a host is the user's own business —
+    /// so the sheet is down to testing the route, Herdr, and plugins.
+    private func assertHostSetupSheet(endpoint: String) {
         XCTAssertTrue(
             app.navigationBars["Host Setup"].waitForExistence(timeout: 8),
             "Host Setup sheet did not present\n\(app.debugDescription)"
         )
-        XCTAssertTrue(app.buttons["host.setup.install.cloudflare"].exists)
-        XCTAssertTrue(app.buttons["host.setup.enroll.cloudflare"].exists)
-        XCTAssertTrue(app.buttons["host.setup.test.route"].exists)
-        XCTAssertTrue(app.staticTexts["host.setup.endpoint"].label.contains(endpoint))
-        XCTAssertTrue(app.staticTexts["host.setup.team"].label.contains(teamName))
-        XCTAssertTrue(app.staticTexts["host.setup.no.warp.cli"].exists)
-        XCTAssertEqual(
-            app.staticTexts["host.setup.command.brew"].label,
-            "brew install cloudflared"
-        )
-        XCTAssertEqual(
-            app.staticTexts["host.setup.command.service"].label,
-            "sudo cloudflared service install <TUNNEL_TOKEN>"
-        )
-        XCTAssertTrue(app.staticTexts["host.setup.token.warning"].exists)
-
-        let close = app.buttons["host.setup.close"]
-        XCTAssertTrue(close.waitForExistence(timeout: 5))
-        close.tap()
+        XCTAssertTrue(app.buttons["host.setup.test.route"].exists,
+                      "route test action missing")
+        XCTAssertTrue(app.staticTexts["host.setup.endpoint"].label.contains(endpoint),
+                      "sheet did not carry the endpoint through")
+        XCTAssertFalse(app.staticTexts["host.setup.team"].exists,
+                       "Cloudflare team name is still shown")
+        XCTAssertFalse(app.buttons["host.setup.install.cloudflare"].exists,
+                       "Cloudflare install action is still shown")
     }
 
     // MARK: - Test
@@ -366,14 +361,15 @@ final class HostFlowUITests: XCTestCase {
         XCTAssertTrue(cell.waitForExistence(timeout: 10), "host cell not found")
         shot("a_host_row_present")
 
-        // The saved-host context menu must open the same reusable setup sheet
-        // using the persisted team and exact private SSH endpoint.
+        // The list no longer offers Host Setup at all — neither a toolbar info
+        // button nor a context action. It reached the sheet with a BLANK host
+        // (no address, username or key), so it could not test a route or
+        // install anything. Host Setup now lives in the editor, against a real
+        // host.
         cell.press(forDuration: 1.0)
-        let hostSetup = app.buttons["host.setup.help.context"]
-        XCTAssertTrue(hostSetup.waitForExistence(timeout: 6), "Host Setup context action missing")
-        hostSetup.tap()
-        assertHostSetupSheet(endpoint: "127.0.0.1:22", teamName: "acme-team")
-        shot("a_saved_host_setup")
+        XCTAssertFalse(app.buttons["host.setup.help.context"].waitForExistence(timeout: 2),
+                       "removed Host Setup context action is still present")
+        app.tap()   // dismiss the context menu
 
         // (b) No disclosure chevron: this is an edit action, not legacy navigation.
         let chevrons = cell.images.matching(identifier: "chevron.right")
@@ -479,12 +475,10 @@ final class HostFlowUITests: XCTestCase {
                       "Private SSH over WARP section missing")
         XCTAssertTrue(app.buttons["Host Setup"].waitForExistence(timeout: 5),
                       "accessible Host Setup action missing")
-        // The Herdr origin, Access audience, allowed-identity and browser-route
-        // fields were removed with the app's HTTP client. The team name is the
-        // only one still read (WARP enrolment), and it is no longer gated on the
-        // other three being filled in too.
-        XCTAssertTrue(app.textFields["host.cloudflare.team"].waitForExistence(timeout: 5),
-                      "Cloudflare team field missing")
+        // Every Cloudflare/Access field is gone, the team name included: how the
+        // iPad reaches a host is the user's own business.
+        XCTAssertFalse(app.textFields["host.cloudflare.team"].exists,
+                       "removed Cloudflare team field is still present")
         XCTAssertFalse(app.textFields["host.herdr.origin"].exists,
                        "removed Herdr origin field is still present")
         XCTAssertFalse(app.textFields["host.cloudflare.audience"].exists,
@@ -513,15 +507,12 @@ final class HostFlowUITests: XCTestCase {
 
         // The keyboard otherwise receives the swipe gestures needed to bring the
         // lower Access card on screen.
-        dismissKeyboard()
-        typeInto("host.cloudflare.team", "acme-team")
-
         // The Add Host toolbar action must use the current unsaved draft values.
         dismissKeyboard()
         let setup = app.navigationBars["Add Host"].buttons["host.setup.help"]
         XCTAssertTrue(setup.waitForExistence(timeout: 5), "draft Host Setup action missing")
         setup.tap()
-        assertHostSetupSheet(endpoint: "127.0.0.1:22", teamName: "acme-team")
+        assertHostSetupSheet(endpoint: "127.0.0.1:22")
 
         // Dismiss the keyboard so the pinned Save bar is unobstructed. There's
         // no keyboard-toolbar Done button, so tap a neutral non-field area (the

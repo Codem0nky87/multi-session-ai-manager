@@ -10,7 +10,6 @@ struct HostListView: View {
 
     /// Drives the add/edit sheet. nil ⇒ closed.
     @State private var editTarget: EditTarget?
-    @State private var setupTarget: HostSetupTarget?
 
     @Environment(\.dismiss) private var dismiss
     @Environment(ToastCenter.self) private var toasts
@@ -50,16 +49,6 @@ struct HostListView: View {
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Button {
-                        setupTarget = .general
-                    } label: {
-                        Image(systemName: "info.circle")
-                            .font(.system(size: 17, weight: .semibold))
-                            .foregroundStyle(Theme.accent)
-                    }
-                    .accessibilityLabel("Host Setup")
-                    .accessibilityIdentifier("host.setup.help")
-
-                    Button {
                         editTarget = .new
                     } label: {
                         Image(systemName: "plus")
@@ -80,11 +69,6 @@ struct HostListView: View {
                 }
                 .preferredColorScheme(.dark)
             }
-            .background(
-                Color.clear.sheet(item: $setupTarget) { target in
-                    HostSetupHelpSheet(host: target.host, keyStore: keyStore, knownHosts: knownHosts)
-                }
-            )
         }
     }
 
@@ -152,12 +136,6 @@ struct HostListView: View {
                     }
                 }
                 .contextMenu {
-                    Button {
-                        setupTarget = .host(host)
-                    } label: {
-                        Label("Host Setup", systemImage: "info.circle")
-                    }
-                    .accessibilityIdentifier("host.setup.help.context")
                     Button {
                         editTarget = .edit(host)
                     } label: {
@@ -248,34 +226,6 @@ struct HostListView: View {
             store.remove(host)
         }
         toasts.success("Host removed")
-    }
-}
-
-private enum HostSetupTarget: Identifiable {
-    case general
-    case host(Host)
-
-    var id: String {
-        switch self {
-        case .general: "general"
-        case .host(let host): host.id.uuidString
-        }
-    }
-
-    var host: Host {
-        switch self {
-        case .general:
-            Host(
-                name: "New host",
-                address: "",
-                port: 22,
-                username: "",
-                keyID: "",
-                defaultWorkdir: ""
-            )
-        case .host(let host):
-            host
-        }
     }
 }
 
