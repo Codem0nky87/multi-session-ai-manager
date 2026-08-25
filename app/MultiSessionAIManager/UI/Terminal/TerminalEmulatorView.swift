@@ -115,6 +115,9 @@ struct TerminalEmulatorView: View {
                     let c = TerminalMouse.cell(x: location.x, y: location.y,
                                                cellWidth: glyph.width, cellHeight: glyph.height)
                     emulator.scrollWheel(up: up, count: count, col: c.col, row: c.row)
+                },
+                onZoom: { step, persist in
+                    settings.setFontSize(settings.fontSize + step, persist: persist)
                 }
             ) {
                 scrollContent
@@ -158,27 +161,6 @@ struct TerminalEmulatorView: View {
             KeyInputRepresentable(controller: resolvedInputController,
                                   onInput: routeInput,
                                   applicationCursorProvider: { emulator.applicationCursor })
-        )
-        // Indirect trackpad / mouse-wheel scroll. Shift zooms the font; otherwise
-        // alternate-screen scroll is forwarded to the remote terminal.
-        .overlay(
-            ScrollZoomCatcher(
-                onZoom: { step, persist in
-                    settings.setFontSize(settings.fontSize + step, persist: persist)
-                },
-                isAltScreen: { emulator.isAlternateScreen },
-                onScroll: { up, ticks, location in
-                    if let onRemoteScroll {
-                        guard inputEnabled else { return }
-                        onRemoteScroll(up, ticks)
-                        return
-                    }
-                    let glyph = emulator.fontMetrics.boundingBox
-                    let c = TerminalMouse.cell(x: location.x, y: location.y,
-                                               cellWidth: glyph.width, cellHeight: glyph.height)
-                    emulator.scrollWheel(up: up, count: ticks, col: c.col, row: c.row)
-                }
-            )
         )
         .contentShape(Rectangle())
         // Pinch to fine-tune the font size. Runs simultaneously with scroll + the tap
@@ -479,13 +461,17 @@ private struct TerminalScrollContainer<Content: View>: UIViewControllerRepresent
     let onTap: (CGPoint) -> Void
     let onSecondaryTap: (CGPoint) -> Void
     let onScrollWheel: (Bool, Int, CGPoint) -> Void
+    /// `(step, persist)` — apply a font-size delta from Shift+wheel; `persist`
+    /// is true only on gesture end.
+    let onZoom: (CGFloat, Bool) -> Void
     @ViewBuilder let content: () -> Content
 
     func makeCoordinator() -> Coordinator {
         Coordinator(onBottomStateChange: onBottomStateChange,
                     onTap: onTap,
                     onSecondaryTap: onSecondaryTap,
-                    onScrollWheel: onScrollWheel)
+                    onScrollWheel: onScrollWheel,
+                    onZoom: onZoom)
     }
 
     func makeUIViewController(context: Context) -> Controller<Content> {
@@ -503,6 +489,7 @@ private struct TerminalScrollContainer<Content: View>: UIViewControllerRepresent
         context.coordinator.onTap = onTap
         context.coordinator.onSecondaryTap = onSecondaryTap
         context.coordinator.onScrollWheel = onScrollWheel
+        context.coordinator.onZoom = onZoom
         context.coordinator.isAltScreen = isAltScreen
         context.coordinator.cellSize = cellSize
         controller.hostingController.rootView = content()
@@ -536,20 +523,26 @@ private struct TerminalScrollContainer<Content: View>: UIViewControllerRepresent
         var onTap: (CGPoint) -> Void
         var onSecondaryTap: (CGPoint) -> Void
         var onScrollWheel: (Bool, Int, CGPoint) -> Void
+        var onZoom: (CGFloat, Bool) -> Void
         var isAltScreen = false
         var cellSize: CGSize = .zero
         var isUserInteracting = false
         weak var directScrollRecognizer: UIPanGestureRecognizer?
+        weak var wheelRecognizer: UIPanGestureRecognizer?
         private var directScrollSentTicks = 0
+        private var wheelSentTicks = 0
+        private var zoomSentSteps: CGFloat = 0
 
         init(onBottomStateChange: @escaping (Bool) -> Void,
              onTap: @escaping (CGPoint) -> Void,
              onSecondaryTap: @escaping (CGPoint) -> Void,
-             onScrollWheel: @escaping (Bool, Int, CGPoint) -> Void) {
+             onScrollWheel: @escaping (Bool, Int, CGPoint) -> Void,
+             onZoom: @escaping (CGFloat, Bool) -> Void) {
             self.onBottomStateChange = onBottomStateChange
             self.onTap = onTap
             self.onSecondaryTap = onSecondaryTap
             self.onScrollWheel = onScrollWheel
+            self.onZoom = onZoom
         }
 
         func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
@@ -609,9 +602,47 @@ private struct TerminalScrollContainer<Content: View>: UIViewControllerRepresent
             }
         }
 
+        /// Shift zooms the font; otherwise, on an alternate screen, the wheel
+        /// is forwarded to the remote application. On a normal screen with no
+        /// Shift it stays unbegun so the scroll view's own pan handles pointer
+        /// scrolling of the app-side scrollback.
+        @objc func handleWheel(_ recognizer: UIPanGestureRecognizer) {
+            guard let view = recognizer.view else { return }
+            switch recognizer.state {
+            case .began:
+                wheelSentTicks = 0
+                zoomSentSteps = 0
+            case .changed:
+                let translation = recognizer.translation(in: view).y
+                if recognizer.modifierFlags.contains(.shift) {
+                    let steps = TerminalScroll.zoomSteps(forTranslation: translation)
+                    let pending = steps - zoomSentSteps
+                    guard pending != 0 else { return }
+                    zoomSentSteps = steps
+                    onZoom(pending, false)
+                } else {
+                    guard isAltScreen else { return }
+                    let ticks = TerminalScroll.wheelTicks(forTranslation: translation)
+                    let delta = ticks - wheelSentTicks
+                    guard delta != 0 else { return }
+                    wheelSentTicks = ticks
+                    onScrollWheel(delta > 0, abs(delta), recognizer.location(in: view))
+                }
+            case .ended, .cancelled, .failed:
+                if zoomSentSteps != 0 { onZoom(0, true) }
+                wheelSentTicks = 0
+                zoomSentSteps = 0
+            default:
+                break
+            }
+        }
+
         func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
             if gestureRecognizer === directScrollRecognizer {
                 return isAltScreen
+            }
+            if gestureRecognizer === wheelRecognizer {
+                return gestureRecognizer.modifierFlags.contains(.shift) || isAltScreen
             }
             return true
         }
@@ -701,6 +732,20 @@ private struct TerminalScrollContainer<Content: View>: UIViewControllerRepresent
             coordinator.directScrollRecognizer = directScroll
             directScrollRecognizer = directScroll
             view.addGestureRecognizer(directScroll)
+
+            // Pointer wheel / trackpad scroll. On the controller's root view,
+            // NOT an overlay: UIKit only delivers scroll events to recognizers
+            // on the hit-tested view and its ancestors, so a non-hit-testable
+            // sibling overlay never sees them — which is how pointer scrolling
+            // silently did nothing while touch scrolling worked.
+            let wheel = UIPanGestureRecognizer(target: coordinator,
+                                               action: #selector(Coordinator.handleWheel(_:)))
+            wheel.allowedScrollTypesMask = [.continuous, .discrete]
+            // Scroll events only — never finger drags, never a click's jitter.
+            wheel.allowedTouchTypes = TerminalTouchPolicy.wheelAllowedTouchTypes
+            wheel.delegate = coordinator
+            coordinator.wheelRecognizer = wheel
+            view.addGestureRecognizer(wheel)
 
             view.addSubview(scrollView)
             scrollView.translatesAutoresizingMaskIntoConstraints = false
@@ -885,122 +930,3 @@ final class KeyInputController {
     }
 }
 
-/// A fully transparent, touch-passthrough overlay that catches indirect
-/// trackpad / mouse-wheel scroll. Shift turns the wheel into font zoom; otherwise,
-/// on an alternate screen, the wheel is forwarded to the remote application.
-/// It never blocks normal direct touch, tap or pinch:
-///   - its UIView's `hitTest` returns `nil`, so every direct touch falls through to
-///     the ScrollView/tap/pinch underneath;
-///   - its `UIPanGestureRecognizer` is configured for indirect scroll only.
-private struct ScrollZoomCatcher: UIViewRepresentable {
-    /// `(step, persist)` — apply a font-size delta; `persist` true only on gesture end.
-    let onZoom: (CGFloat, Bool) -> Void
-    let isAltScreen: () -> Bool
-    let onScroll: (Bool, Int, CGPoint) -> Void
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(onZoom: onZoom, isAltScreen: isAltScreen, onScroll: onScroll)
-    }
-
-    func makeUIView(context: Context) -> PassthroughView {
-        let view = PassthroughView(frame: .zero)
-        let pan = UIPanGestureRecognizer(target: context.coordinator,
-                                         action: #selector(Coordinator.handle(_:)))
-        // Indirect (mouse wheel / trackpad) scroll only — NOT direct one-finger pans,
-        // so we never compete with the terminal's own touch scrolling.
-        pan.allowedScrollTypesMask = [.continuous, .discrete]
-        pan.delegate = context.coordinator
-        view.addGestureRecognizer(pan)
-        return view
-    }
-
-    func updateUIView(_ uiView: PassthroughView, context: Context) {
-        context.coordinator.onZoom = onZoom
-        context.coordinator.isAltScreen = isAltScreen
-        context.coordinator.onScroll = onScroll
-    }
-
-    /// A UIView that is invisible to direct touches: `hitTest` returns `nil`, so it
-    /// never intercepts taps/scrolls — yet its attached gesture recognizer can still
-    /// receive indirect scroll-wheel events.
-    final class PassthroughView: UIView {
-        override init(frame: CGRect) {
-            super.init(frame: frame)
-            backgroundColor = .clear
-            isOpaque = false
-        }
-
-        required init?(coder: NSCoder) {
-            fatalError("init(coder:) has not been implemented")
-        }
-
-        override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? { nil }
-    }
-
-    @MainActor
-    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
-        var onZoom: (CGFloat, Bool) -> Void
-        var isAltScreen: () -> Bool
-        var onScroll: (Bool, Int, CGPoint) -> Void
-        /// Whole font steps already emitted this gesture, so each further
-        /// `pointsPerStep` of scroll emits exactly one more step (no compounding).
-        private var emittedSteps: CGFloat = 0
-        private var emittedScrollTicks: CGFloat = 0
-        /// ~24pt of scroll per ±1pt of font size.
-        private let pointsPerStep: CGFloat = 24
-        /// ~16pt of scroll per remote wheel notch.
-        private let pointsPerNotch: CGFloat = 16
-
-        init(onZoom: @escaping (CGFloat, Bool) -> Void,
-             isAltScreen: @escaping () -> Bool,
-             onScroll: @escaping (Bool, Int, CGPoint) -> Void) {
-            self.onZoom = onZoom
-            self.isAltScreen = isAltScreen
-            self.onScroll = onScroll
-        }
-
-        // Begin for Shift-zoom or alternate-screen remote scrolling.
-        func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
-            recognizer.modifierFlags.contains(.shift) || isAltScreen()
-        }
-
-        func gestureRecognizer(_ recognizer: UIGestureRecognizer,
-                               shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
-            true
-        }
-
-        @objc func handle(_ recognizer: UIPanGestureRecognizer) {
-            let shift = recognizer.modifierFlags.contains(.shift)
-            switch recognizer.state {
-            case .began:
-                emittedSteps = 0
-                emittedScrollTicks = 0
-            case .changed:
-                // Scroll UP is a NEGATIVE translation.y; negate so UP is positive.
-                let total = -recognizer.translation(in: recognizer.view).y
-                if shift {
-                    let steps = (total / pointsPerStep).rounded(.towardZero)
-                    let pending = steps - emittedSteps
-                    if pending != 0 {
-                        onZoom(pending, false)
-                        emittedSteps = steps
-                    }
-                } else {
-                    let ticks = (total / pointsPerNotch).rounded(.towardZero)
-                    let delta = ticks - emittedScrollTicks
-                    if delta != 0 {
-                        emittedScrollTicks = ticks
-                        onScroll(delta > 0, Int(abs(delta)),
-                                 recognizer.location(in: recognizer.view))
-                    }
-                }
-            case .ended, .cancelled, .failed:
-                if emittedSteps != 0 { onZoom(0, true) }
-                emittedSteps = 0
-                emittedScrollTicks = 0
-            default:
-                break
-            }
-        }
-    }
-}

@@ -70,4 +70,26 @@ import Foundation
     @Test func zeroCellHeightGuard() {
         #expect(TerminalScroll.ticks(forDelta: 40, cellHeight: 0) == 0)
     }
+
+    // Pointer wheel: fixed 16pt per notch, and scrolling UP is a NEGATIVE pan
+    // translation, so the sign flips to match the wheel's "up" direction.
+    @Test func sixteenPointsOfWheelIsOneNotchUp() {
+        #expect(TerminalScroll.wheelTicks(forTranslation: -16) == 1)
+    }
+
+    @Test func wheelDownComesOutNegative() {
+        #expect(TerminalScroll.wheelTicks(forTranslation: 32) == -2)
+    }
+
+    @Test func aFractionOfANotchIsHeldBackNotRounded() {
+        #expect(TerminalScroll.wheelTicks(forTranslation: -15.9) == 0)
+        #expect(TerminalScroll.wheelTicks(forTranslation: -31) == 1)
+    }
+
+    // Shift+wheel zoom: one font step per 24pt, same sign convention.
+    @Test func shiftZoomIsOneStepPerTwentyFourPoints() {
+        #expect(TerminalScroll.zoomSteps(forTranslation: -24) == 1)
+        #expect(TerminalScroll.zoomSteps(forTranslation: 47) == -1)
+        #expect(TerminalScroll.zoomSteps(forTranslation: -23) == 0)
+    }
 }

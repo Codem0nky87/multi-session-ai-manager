@@ -381,6 +381,20 @@ enum TerminalScroll {
         guard cellHeight > 0 else { return 0 }
         return Int(delta / cellHeight)
     }
+
+    /// ~16pt of pointer scroll per remote wheel notch. Scroll UP is a NEGATIVE
+    /// pan translation, so the sign flips to the wheel's "up is positive".
+    static let pointsPerWheelNotch: CGFloat = 16
+    /// ~24pt of Shift+scroll per ±1pt of font size.
+    static let pointsPerZoomStep: CGFloat = 24
+
+    static func wheelTicks(forTranslation translation: CGFloat) -> Int {
+        Int((-translation / pointsPerWheelNotch).rounded(.towardZero))
+    }
+
+    static func zoomSteps(forTranslation translation: CGFloat) -> CGFloat {
+        (-translation / pointsPerZoomStep).rounded(.towardZero)
+    }
 }
 
 /// A thread-safe FIFO byte buffer for inbound PTY data. `feed` appends from the

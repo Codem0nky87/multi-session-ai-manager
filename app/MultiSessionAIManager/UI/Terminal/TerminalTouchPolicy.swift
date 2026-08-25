@@ -44,6 +44,16 @@ enum TerminalTouchPolicy {
         [NSNumber(value: UITouch.TouchType.direct.rawValue)]
     }
 
+    /// The value to assign to the wheel pan's `allowedTouchTypes`: none.
+    ///
+    /// The wheel pan opts into SCROLL events with `allowedScrollTypesMask`,
+    /// which is unaffected by this list. Admitting any touch type would let it
+    /// claim finger drags (fighting scrollback) or the pixel of movement in a
+    /// mouse click (the exact bug `panAcceptsTouchType` exists to prevent).
+    static var wheelAllowedTouchTypes: [NSNumber] {
+        []
+    }
+
     /// The old inline recognizer. Kept false: see above.
     static let inlineTextSelectionGestureEnabled = false
 
