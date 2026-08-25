@@ -73,13 +73,27 @@ enum HerdrPluginManagement {
     /// the running Herdr server before it answers.
     static let actionTimeout = Duration.seconds(120)
 
+    /// The action id comes FIRST: Herdr 0.8.2's parser only accepts --plugin
+    /// after the positional, and the flag-first order its own --help suggests
+    /// answers "unknown option: <plugin>" — with exit status 0.
     static func invokeActionCommand(pluginID: String, actionID: String) -> String {
-        "herdr plugin action invoke --plugin \(pluginID) \(actionID)"
+        "herdr plugin action invoke \(actionID) --plugin \(pluginID)"
     }
 
-    /// Runs one manifest action and returns the command's answer. There is no
-    /// generic way to verify what an action did (each plugin's is different),
-    /// so the output IS the result — the caller shows it as-is.
+    static func logListCommand(pluginID: String) -> String {
+        "herdr plugin log list --plugin \(pluginID)"
+    }
+
+    /// How often and how long to ask the log for a still-running action.
+    static let actionVerdictPolls = 5
+    static let actionVerdictPollDelay = Duration.milliseconds(400)
+
+    /// Runs one manifest action and returns a human-readable outcome.
+    ///
+    /// The invoke's own stdout is only a "started" ack (JSON): the action runs
+    /// asynchronously on the host and its exit status and output land in the
+    /// plugin log, so the log — not the ack — is what gets reported. A TEXT
+    /// reply instead of an ack means the CLI refused the invocation.
     static func invokeAction(
         pluginID: String, actionID: String, using service: SSHService
     ) async throws -> String {
@@ -88,17 +102,74 @@ enum HerdrPluginManagement {
         // uninstall's plugin id.
         guard isValidPluginID(pluginID) else { throw Failure.invalidSource(pluginID) }
         guard isValidPluginID(actionID) else { throw Failure.invalidSource(actionID) }
+        let ack: String
         do {
             let result = try await service.run(
                 invokeActionCommand(pluginID: pluginID, actionID: actionID),
                 timeout: actionTimeout,
                 outputLimit: outputLimit
             )
-            return tail(of: result.stdoutString + result.stderrString,
-                        fallback: "The action reported nothing.")
+            ack = result.stdoutString + result.stderrString
         } catch {
             throw Failure.actionFailed("\(error)")
         }
+        guard let logID = parseActionAck(ack) else {
+            throw Failure.actionFailed(tail(of: ack, fallback: "the CLI sent no answer"))
+        }
+
+        for poll in 0..<actionVerdictPolls {
+            if poll > 0 { try? await Task.sleep(for: actionVerdictPollDelay) }
+            let verdict: (status: String, detail: String)?
+            do {
+                let result = try await service.run(
+                    logListCommand(pluginID: pluginID),
+                    timeout: listTimeout,
+                    outputLimit: outputLimit
+                )
+                verdict = parseActionVerdict(result.stdoutString, logID: logID)
+            } catch {
+                throw Failure.actionFailed("\(error)")
+            }
+            switch verdict?.status {
+            case "succeeded":
+                let detail = verdict?.detail ?? ""
+                return detail.isEmpty ? "Done." : "Done — " + tail(of: detail, fallback: "Done.")
+            case "failed":
+                throw Failure.actionFailed(
+                    tail(of: verdict?.detail ?? "", fallback: "the action failed with no output"))
+            default:
+                continue
+            }
+        }
+        return "The action started; it is still running on the host."
+    }
+
+    /// The `log_id` out of a `plugin_action_invoked` ack, or nil for anything
+    /// that is not one.
+    static func parseActionAck(_ output: String) -> String? {
+        guard let start = output.firstIndex(of: "{"),
+              let data = String(output[start...]).data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let result = root["result"] as? [String: Any],
+              result["type"] as? String == "plugin_action_invoked"
+        else { return nil }
+        return (result["log"] as? [String: Any])?["log_id"] as? String
+    }
+
+    /// The named log entry's status and its stderr (or stdout) from a
+    /// `plugin log list` reply. nil when the entry is not there.
+    static func parseActionVerdict(_ output: String, logID: String) -> (status: String, detail: String)? {
+        guard let start = output.firstIndex(of: "{"),
+              let data = String(output[start...]).data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let result = root["result"] as? [String: Any],
+              let logs = result["logs"] as? [[String: Any]],
+              let entry = logs.first(where: { $0["log_id"] as? String == logID }),
+              let status = entry["status"] as? String
+        else { return nil }
+        let stderr = entry["stderr"] as? String ?? ""
+        let stdout = entry["stdout"] as? String ?? ""
+        return (status, stderr.isEmpty ? stdout : stderr)
     }
 
     // MARK: - Source validation

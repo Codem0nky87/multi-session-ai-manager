@@ -54,10 +54,18 @@ import Testing
         #expect(!command.contains("--ref"))
     }
 
-    @Test func theActionInvokeCommandNamesThePluginAndTheAction() {
+    @Test func theActionInvokeCommandPutsTheActionBeforeThePluginFlag() {
+        // Herdr 0.8.2's parser only accepts --plugin AFTER the positional
+        // action id; the flag-first order its own --help suggests answers
+        // "unknown option: <plugin>" (and exits 0).
         #expect(HerdrPluginManagement.invokeActionCommand(
             pluginID: "shadowfax.ferry", actionID: "install-keybindings"
-        ) == "herdr plugin action invoke --plugin shadowfax.ferry install-keybindings")
+        ) == "herdr plugin action invoke install-keybindings --plugin shadowfax.ferry")
+    }
+
+    @Test func theLogListCommandFiltersToThePlugin() {
+        #expect(HerdrPluginManagement.logListCommand(pluginID: "shadowfax.ferry")
+                == "herdr plugin log list --plugin shadowfax.ferry")
     }
 
     @Test func aRefReachesTheInstallCommand() {
@@ -231,15 +239,79 @@ import Testing
         #expect(transport.commandsRun.isEmpty)
     }
 
-    @Test func invokingAnActionRunsTheHerdrCLIAndAnswersWithItsOutput() async throws {
+    private func ackJSON(logID: String) -> String {
+        """
+        {"id":"cli:plugin","result":{"action":{"action_id":"install-keybindings",\
+        "plugin_id":"shadowfax.ferry","title":"Install Ferry keybinding"},\
+        "log":{"action_id":"install-keybindings","log_id":"\(logID)",\
+        "plugin_id":"shadowfax.ferry","status":"running"},\
+        "type":"plugin_action_invoked"}}
+        """
+    }
+
+    private func logListJSON(logID: String, status: String,
+                             stdout: String = "", stderr: String = "") -> String {
+        """
+        {"id":"cli:plugin","result":{"logs":[{"action_id":"install-keybindings",\
+        "exit_code":0,"log_id":"\(logID)","plugin_id":"shadowfax.ferry",\
+        "status":"\(status)","stderr":"\(stderr)","stdout":"\(stdout)"}],\
+        "type":"plugin_log_list"}}
+        """
+    }
+
+    @Test func invokingAnActionChecksThePluginLogForTheVerdict() async throws {
+        // The invoke's stdout is only a "started" ack; the action runs async
+        // and its outcome lands in the plugin log.
         let (service, transport) = try await makeService()
-        stub(transport, ["ferry: bound prefix+m\n"])
+        stub(transport, [ackJSON(logID: "plugin-log-4"),
+                         logListJSON(logID: "plugin-log-4", status: "succeeded",
+                                     stdout: "bound prefix+m")])
         let answer = try await HerdrPluginManagement.invokeAction(
             pluginID: "shadowfax.ferry", actionID: "install-keybindings", using: service)
         #expect(answer.contains("bound prefix+m"))
         #expect(transport.commandsRun.contains {
-            $0.contains("herdr plugin action invoke --plugin shadowfax.ferry install-keybindings")
+            $0.contains("herdr plugin action invoke install-keybindings --plugin shadowfax.ferry")
         })
+        #expect(transport.commandsRun.contains { $0.contains("plugin log list") })
+    }
+
+    @Test func aSilentSuccessfulActionStillReadsAsDone() async throws {
+        // Ferry's installer succeeds with empty stdout and stderr.
+        let (service, transport) = try await makeService()
+        stub(transport, [ackJSON(logID: "plugin-log-4"),
+                         logListJSON(logID: "plugin-log-4", status: "succeeded")])
+        let answer = try await HerdrPluginManagement.invokeAction(
+            pluginID: "shadowfax.ferry", actionID: "install-keybindings", using: service)
+        #expect(answer.localizedCaseInsensitiveContains("done"))
+    }
+
+    @Test func aCLITextReplyLikeUnknownOptionIsAFailureNotANotice() async throws {
+        // "unknown option: shadowfax.ferry" came back as a SUCCESS notice with
+        // a green check. Text instead of an ack means the CLI refused.
+        let (service, transport) = try await makeService()
+        stub(transport, ["unknown option: shadowfax.ferry\n"])
+        await #expect(throws: HerdrPluginManagement.Failure.self) {
+            _ = try await HerdrPluginManagement.invokeAction(
+                pluginID: "shadowfax.ferry", actionID: "install-keybindings", using: service)
+        }
+    }
+
+    @Test func aFailedActionReportsItsStderr() async throws {
+        let (service, transport) = try await makeService()
+        stub(transport, [ackJSON(logID: "plugin-log-9"),
+                         logListJSON(logID: "plugin-log-9", status: "failed",
+                                     stderr: "cargo: command not found")])
+        do {
+            _ = try await HerdrPluginManagement.invokeAction(
+                pluginID: "shadowfax.ferry", actionID: "install-keybindings", using: service)
+            Issue.record("a failed action must throw")
+        } catch let failure as HerdrPluginManagement.Failure {
+            guard case .actionFailed(let reason) = failure else {
+                Issue.record("wrong failure: \(failure)")
+                return
+            }
+            #expect(reason.contains("cargo: command not found"))
+        }
     }
 
     @Test func aHostileActionIDNeverReachesTheHost() async throws {

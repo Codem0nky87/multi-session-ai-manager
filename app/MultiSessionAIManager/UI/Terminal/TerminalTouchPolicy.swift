@@ -44,14 +44,17 @@ enum TerminalTouchPolicy {
         [NSNumber(value: UITouch.TouchType.direct.rawValue)]
     }
 
-    /// The value to assign to the wheel pan's `allowedTouchTypes`: none.
+    /// The value to assign to the wheel pan's `allowedTouchTypes`.
     ///
-    /// The wheel pan opts into SCROLL events with `allowedScrollTypesMask`,
-    /// which is unaffected by this list. Admitting any touch type would let it
-    /// claim finger drags (fighting scrollback) or the pixel of movement in a
-    /// mouse click (the exact bug `panAcceptsTouchType` exists to prevent).
+    /// Indirect pointer ONLY, and it must be present: scroll events are
+    /// delivered as touches of type `indirectPointer`, so an empty list
+    /// silently starved the recognizer and pointer scrolling did nothing.
+    /// Admitting the type also lets a pointer CLICK-DRAG scroll like a finger.
+    /// Direct stays out so finger drags belong to scrollback alone. Click
+    /// protection does NOT come from this list — the wheel pan never cancels
+    /// touches, so a click's pixel of drift cannot eat the tap.
     static var wheelAllowedTouchTypes: [NSNumber] {
-        []
+        [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)]
     }
 
     /// The old inline recognizer. Kept false: see above.

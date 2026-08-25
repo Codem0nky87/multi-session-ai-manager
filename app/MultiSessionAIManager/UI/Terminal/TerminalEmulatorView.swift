@@ -499,6 +499,8 @@ private struct TerminalScrollContainer<Content: View>: UIViewControllerRepresent
         // app-side scrollback). Leaving it enabled meant a selection drag
         // scrolled Herdr instead of selecting.
         controller.directScrollRecognizer?.isEnabled = scrollEnabled
+        // Same rule for pointer input: while selecting, a pointer drag selects.
+        controller.wheelRecognizer?.isEnabled = scrollEnabled
         let scrollView = controller.scrollView
         onScrollHandle({ delta in
             let maximum = scrollView.contentSize.height - scrollView.bounds.height
@@ -622,7 +624,15 @@ private struct TerminalScrollContainer<Content: View>: UIViewControllerRepresent
                     onZoom(pending, false)
                 } else {
                     guard isAltScreen else { return }
-                    let ticks = TerminalScroll.wheelTicks(forTranslation: translation)
+                    // numberOfTouches distinguishes the two inputs this pan
+                    // accepts: a scroll EVENT (wheel, two-finger swipe) has no
+                    // touches and uses fixed notches; a pointer CLICK-DRAG has
+                    // one, and follows the pointer cell-for-cell like a finger
+                    // drag so the two feel identical.
+                    let ticks = recognizer.numberOfTouches > 0
+                        ? TerminalScroll.ticks(forDelta: translation,
+                                               cellHeight: cellSize.height)
+                        : TerminalScroll.wheelTicks(forTranslation: translation)
                     let delta = ticks - wheelSentTicks
                     guard delta != 0 else { return }
                     wheelSentTicks = ticks
@@ -657,6 +667,7 @@ private struct TerminalScrollContainer<Content: View>: UIViewControllerRepresent
     final class Controller<HostedContent: View>: UIViewController {
         let scrollView = UIScrollView()
         weak var directScrollRecognizer: UIPanGestureRecognizer?
+        weak var wheelRecognizer: UIPanGestureRecognizer?
         let hostingController: UIHostingController<HostedContent>
         private let coordinator: Coordinator
         private var lastScrollVersion: Int?
@@ -741,10 +752,18 @@ private struct TerminalScrollContainer<Content: View>: UIViewControllerRepresent
             let wheel = UIPanGestureRecognizer(target: coordinator,
                                                action: #selector(Coordinator.handleWheel(_:)))
             wheel.allowedScrollTypesMask = [.continuous, .discrete]
-            // Scroll events only — never finger drags, never a click's jitter.
+            // Indirect pointers only: wheel/two-finger scroll AND click-drags,
+            // never finger drags (those belong to scrollback).
             wheel.allowedTouchTypes = TerminalTouchPolicy.wheelAllowedTouchTypes
+            // Load-bearing for clicks: a mouse click carries a pixel or two of
+            // drift, and a recognizer that cancels touches on that drift eats
+            // the tap (the historical "pointer clicks never land" bug). With
+            // no cancellation the tap always fires; a real drag simply also
+            // scrolls.
+            wheel.cancelsTouchesInView = false
             wheel.delegate = coordinator
             coordinator.wheelRecognizer = wheel
+            wheelRecognizer = wheel
             view.addGestureRecognizer(wheel)
 
             view.addSubview(scrollView)

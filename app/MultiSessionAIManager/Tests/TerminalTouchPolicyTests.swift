@@ -7,12 +7,14 @@ import UIKit
         #expect(TerminalTouchPolicy.inlineTextSelectionGestureEnabled == false)
     }
 
-    @Test func theWheelRecognizerNeverClaimsTouches() {
-        // The wheel pan accepts SCROLL events only (via allowedScrollTypesMask).
-        // Any touch type here would let it claim finger drags or the pixel of
-        // movement in a mouse click -- the exact bug panAcceptsTouchType exists
-        // to prevent.
-        #expect(TerminalTouchPolicy.wheelAllowedTouchTypes.isEmpty)
+    @Test func theWheelRecognizerAcceptsOnlyIndirectPointers() {
+        // Scroll events arrive as touches of type indirectPointer, so the type
+        // must be admitted or the recognizer never fires at all (an empty list
+        // silently killed pointer scrolling). Direct stays out so finger drags
+        // belong to scrollback alone; click protection comes from the
+        // recognizer NOT cancelling touches, never from this list.
+        #expect(TerminalTouchPolicy.wheelAllowedTouchTypes ==
+                [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)])
     }
 
     @Test func physicalBackspaceRepeatsWithoutCommandModifier() {
