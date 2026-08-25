@@ -54,6 +54,12 @@ import Testing
         #expect(!command.contains("--ref"))
     }
 
+    @Test func theActionInvokeCommandNamesThePluginAndTheAction() {
+        #expect(HerdrPluginManagement.invokeActionCommand(
+            pluginID: "shadowfax.ferry", actionID: "install-keybindings"
+        ) == "herdr plugin action invoke --plugin shadowfax.ferry install-keybindings")
+    }
+
     @Test func aRefReachesTheInstallCommand() {
         let command = HerdrPluginManagement.installCommand(source: "a/b", ref: "v2")
         #expect(command.contains("--ref v2"))
@@ -103,6 +109,31 @@ import Testing
         #expect(try HerdrPluginManagement.parseList(json).first?.enabled == true)
     }
 
+    @Test func actionsAreReadOutOfTheCLIsJSON() throws {
+        // Ferry-shaped: one plain action, one restricted to a pane context.
+        let json = """
+        {"result":{"plugins":[
+          {"plugin_id":"shadowfax.ferry","name":"Herdr Ferry","version":"0.2.0","enabled":true,
+           "actions":[
+             {"id":"install-keybindings","title":"Install Ferry keybinding",
+              "description":"Bind prefix+m to open Ferry."},
+             {"id":"open","title":"Open Ferry","contexts":["pane"],
+              "description":"Move panes or tabs."}
+           ]}
+        ]}}
+        """
+        let plugin = try #require(try HerdrPluginManagement.parseList(json).first)
+        #expect(plugin.actions.count == 2)
+        #expect(plugin.actions.first?.id == "install-keybindings")
+        #expect(plugin.actions.first?.title == "Install Ferry keybinding")
+        #expect(plugin.actions.first?.contexts.isEmpty == true)
+        #expect(plugin.actions.last?.contexts == ["pane"])
+    }
+
+    @Test func aPluginWithNoActionsListsNone() throws {
+        #expect(try HerdrPluginManagement.parseList(sample).first?.actions.isEmpty == true)
+    }
+
     @Test func unreadableOutputThrowsRatherThanReportingNoPlugins() {
         // "No plugins installed" is a very different statement from "I could not
         // read the answer", and the UI acts on it.
@@ -112,6 +143,36 @@ import Testing
         #expect(throws: HerdrPluginManagement.Failure.self) {
             try HerdrPluginManagement.parseList("{\"result\":{}}")
         }
+    }
+}
+
+@Suite struct HerdrPluginActionDetectionTests {
+
+    private func plugin(actions: [PluginAction]) -> InstalledPlugin {
+        InstalledPlugin(pluginID: "p", name: "P", version: "1", description: "",
+                        enabled: true, originRepository: nil, actions: actions)
+    }
+
+    @Test func anActionSayingKeybindInItsIdOrTitleIsAnInstaller() {
+        // Ferry's real shape: id "install-keybindings", title "Install Ferry
+        // keybinding". Herdr's own menu says "keybinds", so the match is the
+        // stem, case-insensitive.
+        let byID = PluginAction(id: "install-keybindings", title: "Set up",
+                                description: "", contexts: [])
+        let byTitle = PluginAction(id: "setup", title: "Install Keybinding",
+                                   description: "", contexts: [])
+        let unrelated = PluginAction(id: "open", title: "Open Ferry",
+                                     description: "", contexts: [])
+        let found = plugin(actions: [byID, byTitle, unrelated]).keybindingInstallers
+        #expect(found == [byID, byTitle])
+    }
+
+    @Test func aContextualActionIsNeverOfferedAsAButton() {
+        // contexts:["pane"] means "invoke me from a pane". The manager sheet
+        // has no pane, so even a keybinding-named one stays off the row.
+        let contextual = PluginAction(id: "keybinding-menu", title: "Keybindings",
+                                      description: "", contexts: ["pane"])
+        #expect(plugin(actions: [contextual]).keybindingInstallers.isEmpty)
     }
 }
 
@@ -170,6 +231,27 @@ import Testing
         #expect(transport.commandsRun.isEmpty)
     }
 
+    @Test func invokingAnActionRunsTheHerdrCLIAndAnswersWithItsOutput() async throws {
+        let (service, transport) = try await makeService()
+        stub(transport, ["ferry: bound prefix+m\n"])
+        let answer = try await HerdrPluginManagement.invokeAction(
+            pluginID: "shadowfax.ferry", actionID: "install-keybindings", using: service)
+        #expect(answer.contains("bound prefix+m"))
+        #expect(transport.commandsRun.contains {
+            $0.contains("herdr plugin action invoke --plugin shadowfax.ferry install-keybindings")
+        })
+    }
+
+    @Test func aHostileActionIDNeverReachesTheHost() async throws {
+        // Action ids come from a third-party manifest; they are user data.
+        let (service, transport) = try await makeService()
+        await #expect(throws: HerdrPluginManagement.Failure.self) {
+            _ = try await HerdrPluginManagement.invokeAction(
+                pluginID: "shadowfax.ferry", actionID: "x; rm -rf ~", using: service)
+        }
+        #expect(!transport.commandsRun.contains { $0.contains("action invoke") })
+    }
+
     @Test func uninstallVerifiesThePluginIsActuallyGone() async throws {
         let (service, transport) = try await makeService()
         stub(transport, ["removed", listJSON(["other"])])
@@ -225,6 +307,25 @@ private final class StubCatalogue: PluginCatalogueFetching, @unchecked Sendable 
             transport: transport
         )
         return (HerdrPluginManagerModel(connection: connection, catalogue: catalogue), transport)
+    }
+
+    @Test func updatingHerdrWhileDisconnectedExplainsItself() async {
+        let (model, transport) = makeModel(StubCatalogue())
+        await model.updateHerdr()
+        #expect(model.errorMessage == "Not connected to this host.")
+        #expect(!transport.commandsRun.contains { $0.contains("herdr update") })
+    }
+
+    @Test func installingAKeybindingWhileDisconnectedExplainsItself() async {
+        let (model, transport) = makeModel(StubCatalogue())
+        let action = PluginAction(id: "install-keybindings", title: "Install Ferry keybinding",
+                                  description: "", contexts: [])
+        let ferry = InstalledPlugin(pluginID: "shadowfax.ferry", name: "Herdr Ferry",
+                                    version: "0.2.0", description: "", enabled: true,
+                                    originRepository: nil, actions: [action])
+        await model.installKeybinding(action, for: ferry)
+        #expect(model.errorMessage == "Not connected to this host.")
+        #expect(!transport.commandsRun.contains { $0.contains("action invoke") })
     }
 
     @Test func aRepoWithoutAManifestIsRefusedBeforeAnyInstallRuns() async {

@@ -21,6 +21,7 @@ struct HerdrPluginManagerSheet: View {
                 ScrollView {
                     VStack(spacing: Theme.Space.lg) {
                         messages
+                        herdrCard
                         installedCard
                         catalogueCard
                     }
@@ -155,6 +156,56 @@ struct HerdrPluginManagerSheet: View {
 
     // MARK: - Installed
 
+    /// Herdr's own version and update state, mirroring the "update ready"
+    /// entry in its session menu. Hidden until a status probe answers — the
+    /// sheet is about plugins first.
+    @ViewBuilder private var herdrCard: some View {
+        if let status = model.updateStatus {
+            GlassCard {
+                HStack(spacing: Theme.Space.sm) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: Theme.Space.sm) {
+                            SectionLabel(text: "Herdr")
+                            Text(status.serverVersion ?? status.clientVersion)
+                                .font(.system(.footnote, design: .monospaced))
+                                .foregroundStyle(Theme.textSecondary)
+                            if status.updateReady {
+                                Text("Update ready")
+                                    .font(.system(.caption2, design: .rounded, weight: .semibold))
+                                    .foregroundStyle(Theme.warning)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Capsule().fill(Theme.warning.opacity(0.15)))
+                            }
+                        }
+                        if status.updateReady {
+                            Text("A newer Herdr is installed than the server is running.")
+                                .font(.system(.caption, design: .rounded))
+                                .foregroundStyle(Theme.textMuted)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    Spacer(minLength: Theme.Space.sm)
+                    if model.busyIdentifier == "herdr.update" {
+                        ProgressView().tint(Theme.accent)
+                    } else {
+                        Button {
+                            Task { await model.updateHerdr() }
+                        } label: {
+                            Text(status.updateReady ? "Apply update" : "Update Herdr")
+                                .font(.system(.footnote, design: .rounded, weight: .semibold))
+                                .foregroundStyle(status.updateReady ? Theme.warning : Theme.accent)
+                                .frame(minHeight: 44)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(model.isBusy)
+                        .accessibilityIdentifier("host.plugins.herdrupdate")
+                    }
+                }
+            }
+        }
+    }
+
     private var installedCard: some View {
         GlassCard {
             VStack(alignment: .leading, spacing: Theme.Space.md) {
@@ -236,6 +287,24 @@ struct HerdrPluginManagerSheet: View {
             } else {
                 // Only the file viewer can be wired for host -> iPad sending, so
                 // the action lives on its row rather than as a separate card.
+                // A plugin that ships a keybinding installer (like Ferry's
+                // "Install Ferry keybinding") gets it as a button: on a
+                // touch-only iPad the keybinding is how the plugin is opened,
+                // since no touch gesture produces the right-click that raises
+                // Herdr's pane menu.
+                ForEach(plugin.keybindingInstallers, id: \.id) { action in
+                    Button {
+                        Task { await model.installKeybinding(action, for: plugin) }
+                    } label: {
+                        Text(action.title)
+                            .font(.system(.footnote, design: .rounded, weight: .semibold))
+                            .foregroundStyle(Theme.accent)
+                            .frame(minHeight: 44)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(model.isBusy)
+                    .accessibilityIdentifier("host.plugins.keybinding.\(plugin.pluginID).\(action.id)")
+                }
                 if model.isFileViewer(plugin) {
                     Button {
                         Task { await model.configureFileTransfer(for: plugin) }

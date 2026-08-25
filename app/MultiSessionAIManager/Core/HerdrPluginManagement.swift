@@ -1,5 +1,17 @@
 import Foundation
 
+/// One action a plugin declares in its manifest, as reported by
+/// `herdr plugin list --json`. Invoked on the host with
+/// `herdr plugin action invoke`.
+struct PluginAction: Equatable, Sendable {
+    let id: String
+    let title: String
+    let description: String
+    /// Where Herdr offers this action (e.g. `["pane"]` for the pane context
+    /// menu). Empty means unrestricted.
+    let contexts: [String]
+}
+
 /// One plugin installed on a host, as reported by `herdr plugin list --json`.
 struct InstalledPlugin: Identifiable, Equatable, Sendable {
     let pluginID: String
@@ -12,8 +24,22 @@ struct InstalledPlugin: Identifiable, Equatable, Sendable {
     /// it is not a string, and treating it as one left this nil for every
     /// plugin, so nothing could ever be recognised as already installed.
     let originRepository: String?
+    var actions: [PluginAction] = []
 
     var id: String { pluginID }
+
+    /// Actions that set up the plugin's keybindings, offered as buttons on the
+    /// plugin's row. Matched on the "keybind" stem (Herdr's menu says
+    /// "keybinds", Ferry's action says "keybindings") because the manifest has
+    /// no structured action kind. Contextual actions are excluded: the manager
+    /// sheet has no pane to invoke them from.
+    var keybindingInstallers: [PluginAction] {
+        actions.filter { action in
+            action.contexts.isEmpty
+                && (action.id.localizedCaseInsensitiveContains("keybind")
+                    || action.title.localizedCaseInsensitiveContains("keybind"))
+        }
+    }
 }
 
 /// Lists, installs and uninstalls Herdr plugins on a host over SSH.
@@ -40,6 +66,39 @@ enum HerdrPluginManagement {
         case listFailed(String)
         case installFailed(String)
         case uninstallFailed(String)
+        case actionFailed(String)
+    }
+
+    /// Generous for a one-shot action: a keybinding installer may also reload
+    /// the running Herdr server before it answers.
+    static let actionTimeout = Duration.seconds(120)
+
+    static func invokeActionCommand(pluginID: String, actionID: String) -> String {
+        "herdr plugin action invoke --plugin \(pluginID) \(actionID)"
+    }
+
+    /// Runs one manifest action and returns the command's answer. There is no
+    /// generic way to verify what an action did (each plugin's is different),
+    /// so the output IS the result — the caller shows it as-is.
+    static func invokeAction(
+        pluginID: String, actionID: String, using service: SSHService
+    ) async throws -> String {
+        // Both ids come from a third-party manifest and are interpolated into a
+        // command line, so they get the same shell-metacharacter refusal as an
+        // uninstall's plugin id.
+        guard isValidPluginID(pluginID) else { throw Failure.invalidSource(pluginID) }
+        guard isValidPluginID(actionID) else { throw Failure.invalidSource(actionID) }
+        do {
+            let result = try await service.run(
+                invokeActionCommand(pluginID: pluginID, actionID: actionID),
+                timeout: actionTimeout,
+                outputLimit: outputLimit
+            )
+            return tail(of: result.stdoutString + result.stderrString,
+                        fallback: "The action reported nothing.")
+        } catch {
+            throw Failure.actionFailed("\(error)")
+        }
     }
 
     // MARK: - Source validation
@@ -290,7 +349,22 @@ enum HerdrPluginManagement {
                 // A plugin with no `enabled` key is treated as enabled, matching
                 // Herdr: the key records a deliberate disable.
                 enabled: entry["enabled"] as? Bool ?? true,
-                originRepository: Self.originRepository(from: entry["source"])
+                originRepository: Self.originRepository(from: entry["source"]),
+                actions: Self.parseActions(entry["actions"])
+            )
+        }
+    }
+
+    private static func parseActions(_ value: Any?) -> [PluginAction] {
+        guard let entries = value as? [[String: Any]] else { return [] }
+        return entries.compactMap { entry in
+            guard let id = entry["id"] as? String,
+                  let title = entry["title"] as? String else { return nil }
+            return PluginAction(
+                id: id,
+                title: title,
+                description: entry["description"] as? String ?? "",
+                contexts: entry["contexts"] as? [String] ?? []
             )
         }
     }

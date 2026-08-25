@@ -18,6 +18,9 @@ xcuserdata/
 
 # Swift Package Manager
 .swiftpm/
+
+# graphify knowledge-graph output (generated)
+graphify-out/
 .netrc
 
 # Build outputs

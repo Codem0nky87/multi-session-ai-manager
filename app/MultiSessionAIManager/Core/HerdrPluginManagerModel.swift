@@ -48,6 +48,9 @@ final class HerdrPluginManagerModel {
 
     /// The plugin id currently being installed or removed, so only its own row
     /// shows a spinner rather than the whole list going inert.
+    /// nil until a probe answers (or when it failed); the sheet hides the row.
+    private(set) var updateStatus: HerdrUpdateStatus?
+
     private(set) var busyIdentifier: String?
     private(set) var errorMessage: String?
     private(set) var noticeMessage: String?
@@ -88,6 +91,9 @@ final class HerdrPluginManagerModel {
         } catch {
             listState = .failed(Self.message(for: error))
         }
+        // Best-effort: the sheet still works with no update row, so a failed
+        // probe stays silent rather than burying the plugin list in an error.
+        updateStatus = try? await HerdrUpdate.probe(using: service)
     }
 
     // MARK: - Catalogue
@@ -257,6 +263,54 @@ final class HerdrPluginManagerModel {
     /// Lives on the installed plugin's own row rather than in a separate setup
     /// card: installing plugins belongs to one place, and this is the step that
     /// only makes sense once THIS plugin is present.
+    func updateHerdr() async {
+        guard let service = connection.provisioningCommandRunner else {
+            errorMessage = "Not connected to this host."
+            return
+        }
+        busyIdentifier = "herdr.update"
+        operation = Operation(title: "Herdr", step: "Downloading and installing…")
+        defer { busyIdentifier = nil; operation = nil }
+        errorMessage = nil
+        noticeMessage = nil
+
+        do {
+            let result = try await HerdrUpdate.update(using: service)
+            var parts = [result.output]
+            if let version = result.refreshed?.serverVersion {
+                parts.append("The server is now running \(version).")
+            } else {
+                parts.append("The session may blip while the server hands off; it reattaches on its own.")
+            }
+            noticeMessage = parts.joined(separator: " ")
+            updateStatus = result.refreshed ?? updateStatus
+        } catch {
+            errorMessage = Self.message(for: error)
+        }
+    }
+
+    func installKeybinding(_ action: PluginAction, for plugin: InstalledPlugin) async {
+        guard let service = connection.provisioningCommandRunner else {
+            errorMessage = "Not connected to this host."
+            return
+        }
+        busyIdentifier = plugin.pluginID
+        operation = Operation(title: plugin.name, step: "Running \(action.title)…")
+        defer { busyIdentifier = nil; operation = nil }
+        errorMessage = nil
+        noticeMessage = nil
+
+        do {
+            // The action's own output is the report: each plugin binds
+            // different keys, so only it can say what it did.
+            noticeMessage = try await HerdrPluginManagement.invokeAction(
+                pluginID: plugin.pluginID, actionID: action.id, using: service
+            )
+        } catch {
+            errorMessage = Self.message(for: error)
+        }
+    }
+
     func configureFileTransfer(for plugin: InstalledPlugin) async {
         guard let service = connection.provisioningCommandRunner else {
             errorMessage = "Not connected to this host."
@@ -305,6 +359,16 @@ final class HerdrPluginManagerModel {
                 return "Install failed: \(reason)"
             case .uninstallFailed(let reason):
                 return "Uninstall failed: \(reason)"
+            case .actionFailed(let reason):
+                return "The action failed: \(reason)"
+            }
+        }
+        if let failure = error as? HerdrUpdate.Failure {
+            switch failure {
+            case .statusFailed(let reason):
+                return "Could not read Herdr's status: \(reason)"
+            case .updateFailed(let reason):
+                return "The update failed: \(reason)"
             }
         }
         if let failure = error as? BuildToolchainInstaller.Failure {
