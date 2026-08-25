@@ -111,13 +111,15 @@ final class TerminalStringSupplier {
                 .tracking(0)
                 .allowsTightening(false)
                 .lineLimit(1)
-                // Size to the glyphs' NATURAL width so a run is never truncated (the
-                // SwiftUI-rendered advance can slightly exceed the CoreText cell
-                // width, which otherwise clipped the last char before the cursor to
-                // "…"). `minWidth` still pads blank/space/cursor runs out to a full
-                // cell so the cursor block and column grid stay correct.
+                // `fixedSize` keeps the Text at its natural size so it never
+                // ellipsizes to "…", while the EXACT-width frame pins the run to
+                // its grid allocation. A run whose fallback glyphs render wider
+                // than `columns x cellWidth` overdraws its right neighbour (as
+                // real terminals do) instead of pushing the rest of the row
+                // sideways -- drawn cells must coincide with the cells reported
+                // by TerminalMouse, or taps land beside their visual target.
                 .fixedSize(horizontal: true, vertical: true)
-                .frame(minWidth: width, alignment: .leading)
+                .frame(width: width, alignment: .leading)
                 .background(Color(background ?? .black))
         )
     }
