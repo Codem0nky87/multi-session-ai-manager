@@ -14,6 +14,65 @@ import Foundation
 import SwiftTerm
 import SwiftUI
 
+/// Splits a row of cells into coalesced `Text` runs.
+///
+/// Coalescing is what keeps the view count sane, but it is only safe for
+/// glyphs whose advance is exactly one cell. ASCII in the monospaced font is;
+/// anything that can resolve to a FALLBACK font is not (a nerd-font icon
+/// renders ~6pt wider than its cell, `⧉` +2.3pt, `❯` −0.2pt — measured). Inside
+/// a coalesced run that drift shifts every glyph after it, which is how the
+/// last typed character slid underneath the cursor block. Isolating each
+/// non-ASCII cell into its own exact-width run stops the accumulation at one
+/// cell.
+enum TerminalRunSplitter {
+    /// True when the glyph's advance cannot be trusted to be exactly one cell.
+    ///
+    /// Safe: ASCII, and box drawing + block elements (U+2500–U+259F) — every
+    /// glyph in that range measures exactly one cell in the system monospaced
+    /// font, and borders/progress bars repeat them for whole rows, so isolating
+    /// them would multiply the view count enough to matter (render storms are
+    /// this app's documented watchdog-crash mode). Braille spinners drift
+    /// (+0.85pt) and stay out.
+    static func isolates(_ char: Character) -> Bool {
+        !char.unicodeScalars.allSatisfy {
+            ($0.value >= 0x20 && $0.value < 0x7F)
+                || ($0.value >= 0x2500 && $0.value <= 0x259F)
+        }
+    }
+
+    static func runs<A: Equatable>(
+        cells: [(char: Character, attribute: A, isCursor: Bool)]
+    ) -> [(text: String, attribute: A, isCursor: Bool)] {
+        var result = [(text: String, attribute: A, isCursor: Bool)]()
+        var buffer = ""
+        var bufferAttribute: A?
+
+        func flush() {
+            if let attribute = bufferAttribute, !buffer.isEmpty {
+                result.append((text: buffer, attribute: attribute, isCursor: false))
+            }
+            buffer = ""
+            bufferAttribute = nil
+        }
+
+        for cell in cells {
+            if cell.isCursor || Self.isolates(cell.char) {
+                flush()
+                result.append((text: String(cell.char), attribute: cell.attribute,
+                               isCursor: cell.isCursor))
+                continue
+            }
+            if bufferAttribute != cell.attribute {
+                flush()
+                bufferAttribute = cell.attribute
+            }
+            buffer.append(cell.char)
+        }
+        flush()
+        return result
+    }
+}
+
 final class TerminalStringSupplier {
     var terminal: Terminal!
     var colorMap: TerminalColorMap!
@@ -31,34 +90,18 @@ final class TerminalStringSupplier {
         let cursorPosition = terminal.getCursorLocation()
         let scrollbackRows = terminal.getTopVisibleRow()
 
-        var lastAttribute = Attribute.empty
-        var views = [IdentifiedRun]()
-        var buffer = ""
-        for j in 0..<terminal.cols {
+        let cells = (0..<terminal.cols).map { j in
             let data = line[j]
-            let isCursor = cursorVisible && row - scrollbackRows == cursorPosition.y && j == cursorPosition.x
-
-            if isCursor || lastAttribute != data.attribute {
-                // Finish the previous run.
-                views.append(IdentifiedRun(index: views.count, view: text(buffer, attribute: lastAttribute)))
-                lastAttribute = data.attribute
-                buffer.removeAll()
-            }
-
             let character = data.getCharacter()
-            buffer.append(character == "\0" ? " " : character)
-
-            if isCursor {
-                if buffer.isEmpty {
-                    buffer.append(" ")
-                }
-                views.append(IdentifiedRun(index: views.count, view: text(buffer, attribute: lastAttribute, isCursor: true)))
-                buffer.removeAll()
-            }
+            return (char: character == "\0" ? " " : character,
+                    attribute: data.attribute,
+                    isCursor: cursorVisible && row - scrollbackRows == cursorPosition.y
+                        && j == cursorPosition.x)
         }
-
-        // Final run.
-        views.append(IdentifiedRun(index: views.count, view: text(buffer, attribute: lastAttribute)))
+        let views = TerminalRunSplitter.runs(cells: cells).enumerated().map { index, run in
+            IdentifiedRun(index: index,
+                          view: text(run.text, attribute: run.attribute, isCursor: run.isCursor))
+        }
 
         return AnyView(HStack(alignment: .firstTextBaseline, spacing: 0) {
             ForEach(views) { $0.view }
