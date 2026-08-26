@@ -6,7 +6,8 @@ import Testing
     private func makeSession(
         transport: FakeSSHTransport,
         sessionName: String? = nil,
-        knownHosts: KnownHostsStore? = nil
+        knownHosts: KnownHostsStore? = nil,
+        liveness: HerdrHostSession.LivenessPolicy = .init()
     ) throws -> HerdrHostSession {
         let suite = "HerdrHostSessionTests.\(UUID().uuidString)"
         let keyStore = KeyStore(backing: InMemoryKeychain())
@@ -24,7 +25,8 @@ import Testing
                 knownHosts: knownHosts ?? KnownHostsStore(defaults: UserDefaults(suiteName: suite)!),
                 transport: transport
             ),
-            sessionName: sessionName
+            sessionName: sessionName,
+            liveness: liveness
         )
     }
 
@@ -230,5 +232,125 @@ import Testing
         await session.ensureLive()
 
         #expect(session.status == .live)
+    }
+
+    // MARK: - Idle-connection heartbeat (issue #1)
+    //
+    // A NAT/firewall evicting an idle flow leaves the TCP connection HALF-OPEN:
+    // no FIN or RST ever arrives, the inbound stream simply goes silent, and
+    // `PTYChannel.isOpen` stays true forever. Every reconciliation that trusts
+    // `isOpen` therefore no-ops while the tab sits frozen on screen. Only
+    // round-trip traffic with a deadline can tell a quiet-but-healthy link from
+    // a dead one.
+
+    @Test func anIdleDeadConnectionIsDetectedAndRecoveredWithoutUserInteraction() async throws {
+        let transport = FakeSSHTransport()
+        let session = try makeSession(
+            transport: transport,
+            liveness: .init(interval: .milliseconds(40), probeTimeout: .milliseconds(500))
+        )
+        await session.start()
+        #expect(session.status == .live)
+
+        // The link dies with no EOF: the channel still LOOKS open. One probe
+        // fails; the redial and every later probe succeed.
+        transport.structuredCommandResults = [.failure(.timedOut)]
+
+        // Recovery also reopens the outbox watch (its own PTY), so count only
+        // the herdr PTYs when asserting the reattach.
+        let herdrCommand = HerdrLaunchCommand.launch(sessionName: nil)
+        func herdrPTYCount() -> Int {
+            transport.openedPTYs.filter { $0.command == herdrCommand }.count
+        }
+        for _ in 0..<100 {
+            if herdrPTYCount() >= 2, session.status == .live { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+
+        #expect(session.status == .live)
+        #expect(herdrPTYCount() == 2)
+        // A dead CONNECTION (unlike a dead channel) must be torn down and
+        // redialled -- reusing it would reopen a PTY over a corpse.
+        #expect(transport.disconnectCount == 1)
+        await session.stop()
+    }
+
+    @Test func ensureLiveProbesAndRecoversAHalfOpenConnection() async throws {
+        let transport = FakeSSHTransport()
+        // Default policy: the 30s heartbeat never fires inside this test, so
+        // any recovery observed below is ensureLive()'s own doing.
+        let session = try makeSession(transport: transport)
+        await session.start()
+        #expect(transport.openedPTYs.last?.isOpen == true)
+
+        transport.structuredCommandResults = [.failure(.timedOut)]
+        await session.ensureLive()
+
+        #expect(session.status == .live)
+        let herdrCommand = HerdrLaunchCommand.launch(sessionName: nil)
+        #expect(transport.openedPTYs.filter { $0.command == herdrCommand }.count == 2)
+        #expect(transport.disconnectCount == 1)
+        await session.stop()
+    }
+
+    @Test func aDeadConnectionOnAnUnreachableHostLandsOnFailedWithoutLooping() async throws {
+        let transport = FakeSSHTransport()
+        let session = try makeSession(
+            transport: transport,
+            liveness: .init(interval: .milliseconds(40), probeTimeout: .milliseconds(500))
+        )
+        await session.start()
+
+        transport.commandError = SSHCommandExecutionError.timedOut      // every probe fails
+        transport.connectError = SSHTransportError.commandFailed("boom") // and so does the redial
+
+        var sawFailed = false
+        for _ in 0..<100 {
+            if case .failed = session.status { sawFailed = true; break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(sawFailed)
+
+        // Landing on .failed must END the cycle -- the overlay's Retry is the
+        // only way forward. A silent retry loop here would redial a dead host
+        // every interval for as long as the tab is open.
+        let commandsAfterFailure = transport.commandsRun.count
+        let ptysAfterFailure = transport.openedPTYs.count
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(transport.commandsRun.count == commandsAfterFailure)
+        #expect(transport.openedPTYs.count == ptysAfterFailure)
+        guard case .failed = session.status else {
+            Issue.record("Expected .failed to be terminal, got \(session.status)")
+            return
+        }
+    }
+
+    @Test func aStoppedSessionIsNeverResurrectedByItsHeartbeat() async throws {
+        let transport = FakeSSHTransport()
+        let session = try makeSession(
+            transport: transport,
+            liveness: .init(interval: .milliseconds(40), probeTimeout: .milliseconds(500))
+        )
+        await session.start()
+        await session.stop()
+
+        // A zombie heartbeat would see the disconnected transport as a dead
+        // connection and "recover" it -- reconnecting a tab the user closed.
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(session.status == .idle)
+        #expect(transport.openedPTYs.count == 1)
+        #expect(transport.isConnected == false)
+    }
+
+    // The battery half of the design: while output is flowing, the connection
+    // is self-evidently alive and the heartbeat must not add traffic on top.
+    @Test func probeIsSuppressedWhileOutputProvesTheConnectionAlive() {
+        let now = ContinuousClock.now
+        #expect(HerdrHostSession.shouldProbe(
+            lastOutput: now - .seconds(31), now: now, interval: .seconds(30)
+        ))
+        #expect(!HerdrHostSession.shouldProbe(
+            lastOutput: now - .seconds(5), now: now, interval: .seconds(30)
+        ))
     }
 }

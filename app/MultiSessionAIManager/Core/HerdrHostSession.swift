@@ -44,15 +44,43 @@ final class HerdrHostSession {
         var finished = false
     }
 
+    /// Tunables for the idle-connection heartbeat. One mechanism serves two
+    /// goals: the probe's round trip refreshes NAT/firewall flow state
+    /// (keepalive), and its deadline is the only reliable detector of a
+    /// half-open TCP link, which never delivers an EOF (issue #1).
+    ///
+    /// Battery: this costs nothing in background -- iOS suspends the process,
+    /// freezing the timer -- and nothing while output is flowing, because
+    /// `shouldProbe` skips the probe unless the link has been quiet for a full
+    /// interval.
+    struct LivenessPolicy: Sendable {
+        /// Probe cadence while live and quiet. 30s stays inside common
+        /// NAT/firewall/WARP idle-eviction windows (typically 60s+).
+        var interval: Duration = .seconds(30)
+        /// How long a probe may hang before the connection is declared dead.
+        /// A half-open link never answers; without this bound, detection
+        /// would wait on kernel TCP retransmission timeouts (minutes).
+        var probeTimeout: Duration = .seconds(10)
+    }
+
     let connection: HostConnection
     let sessionName: String?
     /// Identifies this tab's outbox watcher on the host. Stable across app
     /// launches so a relaunch evicts its own orphan rather than adding to it.
     let watchIdentity: String
     let terminal: TerminalEmulator
+    let liveness: LivenessPolicy
 
     private(set) var status: Status = .idle
     private var channel: PTYChannel?
+    /// The idle-connection heartbeat (issue #1). Lives exactly as long as one
+    /// `.live` stretch: started when `start()` lands on `.live`, retired by
+    /// `stop()`, by any status change (generation guard), or by its own
+    /// recovery hand-off.
+    private var heartbeat: Task<Void, Never>?
+    /// Stamped off-main on every PTY output chunk; read by the heartbeat to
+    /// skip probing while traffic already proves the link alive.
+    private let lastOutputAt = NIOLockedValueBox(ContinuousClock.now)
     /// A second channel per live tab, tailing the host's outbox so a file the
     /// user sends from the `herdr-file-viewer` plugin arrives without polling.
     /// Separate from the Herdr PTY because that one is carrying an interactive
@@ -73,12 +101,25 @@ final class HerdrHostSession {
         connection: HostConnection,
         sessionName: String?,
         watchIdentity: String = "default",
-        terminal: TerminalEmulator = TerminalEmulator()
+        terminal: TerminalEmulator = TerminalEmulator(),
+        liveness: LivenessPolicy = .init()
     ) {
         self.connection = connection
         self.sessionName = sessionName
         self.watchIdentity = watchIdentity
         self.terminal = terminal
+        self.liveness = liveness
+    }
+
+    /// Whether the heartbeat should spend a round trip: only when the link has
+    /// been quiet for a full interval. Output arriving IS proof of liveness,
+    /// so an actively streaming agent generates zero extra traffic.
+    static func shouldProbe(
+        lastOutput: ContinuousClock.Instant,
+        now: ContinuousClock.Instant,
+        interval: Duration
+    ) -> Bool {
+        now - lastOutput >= interval
     }
 
     func start() async {
@@ -105,11 +146,14 @@ final class HerdrHostSession {
             let terminal = self.terminal
             let scanState = NIOLockedValueBox(SentinelScanState())
             let sentinelBytes = Data(HerdrLaunchCommand.missingSentinel.utf8)
+            let lastOutputAt = self.lastOutputAt
+            lastOutputAt.withLockedValue { $0 = .now }
             let channel = try await connection.openHerdrPTY(
                 sessionName: sessionName,
                 cols: terminal.cols,
                 rows: terminal.rows
             ) { [weak self] data in
+                lastOutputAt.withLockedValue { $0 = .now }
                 terminal.feed(data)
                 // Off-main, bounded, byte-level scan — no String allocation, and it
                 // stops looking (cheaply) once the preamble window has passed.
@@ -142,6 +186,9 @@ final class HerdrHostSession {
             // hop that beat us here) while this call was suspended above; honor it
             // instead of clobbering it with an unconditional .live.
             status = sawMissingSentinel ? .herdrMissing : .live
+            if status == .live {
+                startHeartbeat(generation: generation)
+            }
         } catch {
             guard operationGeneration == generation else { return }
             status = .failed(SSHFailure.classify(message: String(describing: error)).userMessage)
@@ -242,6 +289,19 @@ final class HerdrHostSession {
         // watch dead and files silently stop arriving with nothing to see.
         defer { Task { await self.ensureWatching() } }
 
+        // An open-looking channel proves nothing: a NAT-evicted idle flow dies
+        // with no FIN, so `isOpen` stays true over a corpse forever (issue #1).
+        // Probe before trusting `.live`, so a tab switch or a return to the
+        // foreground recovers a half-open connection instead of no-opping.
+        if status == .live, channel?.isOpen == true {
+            let generation = operationGeneration
+            let alive = await connection.verifyAlive(timeout: liveness.probeTimeout)
+            guard operationGeneration == generation else { return }
+            if status == .live, !alive {
+                await recoverLostConnection()
+            }
+        }
+
         // Stale .live: the channel died while nobody was watching. Reset, but do
         // NOT disconnect -- the SSH connection is fine and herdr reattaches.
         if status == .live, channel?.isOpen != true {
@@ -258,8 +318,60 @@ final class HerdrHostSession {
         await start()
     }
 
+    /// While `.live` and quiet, probe the connection every `interval`. The
+    /// probe's traffic is the keepalive; its failure is the drop detector. On
+    /// failure the session recovers itself -- herdr reattaches to the same
+    /// remote session, so one silent redial is safe. If the redial fails,
+    /// `start()` lands on `.failed`, no new heartbeat is started, and the
+    /// overlay's Retry is the only way forward: no retry loop.
+    ///
+    /// Battery: in the background iOS suspends the process (the sleep simply
+    /// freezes), and while output is flowing `shouldProbe` skips the round
+    /// trip -- so probes only happen foreground AND idle, which is exactly
+    /// when NAT/firewall flow state is at risk of eviction.
+    private func startHeartbeat(generation: UInt64) {
+        heartbeat?.cancel()
+        let lastOutputAt = self.lastOutputAt
+        let policy = liveness
+        heartbeat = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: policy.interval)
+                guard !Task.isCancelled, let self else { return }
+                guard self.operationGeneration == generation, self.status == .live else { return }
+                let lastOutput = lastOutputAt.withLockedValue { $0 }
+                guard Self.shouldProbe(
+                    lastOutput: lastOutput,
+                    now: .now,
+                    interval: policy.interval
+                ) else { continue }
+                let alive = await self.connection.verifyAlive(timeout: policy.probeTimeout)
+                guard self.operationGeneration == generation, self.status == .live else { return }
+                guard !alive else { continue }
+                await self.recoverLostConnection()
+                // ensureLive (not start) so the outbox watch is re-established
+                // along with the PTY. Its own start() supersedes this task's
+                // generation, so the loop must end here either way.
+                await self.ensureLive()
+                return
+            }
+        }
+    }
+
+    /// The connection under a live tab is dead (a probe failed). Tear down the
+    /// channel AND the connection -- unlike a dead channel over a healthy
+    /// connection, reusing this one would just reopen a PTY over a corpse.
+    private func recoverLostConnection() async {
+        channel?.close()
+        channel = nil
+        terminal.pty = nil
+        status = .idle
+        await connection.disconnect()
+    }
+
     func stop() async {
         operationGeneration &+= 1
+        heartbeat?.cancel()
+        heartbeat = nil
         channel?.close()
         channel = nil
         // Its own channel, so it needs its own close -- otherwise every closed

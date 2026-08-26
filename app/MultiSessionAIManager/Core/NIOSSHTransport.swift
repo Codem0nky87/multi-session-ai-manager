@@ -795,7 +795,20 @@ private final class NIOPTYChannel: PTYChannel, @unchecked Sendable {
 
     func send(_ data: Data) {
         let writer = self.writer
-        Task { try? await writer.write(ByteBuffer(bytes: data)) }
+        let writerBox = self.writerBox
+        let closeSignal = self.closeSignal
+        Task {
+            do {
+                try await writer.write(ByteBuffer(bytes: data))
+            } catch {
+                // A failed channel write means the connection under it is gone.
+                // Marking closed is what turns "typing into a dead tab" from a
+                // silently swallowed error into a stale channel the session's
+                // reconciliation can actually see.
+                writerBox.markClosed()
+                await closeSignal.trip()
+            }
+        }
     }
 
     func resize(cols: Int, rows: Int) {

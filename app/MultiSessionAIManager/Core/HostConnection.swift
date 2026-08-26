@@ -120,6 +120,24 @@ final class HostConnection {
         )
     }
 
+    /// Round-trip probe over the existing authenticated connection. `false`
+    /// means the transport is dead or was never connected. Cancellation is
+    /// indeterminate and reports alive, so a view being torn down mid-probe
+    /// never declares a healthy link dead.
+    func verifyAlive(timeout: Duration) async -> Bool {
+        guard state == .connected else { return false }
+        do {
+            try await service.ping(timeout: timeout)
+            return true
+        } catch SSHCommandExecutionError.cancelled {
+            return true
+        } catch is CancellationError {
+            return true
+        } catch {
+            return false
+        }
+    }
+
     func disconnect() async {
         operationGeneration &+= 1
         state = .idle

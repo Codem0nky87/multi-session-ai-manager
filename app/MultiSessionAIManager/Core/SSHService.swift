@@ -66,6 +66,18 @@ final class SSHService: @unchecked Sendable {
         try await transport.runCommand(Self.loginShellCommand(command))
     }
 
+    /// Cheapest possible round trip on this connection: liveness proof and
+    /// NAT-refreshing keepalive traffic in one. Raw exec, no login shell --
+    /// the probe must not depend on the host's profile, and it must stay
+    /// small enough to run on a heartbeat.
+    func ping(timeout: Duration) async throws {
+        _ = try await transport.runCommand(.init(
+            command: "true",
+            timeout: timeout,
+            outputLimit: 1024
+        ))
+    }
+
     func run(
         _ command: String,
         timeout: Duration,
