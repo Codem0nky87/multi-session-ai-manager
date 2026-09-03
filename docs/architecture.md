@@ -84,7 +84,8 @@ PTY EOF/error ───────────────┐
                             ├─ selected + foreground?
 failed idle SSH heartbeat ──┘          │
                                        ▼
-                            attempts: now, +2 s, +5 s
+                       per-attempt waits: 0 s, 2 s, 5 s
+                         (third starts around t+7 s)
                                        │
                           probe cached authenticated SSH
                               │ alive             │ dead
@@ -94,19 +95,23 @@ failed idle SSH heartbeat ──┘          │
                                          ▼
                             attach the same Herdr session
                                          ▼
-                              reopen the outbox watcher
+                          attempt to reopen outbox watcher
 ```
 
 Each cycle makes at most three attach/connect attempts. Success cancels the
-remaining delays. Three failures leave `.failed`; the user can then press
-**Retry** for a fresh three attempts. Deselection or backgrounding cancels a
-pending automatic cycle, and a deliberate tab close is generation-fenced so its
-PTY callback cannot revive the session.
+remaining delays. The waits apply before their respective attempts: 0 seconds,
+then 2 seconds, then 5 seconds, so the third begins roughly 7 seconds after loss
+detection plus the time spent in earlier failed attempts. Three failures leave
+`.failed`; the user can then press **Retry** for a fresh three attempts.
+Deselection or backgrounding cancels a pending automatic cycle, and a deliberate
+tab close is generation-fenced so its PTY callback cannot revive the session.
 
 Before every attempt, the coordinator probes a cached authenticated SSH
 connection. A healthy connection is reused when only the Herdr client PTY died;
 a failed probe retires it so the attempt reconnects SSH. A successful attach
-also recreates the separate `tail -F` watcher for `~/.msam/outbox`.
+also attempts to reopen the separate `tail -F` watcher for `~/.msam/outbox`.
+Watcher setup is non-fatal; later lifecycle reconciliation, or a later manual
+Retry that reattaches the session, can attempt it again.
 
 ### What a host restart restores
 
@@ -117,7 +122,7 @@ remote state on the iPad.
 |---|---|
 | Client/SSH detached; Herdr server still running | The same live pane PTYs and processes. |
 | Herdr server stopped or host rebooted | Herdr's saved workspaces, tabs, pane layout, working directories, and focus. Old shell processes, servers, tests, and other arbitrary commands do not survive. |
-| Restored pane with a valid supported-agent session reference | Herdr can launch that agent's native resume command when the matching official integration is current and the agent still accepts the reference. |
+| Restored pane with a valid supported-agent session reference | Herdr may launch that agent's native resume command when the matching official integration is current, `[session] resume_agents_on_restore` remains enabled, and the agent still accepts the reference. |
 | Other restored pane | A new shell in the saved directory. |
 
 Herdr's pane screen-history replay is a separate opt-in feature. It stores
@@ -131,7 +136,10 @@ It compares them with `herdr integration status`; one explicit action installs
 or repairs missing, outdated, or repair-needed integrations sequentially, then
 re-probes. Results remain per-agent, so one failure does not conceal successful
 or already-current integrations. An unsupported agent, a missing/stale native
-reference, or an agent-side resume failure cannot be promised to restore.
+reference, or an agent-side resume failure cannot be promised to restore. Herdr
+0.8.2 enables `[session] resume_agents_on_restore` by default, but a host can
+disable it globally; a current integration is insufficient while that setting
+is false, and the Host Setup readiness card does not change it.
 
 ### Generation fencing
 

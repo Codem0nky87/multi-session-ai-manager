@@ -137,7 +137,11 @@ These integrations allow Herdr to record native session references exposed by
 supported agents. They do not make arbitrary terminal processes restartable,
 and detection alone does not guarantee a conversation will resume: the
 integration must be current, the pane must have reported a usable reference,
-and the agent must still be able to resume it.
+Herdr's global `[session] resume_agents_on_restore` setting must remain enabled,
+and the agent must still be able to resume it. Herdr 0.8.2 enables that setting
+by default, but the Session restore card checks integrations only; it neither
+inspects nor changes this host-wide setting. A **Ready** row is therefore a
+prerequisite, not a restore guarantee.
 
 Herdr always saves enough session state to recreate its workspace/tab/pane
 layout after its server restarts. Pane screen history is separate and opt-in
@@ -227,10 +231,11 @@ mean "launch or attach", so reopening the app returns you to the same live
 session. Two tabs on the same host with different names are independent.
 
 If the selected tab loses its PTY or SSH connection while the app is active,
-AI Manager tries to attach that same name immediately, then after 2 seconds,
-then after 5 seconds. It stops after the third failed attempt; **Retry** starts
-a new three-attempt budget. Unselected tabs remain lazy, and backgrounding the
-app cancels pending automatic attempts.
+the three attempts wait 0 seconds, then 2 seconds, then 5 seconds respectively.
+The third starts roughly 7 seconds after detection, plus time spent in the first
+two failed attempts. AI Manager then stops; **Retry** starts a new three-attempt
+budget. Unselected tabs remain lazy, and backgrounding the app cancels pending
+automatic attempts.
 
 When only the app's Herdr client PTY dies and the remote server survives,
 recovery probes and reuses the authenticated SSH connection, then reattaches to
@@ -240,5 +245,6 @@ restoration because the pane processes were killed. A host reboot or SSH loss
 instead fails the probe, disconnects the cached service, and redials SSH before
 attaching. Snapshot restoration returns the layout, but not arbitrary shells,
 servers, tests, or commands. Eligible supported-agent panes may resume their
-native conversations through current integrations; other panes return as new
-shells in their saved directories.
+native conversations only when the global restore setting remains enabled and
+the other prerequisites above hold; other panes return as new shells in their
+saved directories.

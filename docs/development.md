@@ -65,11 +65,9 @@ Prerequisites:
 - Herdr 0.8.2 or newer and SSH access are configured on the disposable host.
 - AI Manager has a named tab `msam-restore-test`, and that tab is selected while
   the app remains in the foreground.
-- The session has a recognizable multi-pane layout. If testing agent-native
-  restore, use a supported agent, create a real conversation, and confirm its
-  integration says `current` in **Host Setup → 4 · Session restore** (or with
-  `herdr integration status`). Give Herdr a few seconds to persist recent
-  layout/reference changes before stopping it.
+- Herdr's `[session] resume_agents_on_restore` setting is absent or `true`. It
+  defaults to `true` in Herdr 0.8.2, but a current agent integration cannot
+  restore a conversation when this host-wide switch is explicitly disabled.
 
 First inventory the exact test session from a separate SSH shell:
 
@@ -78,6 +76,16 @@ herdr --version
 herdr integration status
 herdr session list
 ```
+
+Before launching the agent under test, use **Host Setup → 4 · Session restore**
+to enable or repair its integration, then confirm its `current` state with
+`herdr integration status`. Only after that, start—or exit and restart—the
+supported agent inside the Herdr pane and create/use a real conversation. An
+agent that was already running when its integration was installed may not have
+loaded the hook or wrapper that reports its session reference, so it must be
+restarted for this diagnostic. Arrange a recognizable multi-pane layout and
+give Herdr a few seconds to persist recent layout/reference changes before
+stopping it.
 
 To test a Herdr-server death without rebooting the host, stop only the named
 test session:
@@ -90,8 +98,9 @@ The selected foreground tab should notice PTY EOF, show reconnecting state, and
 run `herdr --session msam-restore-test` again. It may recover on the immediate
 attempt. Expect the saved layout and working directories, not the killed shell
 processes. A supported agent conversation resumes only if Herdr saved a valid
-native reference through a current integration and the agent accepts it. With
-pane history left off, old screen contents are not replayed.
+native reference through a current integration, the global restore setting is
+enabled, and the agent accepts it. With pane history left off, old screen
+contents are not replayed.
 
 For the full host-loss path, repeat the setup and then, from the disposable
 host's separate SSH shell, run:
@@ -100,12 +109,14 @@ host's separate SSH shell, run:
 sudo reboot
 ```
 
-The app makes at most three automatic attempts: immediately, after 2 seconds,
-and after 5 seconds. A normal reboot may outlast that budget; after SSH is back,
-press **Retry** for a fresh three attempts. Confirm that no unselected tab tried
-to connect and that a successful selected-tab attach restores the same named
-layout. The file-transfer outbox watcher is reopened as part of a successful
-attach.
+The app makes at most three automatic attempts with per-attempt waits of 0
+seconds, then 2 seconds, then 5 seconds. The third starts roughly 7 seconds after
+detection, plus time spent in the earlier failures. A normal reboot may outlast
+that budget; after SSH is back, press **Retry** for a fresh three attempts.
+Confirm that no unselected tab tried to connect and that a successful
+selected-tab attach restores the same named layout. Recovery attempts to reopen
+the file-transfer outbox watcher; failure is non-fatal, and a later lifecycle
+reconciliation or manual Retry that reattaches can try the watcher again.
 
 Cleanup: close the named tab in AI Manager first so automatic recovery cannot
 recreate it, then run these commands on the disposable host:

@@ -34,18 +34,22 @@ iPad (AI Manager)                                    host
 
 One tab = one SSH channel = `herdr` (or `herdr --session <name>`) on that host.
 `herdr` means *launch **or attach to*** the persistent session. If the selected
-tab loses its PTY or SSH connection while the app is active, the app tries the
-same session immediately, then after 2 seconds, then after 5 seconds. After the
-third failure it stops and offers **Retry**, which starts a fresh three-attempt
-budget. Other tabs remain lazy and do not reconnect until selected.
+tab loses its PTY or SSH connection while the app is active, each recovery
+attempt has its own delay: 0 seconds, then 2 seconds, then 5 seconds. The third
+therefore begins roughly 7 seconds after detection, plus time spent in the
+earlier failed attempts. After the third failure the app stops and offers
+**Retry**, which starts a fresh three-attempt budget. Other tabs remain lazy and
+do not reconnect until selected.
 
 If Herdr's server survived, this reattaches to the original live panes and
 processes. If a host reboot or `herdr server stop` killed it, Herdr recreates the
 saved workspace/tab/pane layout; arbitrary shell processes are gone. A supported
-AI agent can resume its native conversation only when its current official
-Herdr integration captured a valid session reference. AI Manager does not
-enable Herdr's opt-in pane screen-history persistence, so recovery does not
-silently turn terminal output into a stored transcript.
+AI agent may resume its native conversation only when its current official
+Herdr integration captured a valid session reference, Herdr's global
+`[session] resume_agents_on_restore` setting remains enabled (the 0.8.2
+default), and the agent still accepts that reference. AI Manager does not enable
+Herdr's opt-in pane screen-history persistence, so recovery does not silently
+turn terminal output into a stored transcript.
 
 ## Features
 
@@ -129,7 +133,7 @@ action — never a plain Retry.
 | Document | Contents |
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | How a tab becomes an SSH PTY running Herdr; the module map |
-| [docs/host-setup.md](docs/host-setup.md) | Keys, host-key pinning, Herdr install, plugins |
+| [docs/host-setup.md](docs/host-setup.md) | Keys, host-key pinning, Herdr install, plugins, session-restore integrations |
 | [docs/terminal.md](docs/terminal.md) | Select mode, copy, pointer vs touch, and terminal geometry |
 | [docs/file-transfer.md](docs/file-transfer.md) | The two-way file bridge and the `herdr-file-viewer` seam |
 | [docs/port-forwarding.md](docs/port-forwarding.md) | SSH web tunnels, second hops, and the in-app browser |
