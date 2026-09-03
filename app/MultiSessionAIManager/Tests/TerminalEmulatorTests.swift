@@ -269,6 +269,67 @@ final class TestTerminalFrameClock: TerminalFrameClock {
         #expect(clock.stopCount == 1)
     }
 
+    @Test func hiddenAndNewlySelectedOutputCoalescesIntoOneVisibleFrame() async {
+        let clock = TestTerminalFrameClock()
+        let e = TerminalEmulator(
+            cols: 20,
+            rows: 5,
+            history: .hostOwned,
+            frameClock: clock
+        )
+        e.isVisible = false
+
+        e.feed(Data("hidden".utf8))
+        await Task.yield()
+
+        #expect(e.coreCursorColumn == 6)
+        #expect(e.renderGeneration == 0)
+        #expect(e.lines.isEmpty)
+        #expect(clock.startCount == 0)
+        #expect(!clock.isRunning)
+
+        e.isVisible = true
+        e.feed(Data(" selected".utf8))
+        await Task.yield()
+
+        #expect(clock.startCount == 1)
+        #expect(clock.isRunning)
+
+        clock.fire()
+
+        #expect(e.visibleText().contains("hidden selected"))
+        #expect(e.lines.map(\.plainText).joined(separator: "\n").contains("hidden selected"))
+        #expect(e.renderGeneration == 1)
+        #expect(!clock.isRunning)
+        #expect(clock.stopCount == 1)
+    }
+
+    @Test func repeatedVisibleAssignmentDoesNotScheduleAFrame() {
+        let clock = TestTerminalFrameClock()
+        let e = TerminalEmulator(frameClock: clock)
+
+        e.isVisible = true
+        e.isVisible = true
+
+        #expect(clock.startCount == 0)
+        #expect(clock.stopCount == 0)
+        #expect(!clock.isRunning)
+    }
+
+    @Test func repeatedHiddenAssignmentDoesNotCreateWork() {
+        let clock = TestTerminalFrameClock()
+        let e = TerminalEmulator(frameClock: clock)
+
+        e.isVisible = false
+        e.isVisible = false
+
+        #expect(clock.startCount == 0)
+        #expect(clock.stopCount == 0)
+        #expect(!clock.isRunning)
+        #expect(e.renderGeneration == 0)
+        #expect(e.lines.isEmpty)
+    }
+
     @Test func hiddenConfigurationChangesWaitForOneVisibleRepaint() {
         let clock = TestTerminalFrameClock()
         let e = TerminalEmulator(cols: 20, rows: 5, fontSize: 13, frameClock: clock)

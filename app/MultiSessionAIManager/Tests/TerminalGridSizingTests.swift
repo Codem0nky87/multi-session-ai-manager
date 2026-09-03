@@ -3,6 +3,16 @@ import Foundation
 import Testing
 @testable import MultiSessionAIManager
 
+@Suite struct TerminalVisibilityPolicyTests {
+
+    @Test func onlyAMountedViewInAnActiveSceneRenders() {
+        #expect(TerminalVisibilityPolicy.shouldRender(isMounted: true, isSceneActive: true))
+        #expect(!TerminalVisibilityPolicy.shouldRender(isMounted: true, isSceneActive: false))
+        #expect(!TerminalVisibilityPolicy.shouldRender(isMounted: false, isSceneActive: true))
+        #expect(!TerminalVisibilityPolicy.shouldRender(isMounted: false, isSceneActive: false))
+    }
+}
+
 /// The scroll view follows the bottom, so content even a fraction of a point
 /// taller than the viewport scrolls down and shaves the TOP row — where Herdr
 /// draws its pane labels. That is the bug these pin.

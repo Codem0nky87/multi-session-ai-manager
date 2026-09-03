@@ -42,8 +42,10 @@ struct TerminalEmulatorView: View {
 
     /// Shared terminal appearance — drives the live render font size.
     @Environment(TerminalSettings.self) private var settings
+    @Environment(\.scenePhase) private var scenePhase
 
     @State private var localKeyInputController = KeyInputController()
+    @State private var isMounted = false
 
     private var resolvedInputController: KeyInputController {
         inputController ?? localKeyInputController
@@ -128,7 +130,8 @@ struct TerminalEmulatorView: View {
                 copySelection()
             }
             .onAppear {
-                emulator.isVisible = true
+                isMounted = true
+                synchronizeVisibility()
                 // Font size FIRST so cols/rows are derived from the new cell metrics.
                 emulator.setFontSize(settings.fontSize)
                 applySize(geometry.size)
@@ -146,6 +149,7 @@ struct TerminalEmulatorView: View {
                 emulator.setFontSize(newSize)
                 applySize(lastSize)
             }
+            .onChange(of: scenePhase) { _, _ in synchronizeVisibility() }
             .onChange(of: inputEnabled) { _, enabled in
                 if !enabled {
                     resolvedInputController.blur()
@@ -178,7 +182,10 @@ struct TerminalEmulatorView: View {
                     pinchStartSize = nil
                 }
         )
-        .onDisappear { emulator.isVisible = false }
+        .onDisappear {
+            isMounted = false
+            synchronizeVisibility()
+        }
     }
 
     // MARK: - Text selection + copy
@@ -446,6 +453,19 @@ struct TerminalEmulatorView: View {
         } else {
             emulator.feedInputToPTY(bytes)
         }
+    }
+
+    private func synchronizeVisibility() {
+        emulator.isVisible = TerminalVisibilityPolicy.shouldRender(
+            isMounted: isMounted,
+            isSceneActive: scenePhase == .active
+        )
+    }
+}
+
+struct TerminalVisibilityPolicy {
+    static func shouldRender(isMounted: Bool, isSceneActive: Bool) -> Bool {
+        isMounted && isSceneActive
     }
 }
 
