@@ -204,6 +204,30 @@ import Testing
         #expect(source.contains(".toastHost(toastCenter)"))
     }
 
+    @Test func hostSetupWiresSessionRestoreToTheSharedConnection() throws {
+        let source = try sourceFile("UI/Hosts/HostSetupHelpSheet.swift")
+
+        #expect(source.components(separatedBy: "HostConnection(").count - 1 == 1)
+        #expect(source.contains("_integrationManager = State("))
+        #expect(source.contains("HerdrIntegrationManager(connection: connection)"))
+        #expect(source.contains("if let integrationManager, isHerdrPresent"))
+        #expect(source.contains("setupSectionLabel(\"4 · Session restore\")"))
+        #expect(source.contains("await manager.probe()"))
+        #expect(source.contains("await manager.installOrRepairAll()"))
+        #expect(source.contains("let hasActionableAgents = manager.agents.contains"))
+        #expect(source.contains("enabled: !isInstalling"))
+
+        #expect(source.contains("host-setup-session-restore-card"))
+        #expect(source.contains("host-setup-session-restore-probe"))
+        #expect(source.contains("host-setup-session-restore-install"))
+        #expect(source.contains("host-setup-session-restore-agent-"))
+
+        #expect(source.contains("restores saved layouts after a host restart"))
+        #expect(source.contains("cannot restore arbitrary processes"))
+        #expect(source.contains("agent conversations can resume"))
+        #expect(source.contains("Pane history is not automatically captured or retained"))
+    }
+
     /// Replaces a test that handed the SAME object references to two `RootView`
     /// values and then asserted they were identical -- true by Swift reference
     /// semantics, so it could not fail. The real risk lives in the composition

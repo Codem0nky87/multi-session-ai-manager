@@ -290,6 +290,72 @@ struct HerdrIntegrationManagerTests {
         #expect(actionableAndUnknown == .workNeeded(count: 1))
     }
 
+    @Test func pureSummaryCoversEveryHostSetupPresentationState() throws {
+        let claude = try #require(
+            HerdrIntegrationManager.targets.first { $0.herdrTarget == "claude" })
+        let codex = try #require(
+            HerdrIntegrationManager.targets.first { $0.herdrTarget == "codex" })
+        let current = HerdrAgentIntegration(
+            target: claude,
+            status: .current(version: "v4")
+        )
+        let actionable = HerdrAgentIntegration(target: codex, status: .notInstalled)
+        let failure = HerdrIntegrationFailure(
+            herdrTarget: "codex",
+            displayName: "Codex",
+            message: "Codex: Integration is still not ready."
+        )
+
+        #expect(
+            HerdrIntegrationManager.summary(state: .idle, agents: [], failures: []) == .idle)
+        #expect(
+            HerdrIntegrationManager.summary(state: .probing, agents: [], failures: [])
+                == .probing)
+        #expect(
+            HerdrIntegrationManager.summary(state: .ready, agents: [], failures: [])
+                == .noAgents)
+        #expect(
+            HerdrIntegrationManager.summary(state: .ready, agents: [current], failures: [])
+                == .allCurrent)
+        #expect(
+            HerdrIntegrationManager.summary(
+                state: .ready,
+                agents: [current, actionable],
+                failures: []
+            ) == .workNeeded(count: 1))
+        #expect(
+            HerdrIntegrationManager.summary(
+                state: .installing,
+                agents: [actionable],
+                failures: []
+            ) == .installing)
+        #expect(
+            HerdrIntegrationManager.summary(
+                state: .ready,
+                agents: [current, actionable],
+                failures: [failure]
+            ) == .partialFailure(messages: [failure.message]))
+        #expect(
+            HerdrIntegrationManager.summary(
+                state: .failed("Host unavailable"),
+                agents: [],
+                failures: []
+            ) == .probeFailure("Host unavailable"))
+    }
+
+    @Test func integrationStatusesHaveHumanFriendlyLabels() {
+        #expect(HerdrIntegrationStatus.current(version: "v4").displayText == "Ready (v4)")
+        #expect(HerdrIntegrationStatus.current(version: nil).displayText == "Ready")
+        #expect(HerdrIntegrationStatus.notInstalled.displayText == "Not enabled")
+        #expect(
+            HerdrIntegrationStatus.outdated(versions: "v2 < v3").displayText
+                == "Update needed (v2 < v3)")
+        #expect(
+            HerdrIntegrationStatus.needsRepair(version: "v7").displayText
+                == "Repair needed (v7)")
+        #expect(HerdrIntegrationStatus.unknown.displayText == "Status unavailable")
+    }
+
     @Test func installAllRunsEachActionableIntegrationSequentiallyThenReprobes() async throws {
         let transport = FakeSSHTransport()
         let manager = try makeManager(transport: transport)

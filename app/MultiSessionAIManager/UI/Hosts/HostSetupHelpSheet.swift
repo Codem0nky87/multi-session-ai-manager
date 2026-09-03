@@ -14,6 +14,7 @@ struct HostSetupHelpSheet: View {
     /// The Herdr card is inert until the user starts it — see the card body.
     @State private var herdrStarted = false
     @State private var pluginManager: HerdrPluginManagerModel?
+    @State private var integrationManager: HerdrIntegrationManager?
     @State private var showingPlugins = false
 
     /// Pass `keyStore`/`knownHosts` to enable the Herdr install card. Callers
@@ -36,14 +37,18 @@ struct HostSetupHelpSheet: View {
             let installer = HerdrInstaller(connection: connection)
             _installer = State(initialValue: installer)
             _pluginManager = State(initialValue: HerdrPluginManagerModel(connection: connection))
-            _lifecycle = State(initialValue: HerdrSSHConnectionLifecycle(
-                connect: { await connection.connect() },
-                disconnect: { await connection.disconnect() }
-            ))
+            _integrationManager = State(
+                initialValue: HerdrIntegrationManager(connection: connection))
+            _lifecycle = State(
+                initialValue: HerdrSSHConnectionLifecycle(
+                    connect: { await connection.connect() },
+                    disconnect: { await connection.disconnect() }
+                ))
         } else {
             _installer = State(initialValue: nil)
             _lifecycle = State(initialValue: nil)
             _pluginManager = State(initialValue: nil)
+            _integrationManager = State(initialValue: nil)
         }
     }
 
@@ -61,6 +66,9 @@ struct HostSetupHelpSheet: View {
                         // is Herdr's own CLI, so there is nothing to talk to
                         // before then.
                         if let pluginManager, isHerdrPresent { pluginsCard(pluginManager) }
+                        if let integrationManager, isHerdrPresent {
+                            sessionRestoreCard(integrationManager)
+                        }
                     }
                     .padding(Theme.Space.md)
                     .frame(maxWidth: 760)
@@ -136,7 +144,9 @@ struct HostSetupHelpSheet: View {
                 }
                 .accessibilityIdentifier("host.setup.test.route")
 
-                essentialGuidance("This test opens only a bounded TCP connection. It sends no HTTP, TLS, or SSH application data and cannot prove SSH authentication.")
+                essentialGuidance(
+                    "This test opens only a bounded TCP connection. It sends no HTTP, TLS, or SSH application data and cannot prove SSH authentication."
+                )
             }
         }
     }
@@ -188,6 +198,187 @@ struct HostSetupHelpSheet: View {
         }
     }
 
+    /// Explains and provisions the native agent hooks that let Herdr resume a
+    /// supported conversation after its layout is recreated.
+    private func sessionRestoreCard(_ manager: HerdrIntegrationManager) -> some View {
+        let hasActionableAgents = manager.agents.contains { $0.status.needsProvisioning }
+        let isInstalling = manager.state == .installing
+        let showsInstallAction = hasActionableAgents && (manager.state == .ready || isInstalling)
+
+        return GlassCard {
+            VStack(alignment: .leading, spacing: Theme.Space.md) {
+                setupSectionLabel("4 · Session restore")
+                Text(
+                    "Herdr restores saved layouts after a host restart, but it cannot restore arbitrary processes. Supported agent conversations can resume when their integrations are enabled. Pane history is not automatically captured or retained."
+                )
+                .font(.system(.callout, design: .rounded, weight: .regular))
+                .foregroundStyle(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+                sessionRestoreSummary(manager.summary)
+
+                if !manager.agents.isEmpty {
+                    VStack(spacing: Theme.Space.sm) {
+                        ForEach(manager.agents) { agent in
+                            sessionRestoreAgentRow(agent)
+                        }
+                    }
+                }
+
+                if !manager.failures.isEmpty {
+                    VStack(alignment: .leading, spacing: Theme.Space.sm) {
+                        Text("NEEDS ATTENTION")
+                            .font(.system(.caption, design: .monospaced, weight: .semibold))
+                            .foregroundStyle(Theme.warning)
+                            .kerning(1.2)
+                        ForEach(Array(manager.failures.enumerated()), id: \.offset) {
+                            index, failure in
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(failure.displayName)
+                                    .font(
+                                        .system(.subheadline, design: .rounded, weight: .semibold)
+                                    )
+                                    .foregroundStyle(Theme.textPrimary)
+                                Text(failure.message)
+                                    .font(.system(.footnote, design: .rounded, weight: .regular))
+                                    .foregroundStyle(Theme.danger)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .accessibilityElement(children: .combine)
+                            .accessibilityIdentifier(
+                                "host-setup-session-restore-failure-\(failure.herdrTarget)-\(index)"
+                            )
+                        }
+                    }
+                }
+
+                if showsInstallAction {
+                    primaryActionButton(
+                        title: "Enable or repair all",
+                        systemImage: "arrow.triangle.2.circlepath",
+                        isLoading: isInstalling,
+                        enabled: !isInstalling
+                    ) {
+                        Task { await manager.installOrRepairAll() }
+                    }
+                    .accessibilityIdentifier("host-setup-session-restore-install")
+                }
+
+                if manager.state != .probing && !isInstalling {
+                    herdrActionButton(
+                        manager.state == .idle ? "Check integrations" : "Check again",
+                        id: "host-setup-session-restore-probe"
+                    ) {
+                        await manager.probe()
+                    }
+                }
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("host-setup-session-restore-card")
+        .task {
+            await manager.probe()
+        }
+    }
+
+    @ViewBuilder
+    private func sessionRestoreSummary(_ summary: HerdrIntegrationSummary) -> some View {
+        Group {
+            switch summary {
+            case .idle:
+                restoreStatusLabel(
+                    "Ready to check agent integrations.",
+                    systemImage: "circle.dashed",
+                    tint: Theme.textMuted
+                )
+            case .probing:
+                restoreStatusLabel(
+                    "Checking installed agents and integration status…",
+                    systemImage: "arrow.triangle.2.circlepath",
+                    tint: Theme.textSecondary
+                )
+            case .noAgents:
+                restoreStatusLabel(
+                    "No supported AI agents were detected on this host.",
+                    systemImage: "magnifyingglass",
+                    tint: Theme.textSecondary
+                )
+            case .allCurrent:
+                restoreStatusLabel(
+                    "All detected agent integrations are ready.",
+                    systemImage: "checkmark.seal.fill",
+                    tint: Theme.success
+                )
+            case .workNeeded(let count):
+                restoreStatusLabel(
+                    "\(count) detected agent \(count == 1 ? "needs" : "integrations need") enabling or repair.",
+                    systemImage: "exclamationmark.triangle.fill",
+                    tint: Theme.warning
+                )
+            case .statusUnavailable(let count):
+                restoreStatusLabel(
+                    "Integration status is unavailable for \(count) detected \(count == 1 ? "agent" : "agents"). No changes will be made until Herdr reports a supported state.",
+                    systemImage: "questionmark.circle.fill",
+                    tint: Theme.warning
+                )
+            case .installing:
+                restoreStatusLabel(
+                    "Enabling and verifying agent integrations…",
+                    systemImage: "arrow.down.circle",
+                    tint: Theme.textSecondary
+                )
+            case .partialFailure(let messages):
+                restoreStatusLabel(
+                    "\(messages.count) integration \(messages.count == 1 ? "issue remains" : "issues remain") after verification.",
+                    systemImage: "exclamationmark.triangle.fill",
+                    tint: Theme.warning
+                )
+            case .probeFailure(let message):
+                restoreStatusLabel(
+                    "Integration status unavailable: \(message)",
+                    systemImage: "xmark.octagon.fill",
+                    tint: Theme.danger
+                )
+            }
+        }
+        .accessibilityIdentifier("host-setup-session-restore-summary")
+    }
+
+    private func restoreStatusLabel(
+        _ text: String,
+        systemImage: String,
+        tint: Color
+    ) -> some View {
+        Label(text, systemImage: systemImage)
+            .font(.system(.subheadline, design: .rounded, weight: .medium))
+            .foregroundStyle(tint)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func sessionRestoreAgentRow(_ agent: HerdrAgentIntegration) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: Theme.Space.sm) {
+            Text(agent.target.displayName)
+                .font(.system(.subheadline, design: .rounded, weight: .semibold))
+                .foregroundStyle(Theme.textPrimary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text(agent.status.displayText)
+                .font(.system(.footnote, design: .rounded, weight: .medium))
+                .foregroundStyle(agent.status.isCurrent ? Theme.success : Theme.warning)
+                .multilineTextAlignment(.trailing)
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous)
+                .fill(Theme.surface)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous)
+                .strokeBorder(Theme.hairline)
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("host-setup-session-restore-agent-\(agent.target.herdrTarget)")
+    }
+
     /// Install/update Herdr on this host over the authenticated SSH connection.
     /// Only rendered when the sheet was given a connection — the host list can
     /// present this sheet purely as guidance, with no SSH session behind it.
@@ -195,10 +386,12 @@ struct HostSetupHelpSheet: View {
         GlassCard {
             VStack(alignment: .leading, spacing: Theme.Space.md) {
                 setupSectionLabel("2 · Herdr on this host")
-                Text("AI Manager runs Herdr on the host over SSH. Install it here, or update an existing installation.")
-                    .font(.system(.callout, design: .rounded, weight: .regular))
-                    .foregroundStyle(Theme.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                Text(
+                    "AI Manager runs Herdr on the host over SSH. Install it here, or update an existing installation."
+                )
+                .font(.system(.callout, design: .rounded, weight: .regular))
+                .foregroundStyle(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
 
                 herdrConnectionBody(installer)
             }
@@ -223,105 +416,108 @@ struct HostSetupHelpSheet: View {
     @ViewBuilder
     private func herdrConnectionBody(_ installer: HerdrInstaller) -> some View {
         Group {
-                // The installer needs an authenticated connection, so the
-                // connection's own state comes first — otherwise the card would
-                // report "authenticate SSH first" while it is mid-handshake.
-                switch installer.connection.state {
-                case .idle, .connecting:
-                    Label("Connecting to this host…", systemImage: "arrow.triangle.2.circlepath")
-                        .font(.system(.callout, design: .rounded, weight: .medium))
-                        .foregroundStyle(Theme.textSecondary)
-                        .accessibilityIdentifier("host.setup.herdr.connecting")
-                case .failed(let message):
-                    Label(message, systemImage: "xmark.octagon.fill")
-                        .font(.system(.subheadline, design: .rounded, weight: .regular))
-                        .foregroundStyle(Theme.danger)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .accessibilityIdentifier("host.setup.herdr.sshfailed")
-                case .hostKeyChanged(let fingerprint):
-                    Label(
-                        "This host's SSH key changed (\(fingerprint)). Resolve it in Port Forwarding before installing Herdr.",
-                        systemImage: "exclamationmark.shield.fill"
-                    )
+            // The installer needs an authenticated connection, so the
+            // connection's own state comes first — otherwise the card would
+            // report "authenticate SSH first" while it is mid-handshake.
+            switch installer.connection.state {
+            case .idle, .connecting:
+                Label("Connecting to this host…", systemImage: "arrow.triangle.2.circlepath")
+                    .font(.system(.callout, design: .rounded, weight: .medium))
+                    .foregroundStyle(Theme.textSecondary)
+                    .accessibilityIdentifier("host.setup.herdr.connecting")
+            case .failed(let message):
+                Label(message, systemImage: "xmark.octagon.fill")
                     .font(.system(.subheadline, design: .rounded, weight: .regular))
                     .foregroundStyle(Theme.danger)
                     .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityIdentifier("host.setup.herdr.hostkey")
-                case .connected:
-                    herdrInstallerBody(installer)
-                }
+                    .accessibilityIdentifier("host.setup.herdr.sshfailed")
+            case .hostKeyChanged(let fingerprint):
+                Label(
+                    "This host's SSH key changed (\(fingerprint)). Resolve it in Port Forwarding before installing Herdr.",
+                    systemImage: "exclamationmark.shield.fill"
+                )
+                .font(.system(.subheadline, design: .rounded, weight: .regular))
+                .foregroundStyle(Theme.danger)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("host.setup.herdr.hostkey")
+            case .connected:
+                herdrInstallerBody(installer)
+            }
         }
     }
 
     @ViewBuilder
     private func herdrInstallerBody(_ installer: HerdrInstaller) -> some View {
         Group {
-                switch installer.state {
-                case .idle, .probing:
-                    Label("Checking this host…", systemImage: "arrow.triangle.2.circlepath")
-                        .font(.system(.callout, design: .rounded, weight: .medium))
-                        .foregroundStyle(Theme.textSecondary)
-                        .accessibilityIdentifier("host.setup.herdr.probing")
+            switch installer.state {
+            case .idle, .probing:
+                Label("Checking this host…", systemImage: "arrow.triangle.2.circlepath")
+                    .font(.system(.callout, design: .rounded, weight: .medium))
+                    .foregroundStyle(Theme.textSecondary)
+                    .accessibilityIdentifier("host.setup.herdr.probing")
 
-                case .absent(let curlAvailable):
-                    Label("Herdr is not installed on this host.", systemImage: "exclamationmark.triangle.fill")
-                        .font(.system(.callout, design: .rounded, weight: .medium))
-                        .foregroundStyle(Theme.warning)
-                        .accessibilityIdentifier("host.setup.herdr.absent")
-                    if curlAvailable {
-                        commandRow(
-                            title: "Will run on the host",
-                            command: HerdrInstaller.installCommand,
-                            identifier: "host.setup.herdr.command"
-                        )
-                        herdrActionButton("Install Herdr", id: "host.setup.herdr.install") {
-                            await installer.install()
-                        }
-                    } else {
-                        Label(
-                            "This host has no curl, which Herdr's installer needs. Install curl on the host, then try again.",
-                            systemImage: "xmark.octagon.fill"
-                        )
-                        .font(.system(.subheadline, design: .rounded, weight: .regular))
-                        .foregroundStyle(Theme.danger)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .accessibilityIdentifier("host.setup.herdr.nocurl")
+            case .absent(let curlAvailable):
+                Label(
+                    "Herdr is not installed on this host.",
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .font(.system(.callout, design: .rounded, weight: .medium))
+                .foregroundStyle(Theme.warning)
+                .accessibilityIdentifier("host.setup.herdr.absent")
+                if curlAvailable {
+                    commandRow(
+                        title: "Will run on the host",
+                        command: HerdrInstaller.installCommand,
+                        identifier: "host.setup.herdr.command"
+                    )
+                    herdrActionButton("Install Herdr", id: "host.setup.herdr.install") {
+                        await installer.install()
                     }
-
-                case .present(let version):
-                    // Nothing to do: state it and stop. An "Install Herdr"
-                    // button on a host that already has it is noise the user
-                    // has to read past every time.
-                    Label("Herdr \(version) installed", systemImage: "checkmark.seal.fill")
-                        .font(.system(.callout, design: .rounded, weight: .semibold))
-                        .foregroundStyle(Theme.success)
-                        .accessibilityIdentifier("host.setup.herdr.present")
-                    herdrActionButton("Update to latest", id: "host.setup.herdr.update") {
-                        await installer.update()
-                    }
-
-                case .installing:
-                    Label("Working on the host…", systemImage: "arrow.down.circle")
-                        .font(.system(.callout, design: .rounded, weight: .medium))
-                        .foregroundStyle(Theme.textSecondary)
-                        .accessibilityIdentifier("host.setup.herdr.installing")
-
-                case .ready(let version):
-                    Label("Herdr \(version) is ready.", systemImage: "checkmark.seal.fill")
-                        .font(.system(.callout, design: .rounded, weight: .medium))
-                        .foregroundStyle(Theme.success)
-                        .accessibilityIdentifier("host.setup.herdr.ready")
-
-                case .failed(let message):
-                    Label(message, systemImage: "xmark.octagon.fill")
-                        .font(.system(.subheadline, design: .rounded, weight: .regular))
-                        .foregroundStyle(Theme.danger)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .accessibilityIdentifier("host.setup.herdr.failed")
-                    herdrActionButton("Try again", id: "host.setup.herdr.retry") {
-                        await installer.probe()
-                    }
+                } else {
+                    Label(
+                        "This host has no curl, which Herdr's installer needs. Install curl on the host, then try again.",
+                        systemImage: "xmark.octagon.fill"
+                    )
+                    .font(.system(.subheadline, design: .rounded, weight: .regular))
+                    .foregroundStyle(Theme.danger)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("host.setup.herdr.nocurl")
                 }
+
+            case .present(let version):
+                // Nothing to do: state it and stop. An "Install Herdr"
+                // button on a host that already has it is noise the user
+                // has to read past every time.
+                Label("Herdr \(version) installed", systemImage: "checkmark.seal.fill")
+                    .font(.system(.callout, design: .rounded, weight: .semibold))
+                    .foregroundStyle(Theme.success)
+                    .accessibilityIdentifier("host.setup.herdr.present")
+                herdrActionButton("Update to latest", id: "host.setup.herdr.update") {
+                    await installer.update()
+                }
+
+            case .installing:
+                Label("Working on the host…", systemImage: "arrow.down.circle")
+                    .font(.system(.callout, design: .rounded, weight: .medium))
+                    .foregroundStyle(Theme.textSecondary)
+                    .accessibilityIdentifier("host.setup.herdr.installing")
+
+            case .ready(let version):
+                Label("Herdr \(version) is ready.", systemImage: "checkmark.seal.fill")
+                    .font(.system(.callout, design: .rounded, weight: .medium))
+                    .foregroundStyle(Theme.success)
+                    .accessibilityIdentifier("host.setup.herdr.ready")
+
+            case .failed(let message):
+                Label(message, systemImage: "xmark.octagon.fill")
+                    .font(.system(.subheadline, design: .rounded, weight: .regular))
+                    .foregroundStyle(Theme.danger)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("host.setup.herdr.failed")
+                herdrActionButton("Try again", id: "host.setup.herdr.retry") {
+                    await installer.probe()
+                }
+            }
         }
     }
 
