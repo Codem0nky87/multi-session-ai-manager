@@ -74,9 +74,11 @@ silently turn terminal output into a stored transcript.
   restore for every supported AI agent detected in the host's login PATH. One
   explicit action enables or repairs the integrations that need work, and
   reports per-agent partial failures without hiding integrations already ready.
-  Host-changing actions require a tap, commands come from fixed app-owned
-  values, and Herdr's verified state on the host decides what is reported —
-  never an exit status alone.
+  Host-changing actions require a tap. Herdr install/update commands and
+  integration targets come from fixed app-owned values; plugin repository,
+  subdirectory, ref, and manifest action IDs are validated and shell-quoted
+  as appropriate before commands are constructed. Herdr's verified state on the
+  host decides what is reported — never an exit status alone.
 - **One-time password key install** — authenticate once with a password and the
   app appends your public key to the host's `authorized_keys`. The password is
   used for that single connection and is **never stored**. Copying the exported

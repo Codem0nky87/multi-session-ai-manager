@@ -63,8 +63,10 @@ connection looks like. Verify the fingerprint out of band before you take it.
 ## The guided Host Setup sheet
 
 **Manage Hosts → (host) → Host Setup** walks four steps. Host-changing actions
-require an explicit tap, and their command inputs come from fixed app-owned
-values rather than remote output.
+require an explicit tap. Herdr install/update commands and integration targets
+come from fixed app-owned values. Plugin `owner/repo[/subdir]` and ref inputs,
+plus manifest action IDs, are validated and shell-quoted as appropriate before
+commands are constructed.
 
 ### 1 · Test the private route
 
@@ -230,10 +232,13 @@ then after 5 seconds. It stops after the third failed attempt; **Retry** starts
 a new three-attempt budget. Unselected tabs remain lazy, and backgrounding the
 app cancels pending automatic attempts.
 
-When only the client or network link died, attaching reaches the still-running
-Herdr server and its original processes. If a reboot or explicit server stop
-killed Herdr, the SSH connection is re-established first and the attach command
-starts Herdr's snapshot restoration. The layout returns, but arbitrary shells,
-servers, tests, and commands do not. Eligible supported-agent panes may resume
-their native conversations through current integrations; other panes return as
-new shells in their saved directories.
+When only the app's Herdr client PTY dies and the remote server survives,
+recovery probes and reuses the authenticated SSH connection, then reattaches to
+the original processes. An explicit Herdr server/session stop also leaves SSH
+up, so recovery reuses that transport; its attach starts Herdr's snapshot
+restoration because the pane processes were killed. A host reboot or SSH loss
+instead fails the probe, disconnects the cached service, and redials SSH before
+attaching. Snapshot restoration returns the layout, but not arbitrary shells,
+servers, tests, or commands. Eligible supported-agent panes may resume their
+native conversations through current integrations; other panes return as new
+shells in their saved directories.
