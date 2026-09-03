@@ -104,6 +104,38 @@ import Testing
     }
 }
 
+@Suite struct TerminalLayoutAnchorGateTests {
+
+    @Test func repeatedRequestsCoalesceUntilThePendingAnchorRuns() {
+        var gate = TerminalLayoutAnchorGate()
+
+        let firstRequest = gate.request()
+        let repeatedRequest = gate.request()
+        let firstConsume = gate.consume()
+        let repeatedConsume = gate.consume()
+        let requestAfterConsume = gate.request()
+
+        #expect(firstRequest)
+        #expect(!repeatedRequest)
+        #expect(firstConsume)
+        #expect(!repeatedConsume)
+        #expect(requestAfterConsume)
+    }
+
+    @Test func cancellingDropsTheQueuedAnchor() {
+        var gate = TerminalLayoutAnchorGate()
+
+        let firstRequest = gate.request()
+        gate.cancel()
+        let consumeAfterCancel = gate.consume()
+        let requestAfterCancel = gate.request()
+
+        #expect(firstRequest)
+        #expect(!consumeAfterCancel)
+        #expect(requestAfterCancel)
+    }
+}
+
 @Suite struct TerminalScrollInsetTests {
 
     @Test func aTerminalThatFitsExactlyIsNotScrollable() {

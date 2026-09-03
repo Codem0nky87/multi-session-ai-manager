@@ -443,6 +443,26 @@ struct TerminalEmulatorView: View {
     }
 }
 
+struct TerminalLayoutAnchorGate {
+    private var pending = false
+
+    mutating func request() -> Bool {
+        guard !pending else { return false }
+        pending = true
+        return true
+    }
+
+    mutating func consume() -> Bool {
+        guard pending else { return false }
+        pending = false
+        return true
+    }
+
+    mutating func cancel() {
+        pending = false
+    }
+}
+
 /// A UIKit scroll host for the terminal body.
 ///
 /// The terminal rows are still rendered with SwiftUI, but direct touch scrolling is
@@ -529,6 +549,7 @@ private struct TerminalScrollContainer<Content: View>: UIViewControllerRepresent
         var isAltScreen = false
         var cellSize: CGSize = .zero
         var isUserInteracting = false
+        var onUserInteractionBegan: () -> Void = {}
         weak var directScrollRecognizer: UIPanGestureRecognizer?
         weak var wheelRecognizer: UIPanGestureRecognizer?
         private var directScrollSentTicks = 0
@@ -549,6 +570,7 @@ private struct TerminalScrollContainer<Content: View>: UIViewControllerRepresent
 
         func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
             isUserInteracting = true
+            onUserInteractionBegan()
         }
 
         func scrollViewDidScroll(_ scrollView: UIScrollView) {
@@ -672,12 +694,16 @@ private struct TerminalScrollContainer<Content: View>: UIViewControllerRepresent
         private let coordinator: Coordinator
         private var lastScrollVersion: Int?
         private var followsBottom = true
+        private var anchorGate = TerminalLayoutAnchorGate()
 
         init(rootView: HostedContent, coordinator: Coordinator) {
             self.hostingController = UIHostingController(rootView: rootView)
             self.coordinator = coordinator
             super.init(nibName: nil, bundle: nil)
             hostingController.sizingOptions = [.intrinsicContentSize]
+            coordinator.onUserInteractionBegan = { [weak self] in
+                self?.anchorGate.cancel()
+            }
         }
 
         required init?(coder: NSCoder) {
@@ -813,18 +839,18 @@ private struct TerminalScrollContainer<Content: View>: UIViewControllerRepresent
             let changed = lastScrollVersion != scrollVersion
             lastScrollVersion = scrollVersion
             if TerminalScrollAnchor.pinsToTop(isAltScreen: isAltScreen) {
-                pinToTopAfterLayout()
+                scheduleAnchorAfterLayout()
             } else if canAutoFollow && changed {
-                scrollToBottomAfterLayout()
+                scheduleAnchorAfterLayout()
             }
         }
 
         override func viewDidLayoutSubviews() {
             super.viewDidLayoutSubviews()
             if TerminalScrollAnchor.pinsToTop(isAltScreen: coordinator.isAltScreen) {
-                pinToTopAfterLayout()
+                scheduleAnchorAfterLayout()
             } else if canAutoFollow {
-                scrollToBottomAfterLayout()
+                scheduleAnchorAfterLayout()
             }
         }
 
@@ -835,35 +861,24 @@ private struct TerminalScrollContainer<Content: View>: UIViewControllerRepresent
             ) && !coordinator.isUserInteracting
         }
 
-        private func scrollToBottomAfterLayout() {
+        private func scheduleAnchorAfterLayout() {
+            guard anchorGate.request() else { return }
             DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                guard self.canAutoFollow else { return }
-                self.invalidateHostedContentLayout()
-                self.hostingController.view.layoutIfNeeded()
-                self.scrollView.layoutIfNeeded()
-                self.view.layoutIfNeeded()
-                self.scrollView.setContentOffset(self.scrollView.bottomContentOffset, animated: false)
-                self.coordinator.onBottomStateChange(true)
-            }
-        }
-
-        /// Hold the alternate screen against the TOP of the viewport.
-        ///
-        /// Not merely "do not auto-scroll": the offset is actively reset,
-        /// because a layout pass that briefly reports a taller content size can
-        /// leave the view scrolled down with nothing to bring it back.
-        private func pinToTopAfterLayout() {
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
+                guard let self, self.anchorGate.consume() else { return }
                 guard !self.coordinator.isUserInteracting else { return }
-                self.invalidateHostedContentLayout()
-                self.hostingController.view.layoutIfNeeded()
-                self.scrollView.layoutIfNeeded()
-                self.view.layoutIfNeeded()
-                let top = -self.scrollView.adjustedContentInset.top
-                if self.scrollView.contentOffset.y != top {
-                    self.scrollView.setContentOffset(CGPoint(x: 0, y: top), animated: false)
+
+                if TerminalScrollAnchor.pinsToTop(isAltScreen: self.coordinator.isAltScreen) {
+                    let top = -self.scrollView.adjustedContentInset.top
+                    guard self.scrollView.contentOffset.y != top else { return }
+                    self.scrollView.setContentOffset(
+                        CGPoint(x: self.scrollView.contentOffset.x, y: top),
+                        animated: false
+                    )
+                } else if self.canAutoFollow {
+                    let bottom = self.scrollView.bottomContentOffset
+                    guard self.scrollView.contentOffset != bottom else { return }
+                    self.scrollView.setContentOffset(bottom, animated: false)
+                    self.coordinator.onBottomStateChange(true)
                 }
             }
         }
@@ -948,4 +963,3 @@ final class KeyInputController {
         view.becomeFirstResponder()
     }
 }
-
