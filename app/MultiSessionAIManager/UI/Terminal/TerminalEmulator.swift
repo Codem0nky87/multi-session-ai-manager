@@ -119,6 +119,10 @@ final class TerminalEmulator {
     /// Last cursor position we rendered, so we can repaint the old + new cursor rows.
     @ObservationIgnored private var lastCursorLocation: (x: Int, y: Int) = (-1, -1)
 
+    /// SwiftTerm's private `linesTop`, tracked so bounded buffer-relative UI rows
+    /// can resolve through `getScrollInvariantLine(row:)` after ring recycling.
+    @ObservationIgnored private var localScrollInvariantBase = 0
+
     init(
         cols: Int = 80,
         rows: Int = 24,
@@ -129,8 +133,13 @@ final class TerminalEmulator {
         self.cols = max(cols, 1)
         self.rows = max(rows, 1)
         self.fontSize = fontSize
-        self.history = history
-        self.localScrollbackLimit = history.localLimit
+        switch history {
+        case .hostOwned:
+            self.history = .hostOwned
+        case .local:
+            self.history = .local(limit: history.localLimit)
+        }
+        self.localScrollbackLimit = self.history.localLimit
         self.fontMetrics = TerminalFontMetrics(fontSize: fontSize)
         self.frameClock = frameClock
 
@@ -142,6 +151,11 @@ final class TerminalEmulator {
                                       termName: "xterm-256color",
                                       scrollback: localScrollbackLimit)
         self.terminal = Terminal(delegate: delegate, options: options)
+        if case .hostOwned = self.history {
+            // SwiftTerm treats `some(0)` as scrollback-enabled. Disable it with
+            // nil so the initial normal buffer does not advance `linesTop`.
+            self.terminal.changeScrollback(nil)
+        }
 
         stringSupplier.terminal = terminal
         stringSupplier.colorMap = colorMap
@@ -207,6 +221,10 @@ final class TerminalEmulator {
             return
         }
 
+        let previousScrollInvariantBase = localScrollInvariantBase
+        synchronizeLocalScrollInvariantBase()
+        let rowAlignmentChanged = realignPublishedRows(from: previousScrollInvariantBase)
+
         defer {
             // If an off-main append races this frame after its drain, either this
             // check keeps the clock alive or its queued main-actor wake restarts it
@@ -220,67 +238,160 @@ final class TerminalEmulator {
         // repaint the whole viewport + scrollback wholesale this tick.
         if forceFullRebuild {
             forceFullRebuild = false
-            let scrollbackRows = terminal.getTopVisibleRow()
-            let total = scrollbackRows + terminal.rows
+            let total = renderedRowCount
             terminal.clearUpdateRange()
-            lines = (0..<total).map { stringSupplier.attributedString(forScrollInvariantRow: $0) }
-            var cur = terminal.getCursorLocation(); cur.y += scrollbackRows
-            lastCursorLocation = (cur.x, cur.y)
+            lines.removeAll(keepingCapacity: true)
+            for row in 0..<total {
+                guard let rendered = renderedLine(at: row) else {
+                    assertionFailure("Missing terminal source row \(row)")
+                    break
+                }
+                lines.append(rendered)
+            }
+            lastCursorLocation = rendererCursorLocation
             renderGeneration &+= 1
             return
         }
 
-        let scrollbackRows = terminal.getTopVisibleRow()
-        var cursorLocation = terminal.getCursorLocation()
-        cursorLocation.y += scrollbackRows
+        let total = renderedRowCount
+        let cursorLocation = rendererCursorLocation
 
-        let updateRange = terminal.getScrollInvariantUpdateRange() ?? (0, 0)
-        if updateRange == (0, 0) && cursorLocation == lastCursorLocation {
+        let updateRange = rendererUpdateRange
+        if updateRange == nil && cursorLocation == lastCursorLocation && !rowAlignmentChanged {
             return // Nothing changed.
         }
         terminal.clearUpdateRange()
 
-        let scrollInvariantRows = scrollbackRows + terminal.rows
-
         // Drop rows that no longer exist.
-        if lines.count > scrollInvariantRows {
-            lines.removeSubrange(scrollInvariantRows...)
+        if lines.count > total {
+            lines.removeSubrange(total...)
         }
-        // Grow to cover the dirty range / current viewport.
-        let targetLineCount = max(updateRange.endY + 1, scrollInvariantRows)
-        while lines.count < targetLineCount {
-            lines.append(AnyView(EmptyView()))
+        // Grow only from real source rows. A missing SwiftTerm row must not be
+        // published as a successful-looking EmptyView placeholder.
+        while lines.count < total {
+            let row = lines.count
+            guard let rendered = renderedLine(at: row) else {
+                assertionFailure("Missing terminal source row \(row)")
+                break
+            }
+            lines.append(rendered)
         }
 
         // Compute the set of rows to re-render: the dirty range, plus the cursor's
         // old and new rows (so the cursor block moves cleanly).
-        var linesToUpdate = updateRange == (0, 0) ? Set<Int>() : Set(updateRange.startY...updateRange.endY)
+        var linesToUpdate = Set<Int>()
+        if let updateRange, total > 0 {
+            let start = max(updateRange.startY, 0)
+            let end = min(updateRange.endY, total - 1)
+            if start <= end {
+                linesToUpdate.formUnion(start...end)
+            }
+        }
         if cursorLocation != lastCursorLocation {
             linesToUpdate.insert(cursorLocation.y)
-            if lastCursorLocation.y != -1 && lastCursorLocation.y < scrollInvariantRows {
+            if lastCursorLocation.y != -1 && lastCursorLocation.y < total {
                 linesToUpdate.insert(lastCursorLocation.y)
             }
         }
 
         for i in linesToUpdate where i >= 0 && i < lines.count {
-            lines[i] = stringSupplier.attributedString(forScrollInvariantRow: i)
+            guard let rendered = renderedLine(at: i) else {
+                assertionFailure("Missing terminal source row \(i)")
+                continue
+            }
+            lines[i] = rendered
         }
 
         lastCursorLocation = cursorLocation
         renderGeneration &+= 1
     }
 
+    /// The real source for a published UI row. Production rendering and tests use
+    /// this same seam, so an unresolved SwiftTerm row cannot hide behind AnyView.
+    func sourceRow(at row: Int) -> TerminalRowSource? {
+        switch history {
+        case .hostOwned:
+            stringSupplier.sourceForViewportRow(row)
+        case .local:
+            stringSupplier.sourceForBufferRow(row, scrollInvariantBase: localScrollInvariantBase)
+        }
+    }
+
+    private func renderedLine(at row: Int) -> AnyView? {
+        sourceRow(at: row).map(stringSupplier.attributedString(for:))
+    }
+
+    private var renderedRowCount: Int {
+        switch history {
+        case .hostOwned:
+            terminal.rows
+        case .local:
+            terminal.getTopVisibleRow() + terminal.rows
+        }
+    }
+
+    private var rendererCursorLocation: (x: Int, y: Int) {
+        var cursor = terminal.getCursorLocation()
+        if case .local = history {
+            cursor.y += terminal.getTopVisibleRow()
+        }
+        return cursor
+    }
+
+    private var rendererUpdateRange: (startY: Int, endY: Int)? {
+        switch history {
+        case .hostOwned:
+            terminal.getUpdateRange()
+        case .local:
+            terminal.getScrollInvariantUpdateRange()
+        }
+    }
+
+    /// Recover SwiftTerm's private `linesTop`. In this pinned SwiftTerm version it
+    /// only advances as the ring recycles or resets to zero with a buffer reset.
+    private func synchronizeLocalScrollInvariantBase() {
+        guard case .local = history else { return }
+        if terminal.getScrollInvariantLine(row: 0) != nil {
+            localScrollInvariantBase = 0
+            return
+        }
+        while terminal.getScrollInvariantLine(row: localScrollInvariantBase) == nil {
+            localScrollInvariantBase &+= 1
+        }
+    }
+
+    /// When the bounded local ring drops leading rows, retain the already-built
+    /// views that still represent the same source rows and render only the new tail.
+    @discardableResult
+    private func realignPublishedRows(from previousBase: Int) -> Bool {
+        guard case .local = history, localScrollInvariantBase != previousBase else {
+            return false
+        }
+        guard localScrollInvariantBase > previousBase else {
+            lines.removeAll(keepingCapacity: true)
+            lastCursorLocation = (-1, -1)
+            return true
+        }
+
+        let droppedRows = localScrollInvariantBase - previousBase
+        lines.removeFirst(min(droppedRows, lines.count))
+        if lastCursorLocation.y >= droppedRows {
+            lastCursorLocation.y -= droppedRows
+        } else {
+            lastCursorLocation = (-1, -1)
+        }
+        return true
+    }
+
     // MARK: - Selection / copy
 
-    /// Text for an inclusive rendered-cell range (rows are the scroll-invariant row
-    /// indices used by the `lines` ForEach; cols are 0-based). Used for copy.
+    /// Text for an inclusive rendered-cell range (rows are the bounded,
+    /// buffer-relative indices used by the `lines` ForEach; cols are 0-based).
     ///
-    /// The renderer's scroll-invariant row index is exactly the `Position.row` that
-    /// `Terminal.getText` expects: `TerminalStringSupplier` renders row `i` via
-    /// `getScrollInvariantLine(row: i)`. These are the same row indices accepted by
-    /// `Terminal.getText`, so no further conversion is needed. We pass them through after
-    /// normalizing start/end order. The end column is made inclusive (+1) so a
-    /// single-cell selection still yields that cell's character.
+    /// `Terminal.getText` expects the same buffer-relative row space. The supplier
+    /// separately adds SwiftTerm's private `linesTop` only when resolving a local
+    /// row for display. The end column is made inclusive (+1) so a single-cell
+    /// selection still yields that cell's character.
     func selectedText(fromRow: Int, fromCol: Int, toRow: Int, toCol: Int) -> String {
         var startRow = fromRow, startCol = fromCol
         var endRow = toRow, endCol = toCol

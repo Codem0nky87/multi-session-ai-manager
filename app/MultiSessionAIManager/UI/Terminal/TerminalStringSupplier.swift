@@ -14,6 +14,17 @@ import Foundation
 import SwiftTerm
 import SwiftUI
 
+/// The live SwiftTerm row consumed by the production renderer. UI row indices are
+/// buffer-relative and bounded; the supplier resolves SwiftTerm's differing row
+/// spaces before constructing this value.
+struct TerminalRowSource {
+    fileprivate let line: BufferLine
+    fileprivate let cursorColumn: Int?
+
+    let uiRow: Int
+    var plainText: String { line.translateToString(trimRight: true) }
+}
+
 /// Splits a row of cells into coalesced `Text` runs.
 ///
 /// Coalescing is what keeps the view count sane, but it is only safe for
@@ -79,24 +90,39 @@ final class TerminalStringSupplier {
     var fontMetrics: TerminalFontMetrics!
     var cursorVisible = true
 
-    func attributedString(forScrollInvariantRow row: Int) -> AnyView {
-        guard let terminal = terminal else {
-            return AnyView(EmptyView())
-        }
-        guard let line = terminal.getScrollInvariantLine(row: row) else {
-            return AnyView(EmptyView())
-        }
+    /// Resolve a host-owned row directly from SwiftTerm's visible viewport.
+    func sourceForViewportRow(_ row: Int) -> TerminalRowSource? {
+        guard let terminal, let line = terminal.getLine(row: row) else { return nil }
+        let cursor = terminal.getCursorLocation()
+        return TerminalRowSource(
+            line: line,
+            cursorColumn: cursorVisible && row == cursor.y ? cursor.x : nil,
+            uiRow: row
+        )
+    }
 
-        let cursorPosition = terminal.getCursorLocation()
-        let scrollbackRows = terminal.getTopVisibleRow()
+    /// Resolve a bounded, buffer-relative UI row through SwiftTerm's absolute
+    /// scroll-invariant API. `scrollInvariantBase` is the current `linesTop`.
+    func sourceForBufferRow(_ row: Int, scrollInvariantBase: Int) -> TerminalRowSource? {
+        guard let terminal,
+              let line = terminal.getScrollInvariantLine(row: scrollInvariantBase + row)
+        else { return nil }
+        let cursor = terminal.getCursorLocation()
+        let cursorRow = terminal.getTopVisibleRow() + cursor.y
+        return TerminalRowSource(
+            line: line,
+            cursorColumn: cursorVisible && row == cursorRow ? cursor.x : nil,
+            uiRow: row
+        )
+    }
 
+    func attributedString(for source: TerminalRowSource) -> AnyView {
         let cells = (0..<terminal.cols).map { j in
-            let data = line[j]
+            let data = source.line[j]
             let character = data.getCharacter()
             return (char: character == "\0" ? " " : character,
                     attribute: data.attribute,
-                    isCursor: cursorVisible && row - scrollbackRows == cursorPosition.y
-                        && j == cursorPosition.x)
+                    isCursor: j == source.cursorColumn)
         }
         let views = TerminalRunSplitter.runs(cells: cells).enumerated().map { index, run in
             IdentifiedRun(index: index,

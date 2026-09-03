@@ -50,7 +50,7 @@ final class TestTerminalFrameClock: TerminalFrameClock {
         let clock = TestTerminalFrameClock()
         let e = TerminalEmulator(history: .local(limit: -1), frameClock: clock)
 
-        #expect(e.history == .local(limit: -1))
+        #expect(e.history == .local(limit: 0))
         #expect(e.localScrollbackLimit == 0)
     }
 
@@ -63,15 +63,48 @@ final class TestTerminalFrameClock: TerminalFrameClock {
             history: .hostOwned,
             frameClock: clock
         )
-        let output = (0..<2_000).map { "line-\($0)\r\n" }.joined()
+        // RIS recreates SwiftTerm's normal buffer from options.scrollback. Its
+        // options type cannot represent nil, so this also exercises the row-sized
+        // ring after a remote reset has restored `some(0)` internally.
+        let output = "\u{1b}c" + (0..<2_000).map { "line-\($0)\r\n" }.joined()
 
         e.feed(Data(output.utf8))
         await Task.yield()
         #expect(clock.startCount == 1)
         clock.fire()
 
-        #expect(e.lines.count <= rowCount)
+        let publishedSources = e.lines.indices.compactMap { e.sourceRow(at: $0) }
+        #expect(e.lines.count == rowCount)
+        #expect(publishedSources.count == e.lines.count)
+        #expect(publishedSources.map(\.plainText).joined(separator: "\n").contains("line-1999"))
         #expect(e.visibleText().contains("line-1999"))
+    }
+
+    @Test func hostOwnedRowsStayViewportRelativeAcrossAlternateScreenTransitions() async {
+        let clock = TestTerminalFrameClock()
+        let e = TerminalEmulator(cols: 30, rows: 5, history: .hostOwned, frameClock: clock)
+
+        e.feed(Data("NORMAL-MARKER".utf8))
+        await Task.yield()
+        clock.fire()
+        #expect(e.lines.indices.compactMap { e.sourceRow(at: $0)?.plainText }
+            .contains { $0.contains("NORMAL-MARKER") })
+
+        e.feed(Data("\u{1b}[?1049hALT-MARKER".utf8))
+        await Task.yield()
+        clock.fire()
+        #expect(e.isAlternateScreen)
+        #expect(e.lines.count == e.rows)
+        #expect(e.lines.indices.compactMap { e.sourceRow(at: $0)?.plainText }
+            .contains { $0.contains("ALT-MARKER") })
+
+        e.feed(Data("\u{1b}[?1049l".utf8))
+        await Task.yield()
+        clock.fire()
+        #expect(!e.isAlternateScreen)
+        #expect(e.lines.count == e.rows)
+        #expect(e.lines.indices.compactMap { e.sourceRow(at: $0)?.plainText }
+            .contains { $0.contains("NORMAL-MARKER") })
     }
 
     @Test func burstFeedCoalescesIntoOneFrameAndPublishesRealTerminalState() async {
@@ -349,6 +382,33 @@ final class TestTerminalFrameClock: TerminalFrameClock {
             }
         }
         #expect(found)
+    }
+
+    @Test func renderedRowsAndSelectionShareBufferRelativeCoordinatesAfterTrim() async throws {
+        let clock = TestTerminalFrameClock()
+        let e = TerminalEmulator(
+            cols: 40,
+            rows: 6,
+            history: .local(limit: 1_000),
+            frameClock: clock
+        )
+        for n in 0..<1_100 {
+            e.feed(Data("line\(n)\r\n".utf8))
+        }
+        await Task.yield()
+        clock.fire()
+
+        let firstRenderedRow = try #require(e.sourceRow(at: 0))
+        let selectedFirstRow = e.selectedText(
+            fromRow: 0,
+            fromCol: 0,
+            toRow: 0,
+            toCol: e.cols - 1
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+
+        #expect(!firstRenderedRow.plainText.isEmpty)
+        #expect(firstRenderedRow.plainText == selectedFirstRow)
+        #expect(e.lines.count <= e.rows + e.localScrollbackLimit)
     }
 
     @Test func visibleTextCopiesViewportAndTrimsTrailingBlankRows() async {
