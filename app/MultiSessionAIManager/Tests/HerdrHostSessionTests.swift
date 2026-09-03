@@ -55,6 +55,11 @@ import Testing
         return transport.openedPTYs.filter { $0.command == command }.count
     }
 
+    private func watchPTYs(_ transport: FakeSSHTransport) -> [FakePTYChannel] {
+        let command = RemoteFileDownload.watchCommand(identity: "default")
+        return transport.openedPTYs.filter { $0.command == command }
+    }
+
     @Test func successfulStartBindsThePTYAndGoesLive() async throws {
         let transport = FakeSSHTransport()
         let session = try makeSession(transport: transport)
@@ -202,6 +207,11 @@ import Testing
             .seconds(2),
             .seconds(5),
         ])
+        #expect(HerdrHostSession.RecoveryPolicy(attemptDelays: []).attemptDelays == [
+            .zero,
+            .seconds(2),
+            .seconds(5),
+        ])
     }
 
     @Test func unexpectedPTYCloseOverHealthySSHReattachesWithoutPolling() async throws {
@@ -294,7 +304,7 @@ import Testing
         #expect(session.status == .idle)
 
         transport.connectErrors = [nil]
-        await session.ensureLive()
+        await session.retry()
 
         #expect(session.status == .live)
         #expect(transport.connectAttemptCount - connectsBeforeLoss == 2)
@@ -327,7 +337,7 @@ import Testing
             .commandFailed("manual two"),
             nil,
         ]
-        await session.ensureLive()
+        await session.retry()
 
         #expect(session.status == .live)
         #expect(transport.connectAttemptCount - connectsBeforeLoss == 6)
@@ -353,11 +363,69 @@ import Testing
             .commandFailed("manual two"),
             nil,
         ]
-        await session.ensureLive()
+        await session.retry()
 
         #expect(session.status == .live)
         #expect(transport.connectAttemptCount - connectsBeforeLoss == 4)
         await session.stop()
+    }
+
+    @Test func duplicateEnsureLiveCallsCoalesceWithoutResettingTheBudget() async throws {
+        let transport = FakeSSHTransport()
+        let session = try makeSession(
+            transport: transport,
+            recovery: .init(attemptDelays: [.zero, .milliseconds(100), .milliseconds(100)])
+        )
+        await session.start()
+        let connectsBeforeLoss = transport.connectAttemptCount
+
+        transport.connectErrors = (1...8).map {
+            .commandFailed("unexpected extra attempt \($0)")
+        }
+        await transport.disconnect()
+        try await waitUntil {
+            session.status == .connecting && transport.connectAttemptCount - connectsBeforeLoss == 1
+        }
+
+        let firstReconciliation = Task { await session.ensureLive() }
+        await Task.yield()
+        let duplicateReconciliation = Task { await session.ensureLive() }
+        await firstReconciliation.value
+        await duplicateReconciliation.value
+
+        #expect(transport.connectAttemptCount - connectsBeforeLoss == 3)
+        guard case .failed = session.status else {
+            Issue.record("Expected the shared recovery cycle to exhaust, got \(session.status)")
+            return
+        }
+    }
+
+    @Test func disablingRecoveryCancelsCycleStartedByEnsureLive() async throws {
+        let transport = FakeSSHTransport()
+        let session = try makeSession(
+            transport: transport,
+            recovery: .init(attemptDelays: [.zero, .milliseconds(150), .milliseconds(150)])
+        )
+        await session.start()
+        let connectsBeforeLoss = transport.connectAttemptCount
+
+        transport.structuredCommandResults = [.failure(.timedOut)]
+        transport.connectErrors = [
+            .commandFailed("attempt one"),
+            .commandFailed("attempt two"),
+            .commandFailed("attempt three"),
+        ]
+        let reconciliation = Task { await session.ensureLive() }
+        try await waitUntil {
+            session.status == .connecting && transport.connectAttemptCount - connectsBeforeLoss == 1
+        }
+
+        session.automaticRecoveryEnabled = false
+        await reconciliation.value
+        try await Task.sleep(for: .milliseconds(220))
+
+        #expect(transport.connectAttemptCount - connectsBeforeLoss == 1)
+        #expect(session.status == .idle)
     }
 
     @Test func deliberateStopDoesNotRecoverThroughPTYClose() async throws {
@@ -425,6 +493,61 @@ import Testing
 
         #expect(replacement?.isOpen == false)
         #expect(session.terminal.pty?.isOpen == true)
+    }
+
+    @Test func concurrentWatchRequestsOpenOnlyOneRemoteTail() async throws {
+        let transport = FakeSSHTransport()
+        let watchGate = PTYOpenGate()
+        let watchCommand = RemoteFileDownload.watchCommand(identity: "default")
+        let session = try makeSession(transport: transport)
+        await session.start()
+        transport.beforeOpenPTY = { command in
+            guard command == watchCommand else { return }
+            await watchGate.suspendOnce()
+        }
+
+        let first = Task { await session.ensureWatching() }
+        await watchGate.waitUntilSuspended()
+        let concurrent = Task { await session.ensureWatching() }
+        await Task.yield()
+        await watchGate.resume()
+        await first.value
+        await concurrent.value
+
+        let watchers = watchPTYs(transport)
+        #expect(watchers.count == 1)
+        #expect(watchers.filter(\.isOpen).count == 1)
+        await session.stop()
+    }
+
+    @Test func supersededWatchCandidateIsClosedInsteadOfPublished() async throws {
+        let transport = FakeSSHTransport()
+        let watchGate = PTYOpenGate()
+        let watchCommand = RemoteFileDownload.watchCommand(identity: "default")
+        let session = try makeSession(
+            transport: transport,
+            recovery: .init(attemptDelays: [.zero, .milliseconds(10), .milliseconds(20)])
+        )
+        await session.start()
+        transport.beforeOpenPTY = { command in
+            guard command == watchCommand else { return }
+            await watchGate.suspendOnce()
+        }
+
+        let staleOpen = Task { await session.ensureWatching() }
+        await watchGate.waitUntilSuspended()
+        transport.openedPTYs.last?.close()
+        try await waitUntil {
+            self.herdrPTYCount(transport) == 2 && self.watchPTYs(transport).count == 1
+        }
+        await watchGate.resume()
+        await staleOpen.value
+        try await waitUntil { self.watchPTYs(transport).count == 2 }
+
+        let watchers = watchPTYs(transport)
+        #expect(watchers.filter(\.isOpen).count == 1)
+        #expect(watchers.last?.closed == true)
+        await session.stop()
     }
 
     @Test func ensureLiveDoesNothingWhileTheChannelIsHealthy() async throws {

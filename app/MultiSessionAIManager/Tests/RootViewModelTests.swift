@@ -116,6 +116,12 @@ import Testing
         #expect(source.contains("await tabs.retireSessions()"))
     }
 
+    @Test func retryButtonUsesExplicitRetryInsteadOfLifecycleReconciliation() throws {
+        let source = try sourceFile("UI/RootView.swift")
+        #expect(source.contains("onRetry: { Task { await session.retry() } }"))
+        #expect(!source.contains("onRetry: { Task { await session.ensureLive() } }"))
+    }
+
     /// `HostListView`, `HostEditView`, `InstallKeySheet` and `WorkdirPickerSheet`
     /// each read `@Environment(ToastCenter.self)` non-optionally, which traps at
     /// runtime when it is missing. `RootView` is the app's only injection site, and

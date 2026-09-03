@@ -335,7 +335,7 @@ struct HostTerminalView: View {
             if session.status != .live {
                 HostSessionStatusOverlay(
                     status: session.status,
-                    onRetry: { Task { await session.ensureLive() } },
+                    onRetry: { Task { await session.retry() } },
                     onTrustChangedKey: {
                         Task {
                             await session.connection.trustChangedKeyAndReconnect()

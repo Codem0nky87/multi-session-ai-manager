@@ -66,7 +66,16 @@ final class HerdrHostSession {
     /// Delays before each attempt in one recovery cycle. The default provides
     /// one immediate attach followed by two bounded retries.
     struct RecoveryPolicy: Sendable {
-        var attemptDelays: [Duration] = [.zero, .seconds(2), .seconds(5)]
+        let attemptDelays: [Duration]
+
+        init(attemptDelays: [Duration] = [.zero, .seconds(2), .seconds(5)]) {
+            // A cycle with no attempts would otherwise leave the session stuck
+            // in `.connecting`. Recovery is deliberately capped at three, so
+            // normalize both invalid extremes at the policy boundary.
+            self.attemptDelays = attemptDelays.isEmpty
+                ? [.zero, .seconds(2), .seconds(5)]
+                : Array(attemptDelays.prefix(3))
+        }
     }
 
     let connection: HostConnection
@@ -107,6 +116,11 @@ final class HerdrHostSession {
     /// Separate from the Herdr PTY because that one is carrying an interactive
     /// program and cannot be shared.
     private var watchChannel: PTYChannel?
+    /// At most one remote tail may be opening at a time. Its generation fences
+    /// the candidate across `openPTY`'s suspension so a recovery/stop cannot
+    /// publish a stale watcher after a newer live stretch has begun.
+    private var watchTask: Task<Void, Never>?
+    private var watchGeneration: UInt64 = 0
     /// Paths queued on the host and not yet handled. Read by the UI.
     private(set) var incomingPaths: [String] = []
     private var sawMissingSentinel = false
@@ -260,11 +274,41 @@ final class HerdrHostSession {
     func ensureWatching() async {
         guard status == .live, let service = connection.provisioningCommandRunner else { return }
         guard watchChannel?.isOpen != true else { return }
+        if let watchTask {
+            await watchTask.value
+            return
+        }
+
+        watchChannel?.close()
         watchChannel = nil
+        watchGeneration &+= 1
+        let watchAttemptGeneration = watchGeneration
+        let sessionGeneration = operationGeneration
 
         let accumulator = NIOLockedValueBox(RemoteFileDownload.LineAccumulator())
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.openWatchCandidate(
+                using: service,
+                accumulator: accumulator,
+                watchGeneration: watchAttemptGeneration,
+                sessionGeneration: sessionGeneration
+            )
+        }
+        watchTask = task
+        await task.value
+        guard watchGeneration == watchAttemptGeneration else { return }
+        watchTask = nil
+    }
+
+    private func openWatchCandidate(
+        using service: SSHService,
+        accumulator: NIOLockedValueBox<RemoteFileDownload.LineAccumulator>,
+        watchGeneration watchAttemptGeneration: UInt64,
+        sessionGeneration: UInt64
+    ) async {
         do {
-            watchChannel = try await service.openPTY(
+            let candidate = try await service.openPTY(
                 command: RemoteFileDownload.watchCommand(identity: watchIdentity),
                 cols: 200,
                 rows: 24,
@@ -275,16 +319,47 @@ final class HerdrHostSession {
                     let lines = accumulator.withLockedValue { $0.consume(data) }
                     guard !lines.isEmpty else { return }
                     Task { @MainActor [weak self] in
-                        self?.enqueueIncoming(lines)
+                        self?.enqueueIncoming(
+                            lines,
+                            watchGeneration: watchAttemptGeneration,
+                            sessionGeneration: sessionGeneration
+                        )
                     }
                 }
             )
+            guard watchGeneration == watchAttemptGeneration,
+                  operationGeneration == sessionGeneration,
+                  status == .live,
+                  !Task.isCancelled,
+                  candidate.isOpen else {
+                candidate.close()
+                return
+            }
+            watchChannel = candidate
         } catch {
             // A host without the outbox (or without msam-send installed) simply
             // has nothing to watch. That is not a session failure -- the tab is
             // still perfectly usable -- so it must never touch `status`.
-            watchChannel = nil
         }
+    }
+
+    private func retireWatch() {
+        watchGeneration &+= 1
+        watchTask?.cancel()
+        watchTask = nil
+        watchChannel?.close()
+        watchChannel = nil
+    }
+
+    private func enqueueIncoming(
+        _ lines: [String],
+        watchGeneration: UInt64,
+        sessionGeneration: UInt64
+    ) {
+        guard self.watchGeneration == watchGeneration,
+              operationGeneration == sessionGeneration,
+              status == .live else { return }
+        enqueueIncoming(lines)
     }
 
     private func enqueueIncoming(_ lines: [String]) {
@@ -330,12 +405,16 @@ final class HerdrHostSession {
         terminal.resize(cols: cols, rows: rows)
     }
 
-    /// The single entry point for "make this tab live". Reconciles cached state
-    /// against reality before deciding what to do. Every UI trigger calls this,
-    /// never `start()` directly -- `start()` early-returns on a cached `.live`
-    /// and reuses a cached `HostConnection`, neither of which is invalidated by
-    /// the transport dying underneath them.
+    /// Reconcile lifecycle state without resetting a recovery budget. Repeated
+    /// foreground/selection events join the one existing cycle, while a newly
+    /// detected loss starts an automatic cycle that can be cancelled when the
+    /// tab is deselected or the app backgrounds.
     func ensureLive() async {
+        if let recoveryTask {
+            await recoveryTask.value
+            return
+        }
+
         // An open-looking channel proves nothing: a NAT-evicted idle flow dies
         // with no FIN, so `isOpen` stays true over a corpse forever (issue #1).
         // Probe before trusting `.live`, so a tab switch or a return to the
@@ -349,22 +428,21 @@ final class HerdrHostSession {
                 return
             }
             if status == .live, !alive {
-                let task = beginRecovery(automatic: false, connectionKnownDead: true)
+                let task = beginRecovery(automatic: true, connectionKnownDead: true)
                 await task?.value
                 return
             }
         }
 
-        if status == .connecting {
-            guard recoveryTask != nil else { return }
-            let task = beginRecovery(automatic: false)
+        if status == .live {
+            let task = beginRecovery(automatic: true)
             await task?.value
             return
         }
 
-        // A first launch is not a recovery cycle. Once a live/failed session is
-        // being reconciled, however, this method is the manual Retry entry point
-        // and always receives a new three-attempt budget.
+        guard status != .connecting else { return }
+
+        // A first launch is not a recovery cycle.
         if status == .idle, connection.state == .idle {
             await start()
             if status == .live {
@@ -374,10 +452,29 @@ final class HerdrHostSession {
         }
 
         if case .hostKeyChanged = status {
+            // Reconciliation cannot approve a changed key. Once the separate,
+            // explicit trust action has reconnected, however, finish attaching.
+            guard connection.state == .connected else { return }
             await start()
+            if status == .live {
+                await ensureWatching()
+            }
             return
         }
 
+        // Exhaustion is terminal until the user explicitly retries. An idle
+        // lifecycle-owned session, on the other hand, receives one automatic
+        // cycle when it becomes eligible again.
+        if status == .idle {
+            let task = beginRecovery(automatic: true)
+            await task?.value
+        }
+    }
+
+    /// Explicit user intent is the sole operation that replaces any in-flight
+    /// cycle and grants a fresh three-attempt budget. Unlike lifecycle recovery,
+    /// it remains available while automatic recovery is disabled.
+    func retry() async {
         let task = beginRecovery(automatic: false)
         await task?.value
     }
@@ -428,8 +525,7 @@ final class HerdrHostSession {
             heartbeat = nil
             channel?.close()
             channel = nil
-            watchChannel?.close()
-            watchChannel = nil
+            retireWatch()
             terminal.pty = nil
             status = .failed("The remote session closed unexpectedly")
         }
@@ -467,8 +563,7 @@ final class HerdrHostSession {
         heartbeat = nil
         channel?.close()
         channel = nil
-        watchChannel?.close()
-        watchChannel = nil
+        retireWatch()
         terminal.pty = nil
         status = .connecting
 
@@ -572,8 +667,7 @@ final class HerdrHostSession {
         channel = nil
         // Its own channel, so it needs its own close -- otherwise every closed
         // tab leaves a `tail -F` running on the host for the life of the process.
-        watchChannel?.close()
-        watchChannel = nil
+        retireWatch()
         terminal.pty = nil
         // The emulator's CADisplayLink is scheduled on the main run loop and is
         // invalidated ONLY here -- the view's `onDisappear` merely lowers its
