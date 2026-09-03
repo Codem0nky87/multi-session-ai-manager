@@ -254,7 +254,43 @@ struct HerdrIntegrationManagerTests {
         #expect(message.hasSuffix("…"))
     }
 
-    @Test func installAllRunsEachNoncurrentIntegrationSequentiallyThenReprobes() async throws {
+    @Test func pureSummarySeparatesUnavailableStatusFromActionableWork() throws {
+        let claude = try #require(
+            HerdrIntegrationManager.targets.first { $0.herdrTarget == "claude" })
+        let codex = try #require(
+            HerdrIntegrationManager.targets.first { $0.herdrTarget == "codex" })
+        let qwen = try #require(
+            HerdrIntegrationManager.targets.first { $0.herdrTarget == "qwen" })
+
+        let unknownOnly = HerdrIntegrationManager.summary(
+            state: .ready,
+            agents: [.init(target: qwen, status: .unknown)],
+            failures: []
+        )
+        let currentAndUnknown = HerdrIntegrationManager.summary(
+            state: .ready,
+            agents: [
+                .init(target: claude, status: .current(version: "v4")),
+                .init(target: qwen, status: .unknown),
+            ],
+            failures: []
+        )
+        let actionableAndUnknown = HerdrIntegrationManager.summary(
+            state: .ready,
+            agents: [
+                .init(target: claude, status: .current(version: "v4")),
+                .init(target: codex, status: .notInstalled),
+                .init(target: qwen, status: .unknown),
+            ],
+            failures: []
+        )
+
+        #expect(unknownOnly == .statusUnavailable(count: 1))
+        #expect(currentAndUnknown == .statusUnavailable(count: 1))
+        #expect(actionableAndUnknown == .workNeeded(count: 1))
+    }
+
+    @Test func installAllRunsEachActionableIntegrationSequentiallyThenReprobes() async throws {
         let transport = FakeSSHTransport()
         let manager = try makeManager(transport: transport)
         await manager.connection.connect()
@@ -397,15 +433,16 @@ struct HerdrIntegrationManagerTests {
         let transport = FakeSSHTransport()
         let manager = try makeManager(transport: transport)
         await manager.connection.connect()
-        let detected = "MSAM_AGENT:qwen\n"
-        let unknownStatus = "qwen: future state (v10) (/ignored)\n"
+        let detected = "MSAM_AGENT:claude\nMSAM_AGENT:qwen\n"
+        let unknownStatus = "claude: current (v4) (/ignored)\nqwen: future state (v10) (/ignored)\n"
         transport.structuredCommandResults = [
             result(detected),
             result(unknownStatus),
         ]
         await manager.probe()
-        #expect(manager.agents.first?.status == .unknown)
+        #expect(manager.agents.first { $0.target.herdrTarget == "qwen" }?.status == .unknown)
         #expect(!manager.canInstallOrRepair)
+        #expect(manager.summary == .statusUnavailable(count: 1))
 
         transport.commandResponses[
             SSHService.provisioningShellCommand(HerdrIntegrationManager.detectionCommand)
@@ -417,7 +454,7 @@ struct HerdrIntegrationManagerTests {
         await manager.installOrRepairAll()
 
         #expect(installCommands(in: transport).isEmpty)
-        #expect(manager.agents.first?.status == .unknown)
+        #expect(manager.agents.first { $0.target.herdrTarget == "qwen" }?.status == .unknown)
         #expect(manager.failures.isEmpty)
     }
 

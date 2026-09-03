@@ -74,6 +74,7 @@ enum HerdrIntegrationSummary: Equatable, Sendable {
     case noAgents
     case allCurrent
     case workNeeded(count: Int)
+    case statusUnavailable(count: Int)
     case installing
     case partialFailure(messages: [String])
     case probeFailure(String)
@@ -177,8 +178,11 @@ final class HerdrIntegrationManager {
                 return .partialFailure(messages: failures.map(\.message))
             }
             if agents.isEmpty { return .noAgents }
-            let workCount = agents.count { !$0.status.isCurrent }
-            return workCount == 0 ? .allCurrent : .workNeeded(count: workCount)
+            let workCount = agents.count { $0.status.needsProvisioning }
+            if workCount > 0 { return .workNeeded(count: workCount) }
+            let unavailableCount = agents.count { $0.status == .unknown }
+            if unavailableCount > 0 { return .statusUnavailable(count: unavailableCount) }
+            return .allCurrent
         }
     }
 
@@ -204,10 +208,11 @@ final class HerdrIntegrationManager {
         }
     }
 
-    /// Installs or repairs every detected integration that is not current, one
-    /// at a time, then asks the host again. A failed agent never prevents a
-    /// later one from being attempted, and command success alone is never
-    /// trusted: only the final status probe decides readiness.
+    /// Installs or repairs every detected integration explicitly reported as
+    /// missing, outdated, or needing repair, one at a time, then asks the host
+    /// again. A failed agent never prevents a later one from being attempted,
+    /// and command success alone is never trusted: only the final status probe
+    /// decides readiness.
     func installOrRepairAll() async {
         operationGeneration &+= 1
         let generation = operationGeneration
