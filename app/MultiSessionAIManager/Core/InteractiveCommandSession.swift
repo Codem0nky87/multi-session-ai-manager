@@ -51,8 +51,9 @@ final class InteractiveCommandSession {
                 cols: max(terminal.cols, 1),
                 rows: max(terminal.rows, 1),
                 onOutput: { data in
-                    // Arrives off the main actor on a nio EventLoop.
-                    Task { @MainActor in terminal.feed(data) }
+                    // `feed` is lock-backed and nonisolated, so PTY chunks can
+                    // coalesce before the terminal requests one main-actor frame.
+                    terminal.feed(data)
                 }
             )
             self.channel = channel
@@ -70,8 +71,8 @@ final class InteractiveCommandSession {
         channel?.close()
         channel = nil
         terminal.pty = nil
-        // The emulator's display link is invalidated only here; without it every
-        // closed sheet leaves one ticking for the life of the process.
+        // Permanently shut down frame scheduling. Ordinary visibility changes
+        // only retire temporary frames and remain reversible.
         terminal.stop()
         if status == .running { status = .finished }
     }

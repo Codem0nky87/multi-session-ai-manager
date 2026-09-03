@@ -4,7 +4,7 @@ import QuartzCore
 @MainActor
 protocol TerminalFrameClock: AnyObject {
     var isRunning: Bool { get }
-    func start(_ action: @escaping () -> Void)
+    func start(_ action: @escaping @MainActor () -> Void)
     func stop()
 }
 
@@ -13,12 +13,12 @@ protocol TerminalFrameClock: AnyObject {
 @MainActor
 final class DisplayLinkTerminalFrameClock: TerminalFrameClock {
     private var displayLink: CADisplayLink?
-    private var action: (() -> Void)?
+    private var action: (@MainActor () -> Void)?
     private lazy var proxy = Proxy(owner: self)
 
     var isRunning: Bool { displayLink != nil }
 
-    func start(_ action: @escaping () -> Void) {
+    func start(_ action: @escaping @MainActor () -> Void) {
         guard displayLink == nil else { return }
         self.action = action
 

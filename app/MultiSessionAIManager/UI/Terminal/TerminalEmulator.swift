@@ -144,7 +144,7 @@ final class TerminalEmulator {
     }
 
     private func requestFrame() {
-        guard !stopped, !frameClock.isRunning else { return }
+        guard !stopped, isVisible, !frameClock.isRunning else { return }
         frameClock.start { [weak self] in
             self?.tick()
         }

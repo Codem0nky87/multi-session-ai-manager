@@ -4,13 +4,14 @@ import Foundation
 
 @MainActor
 final class TestTerminalFrameClock: TerminalFrameClock {
-    private var action: (() -> Void)?
+    private var action: (@MainActor () -> Void)?
+    var onStop: (() -> Void)?
 
     private(set) var isRunning = false
     private(set) var startCount = 0
     private(set) var stopCount = 0
 
-    func start(_ action: @escaping () -> Void) {
+    func start(_ action: @escaping @MainActor () -> Void) {
         guard !isRunning else { return }
         self.action = action
         isRunning = true
@@ -22,6 +23,7 @@ final class TestTerminalFrameClock: TerminalFrameClock {
         action = nil
         isRunning = false
         stopCount += 1
+        onStop?()
     }
 
     func fire() {
@@ -66,6 +68,33 @@ final class TestTerminalFrameClock: TerminalFrameClock {
         #expect(e.renderGeneration == 1)
         #expect(!clock.isRunning)
         #expect(clock.stopCount == 1)
+    }
+
+    @Test func appendDuringFrameRetirementRestartsAndDrainsTheNextFrame() async {
+        let clock = TestTerminalFrameClock()
+        let e = TerminalEmulator(cols: 20, rows: 5, frameClock: clock)
+        e.feed(Data("first".utf8))
+        await Task.yield()
+
+        clock.onStop = {
+            clock.onStop = nil
+            e.feed(Data("second".utf8))
+        }
+        clock.fire()
+
+        #expect(e.coreCursorColumn == 5)
+        #expect(e.visibleText() == "first")
+        #expect(!clock.isRunning)
+        await Task.yield()
+        #expect(clock.startCount == 2)
+        #expect(clock.isRunning)
+
+        clock.fire()
+        #expect(e.coreCursorColumn == 11)
+        #expect(e.visibleText() == "firstsecond")
+        #expect(e.renderGeneration == 2)
+        #expect(!clock.isRunning)
+        #expect(clock.stopCount == 2)
     }
 
     /// An off-screen emulator drains inbound bytes into the real terminal core,
@@ -121,6 +150,42 @@ final class TestTerminalFrameClock: TerminalFrameClock {
         #expect(e.renderGeneration == 1)
         #expect(!clock.isRunning)
         #expect(clock.stopCount == 1)
+    }
+
+    @Test func hiddenConfigurationChangesWaitForOneVisibleRepaint() {
+        let clock = TestTerminalFrameClock()
+        let e = TerminalEmulator(cols: 20, rows: 5, fontSize: 13, frameClock: clock)
+        let oldCellWidth = e.fontMetrics.width
+        let oldBackground = e.colorMap.background
+        e.isVisible = false
+
+        e.setFontSize(9)
+        #expect(e.fontMetrics.width < oldCellWidth)
+        #expect(clock.startCount == 0)
+        #expect(e.lines.isEmpty)
+
+        e.setTheme(.light)
+        #expect(e.currentThemeID == TerminalTheme.light.id)
+        #expect(e.colorMap.background != oldBackground)
+        #expect(clock.startCount == 0)
+        #expect(e.lines.isEmpty)
+
+        e.resize(cols: 30, rows: 7)
+        #expect(e.cols == 30)
+        #expect(e.rows == 7)
+        #expect(e.resizeGeneration == 1)
+        #expect(clock.startCount == 0)
+        #expect(e.lines.isEmpty)
+        #expect(e.renderGeneration == 0)
+
+        e.isVisible = true
+        #expect(clock.startCount == 1)
+        #expect(clock.isRunning)
+        clock.fire()
+
+        #expect(e.lines.count == 7)
+        #expect(e.renderGeneration == 1)
+        #expect(!clock.isRunning)
     }
 
     @Test func stoppedTerminalDiscardsPendingAndLateInputAndNeverRestarts() async {

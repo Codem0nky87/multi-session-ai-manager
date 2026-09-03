@@ -672,10 +672,8 @@ final class HerdrHostSession {
         // tab leaves a `tail -F` running on the host for the life of the process.
         retireWatch()
         terminal.pty = nil
-        // The emulator's CADisplayLink is scheduled on the main run loop and is
-        // invalidated ONLY here -- the view's `onDisappear` merely lowers its
-        // preferred frame-rate range. Without this, every closed tab leaves a
-        // display link ticking for the life of the process.
+        // Permanently shut down frame scheduling. Ordinary visibility changes
+        // only retire temporary frames and remain reversible.
         terminal.stop()
         // Each tab owns its own `HostConnection` (built per-session in
         // `HostTabsModel.session(for:)`), so tearing it down here cannot disturb
