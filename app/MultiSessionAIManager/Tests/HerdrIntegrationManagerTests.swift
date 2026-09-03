@@ -2,6 +2,39 @@ import Foundation
 import Testing
 @testable import MultiSessionAIManager
 
+private actor FirstIntegrationInstallGate {
+    private var blocked = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+    func pauseFirstInstall(_ command: String) async throws {
+        guard command.contains("herdr integration install"), !blocked else {
+            try Task.checkCancellation()
+            return
+        }
+        blocked = true
+        let waiters = startWaiters
+        startWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+        await withCheckedContinuation { continuation in
+            releaseContinuation = continuation
+        }
+        try Task.checkCancellation()
+    }
+
+    func waitUntilBlocked() async {
+        if blocked { return }
+        await withCheckedContinuation { continuation in
+            startWaiters.append(continuation)
+        }
+    }
+
+    func release() {
+        releaseContinuation?.resume()
+        releaseContinuation = nil
+    }
+}
+
 @Suite @MainActor
 struct HerdrIntegrationManagerTests {
     @Test func registryCoversEverySupportedHerdrAgentAndAlias() {
@@ -212,6 +245,15 @@ struct HerdrIntegrationManagerTests {
         #expect(HerdrIntegrationManager.installCommand(forHerdrTarget: "unknown") == nil)
     }
 
+    @Test func uiFailureMessagesAreBoundedWithoutChangingShortMessages() {
+        #expect(HerdrIntegrationManager.boundedFailureMessage("short reason") == "short reason")
+
+        let largeRemoteOutput = String(repeating: "remote diagnostic ", count: 1_000)
+        let message = HerdrIntegrationManager.boundedFailureMessage(largeRemoteOutput)
+        #expect(message.count <= HerdrIntegrationManager.maximumFailureMessageLength)
+        #expect(message.hasSuffix("…"))
+    }
+
     @Test func installAllRunsEachNoncurrentIntegrationSequentiallyThenReprobes() async throws {
         let transport = FakeSSHTransport()
         let manager = try makeManager(transport: transport)
@@ -326,5 +368,95 @@ struct HerdrIntegrationManagerTests {
         #expect(manager.failures.first?.herdrTarget == "claude")
         #expect(manager.failures.first?.message.contains("still not ready") == true)
         #expect(manager.failures.first?.message.contains("Repair needed") == true)
+    }
+
+    @Test func ambiguousInstallIsSuccessWhenAuthoritativeReprobeIsCurrent() async throws {
+        let transport = FakeSSHTransport()
+        let manager = try makeManager(transport: transport)
+        await manager.connection.connect()
+        let detected = "MSAM_AGENT:codex\n"
+        transport.structuredCommandResults = [
+            result(detected),
+            result("codex: not installed (/old/path)\n"),
+        ]
+        await manager.probe()
+        transport.structuredCommandResults = [
+            .failure(.ambiguousDisconnect),
+            result(detected),
+            result("codex: current (v3) (/new/path)\n"),
+        ]
+
+        await manager.installOrRepairAll()
+
+        #expect(manager.agents.first?.status == .current(version: "v3"))
+        #expect(manager.failures.isEmpty)
+        #expect(manager.summary == .allCurrent)
+    }
+
+    @Test func unknownStatusNeverMutatesTheHost() async throws {
+        let transport = FakeSSHTransport()
+        let manager = try makeManager(transport: transport)
+        await manager.connection.connect()
+        let detected = "MSAM_AGENT:qwen\n"
+        let unknownStatus = "qwen: future state (v10) (/ignored)\n"
+        transport.structuredCommandResults = [
+            result(detected),
+            result(unknownStatus),
+        ]
+        await manager.probe()
+        #expect(manager.agents.first?.status == .unknown)
+        #expect(!manager.canInstallOrRepair)
+
+        transport.commandResponses[
+            SSHService.provisioningShellCommand(HerdrIntegrationManager.detectionCommand)
+        ] = detected
+        transport.commandResponses[
+            SSHService.provisioningShellCommand(HerdrIntegrationManager.statusCommand)
+        ] = unknownStatus
+
+        await manager.installOrRepairAll()
+
+        #expect(installCommands(in: transport).isEmpty)
+        #expect(manager.agents.first?.status == .unknown)
+        #expect(manager.failures.isEmpty)
+    }
+
+    @Test func cancellingDuringFirstInstallStopsAllLaterHostCommands() async throws {
+        let transport = FakeSSHTransport()
+        let manager = try makeManager(transport: transport)
+        await manager.connection.connect()
+        transport.structuredCommandResults = [
+            result("MSAM_AGENT:codex\nMSAM_AGENT:kilo\n"),
+            result("codex: not installed (/ignored)\nkilo: outdated (v2 < v3) (/ignored)\n"),
+        ]
+        await manager.probe()
+        let commandsBeforeInstall = transport.structuredCommandsRun.count
+        let gate = FirstIntegrationInstallGate()
+        transport.beforeCommand = { command in
+            try await gate.pauseFirstInstall(command)
+        }
+
+        let installTask = Task { @MainActor in
+            await manager.installOrRepairAll()
+        }
+        await gate.waitUntilBlocked()
+        installTask.cancel()
+        await gate.release()
+        await installTask.value
+
+        let commandsAfterCancellation = Array(
+            transport.structuredCommandsRun.dropFirst(commandsBeforeInstall))
+        #expect(commandsAfterCancellation.count == 1)
+        #expect(
+            commandsAfterCancellation.first?.command.contains(
+                "herdr integration install codex"
+            ) == true)
+        #expect(manager.state == .ready)
+        #expect(manager.failures.isEmpty)
+        #expect(
+            manager.agents.map(\.status) == [
+                .notInstalled,
+                .outdated(versions: "v2 < v3"),
+            ])
     }
 }

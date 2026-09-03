@@ -28,6 +28,15 @@ enum HerdrIntegrationStatus: Equatable, Sendable {
         return false
     }
 
+    var needsProvisioning: Bool {
+        switch self {
+        case .notInstalled, .outdated, .needsRepair:
+            return true
+        case .current, .unknown:
+            return false
+        }
+    }
+
     var displayText: String {
         switch self {
         case .current(let version):
@@ -120,6 +129,7 @@ final class HerdrIntegrationManager {
     nonisolated static let statusTimeout = Duration.seconds(30)
     nonisolated static let installTimeout = Duration.seconds(120)
     nonisolated static let outputLimit = 256 * 1024
+    nonisolated static let maximumFailureMessageLength = 512
 
     /// A fixed POSIX program: every executable and marker comes from `targets`.
     nonisolated static let detectionCommand: String = targets.map { target in
@@ -145,7 +155,7 @@ final class HerdrIntegrationManager {
     }
 
     var canInstallOrRepair: Bool {
-        state == .ready && agents.contains { !$0.status.isCurrent }
+        state == .ready && agents.contains { $0.status.needsProvisioning }
     }
 
     nonisolated static func summary(
@@ -201,10 +211,20 @@ final class HerdrIntegrationManager {
     func installOrRepairAll() async {
         operationGeneration &+= 1
         let generation = operationGeneration
-        let candidates = agents.filter { !$0.status.isCurrent }
+        let candidates = agents.filter { $0.status.needsProvisioning }
+        let previousState = state
+        let previousFailures = failures
         state = .installing
         failures = []
 
+        guard !Task.isCancelled else {
+            restoreAfterCancellation(
+                generation: generation,
+                state: previousState,
+                failures: previousFailures
+            )
+            return
+        }
         guard let service = connection.provisioningCommandRunner else {
             state = .failed(Self.message(for: HostConnection.PTYUnavailable()))
             return
@@ -213,6 +233,14 @@ final class HerdrIntegrationManager {
         var operationFailures: [HerdrIntegrationFailure] = []
         for agent in candidates {
             guard operationGeneration == generation else { return }
+            guard !Task.isCancelled else {
+                restoreAfterCancellation(
+                    generation: generation,
+                    state: previousState,
+                    failures: previousFailures
+                )
+                return
+            }
             guard
                 let command = Self.installCommand(
                     forHerdrTarget: agent.target.herdrTarget
@@ -233,7 +261,25 @@ final class HerdrIntegrationManager {
                     timeout: Self.installTimeout,
                     using: service
                 )
+                guard operationGeneration == generation else { return }
+                guard !Task.isCancelled else {
+                    restoreAfterCancellation(
+                        generation: generation,
+                        state: previousState,
+                        failures: previousFailures
+                    )
+                    return
+                }
             } catch {
+                guard operationGeneration == generation else { return }
+                guard !Task.isCancelled else {
+                    restoreAfterCancellation(
+                        generation: generation,
+                        state: previousState,
+                        failures: previousFailures
+                    )
+                    return
+                }
                 operationFailures.append(
                     Self.failure(
                         for: agent.target,
@@ -243,14 +289,32 @@ final class HerdrIntegrationManager {
         }
 
         guard operationGeneration == generation else { return }
+        guard !Task.isCancelled else {
+            restoreAfterCancellation(
+                generation: generation,
+                state: previousState,
+                failures: previousFailures
+            )
+            return
+        }
         do {
             let refreshed = try await Self.fetchAgents(using: service)
             guard operationGeneration == generation else { return }
+            guard !Task.isCancelled else {
+                restoreAfterCancellation(
+                    generation: generation,
+                    state: previousState,
+                    failures: previousFailures
+                )
+                return
+            }
 
             let refreshedByTarget = Dictionary(
                 uniqueKeysWithValues: refreshed.map {
                     ($0.target.herdrTarget, $0)
                 })
+            let verifiedCurrentTargets = Set(
+                refreshed.filter(\.status.isCurrent).map(\.target.herdrTarget))
             var verificationFailures: [HerdrIntegrationFailure] = []
             for attempted in candidates {
                 let verified = refreshedByTarget[attempted.target.herdrTarget]
@@ -266,13 +330,26 @@ final class HerdrIntegrationManager {
             }
 
             agents = refreshed
-            failures = operationFailures + verificationFailures
+            failures =
+                operationFailures.filter {
+                    !verifiedCurrentTargets.contains($0.herdrTarget)
+                } + verificationFailures
             state = .ready
         } catch {
             guard operationGeneration == generation else { return }
+            guard !Task.isCancelled else {
+                restoreAfterCancellation(
+                    generation: generation,
+                    state: previousState,
+                    failures: previousFailures
+                )
+                return
+            }
             failures = operationFailures
             state = .failed(
-                "Could not verify integrations after installation. \(Self.message(for: error))")
+                Self.boundedFailureMessage(
+                    "Could not verify integrations after installation. \(Self.message(for: error))"
+                ))
         }
     }
 
@@ -284,6 +361,11 @@ final class HerdrIntegrationManager {
             return nil
         }
         return "herdr integration install \(registered.herdrTarget)"
+    }
+
+    nonisolated static func boundedFailureMessage(_ value: String) -> String {
+        guard value.count > maximumFailureMessageLength else { return value }
+        return String(value.prefix(maximumFailureMessageLength - 1)) + "…"
     }
 
     /// Parses only the states Herdr 0.8.2 documents. Unknown target names and
@@ -357,6 +439,7 @@ final class HerdrIntegrationManager {
             timeout: detectionTimeout,
             using: service
         )
+        try Task.checkCancellation()
         let status = try await checkedRun(
             statusCommand,
             timeout: statusTimeout,
@@ -373,11 +456,13 @@ final class HerdrIntegrationManager {
         timeout: Duration,
         using service: SSHService
     ) async throws -> SSHCommandResult {
+        try Task.checkCancellation()
         let result = try await service.run(
             command,
             timeout: timeout,
             outputLimit: outputLimit
         )
+        try Task.checkCancellation()
         guard result.exitStatus == 0 else {
             let stderr = result.stderrString.trimmingCharacters(in: .whitespacesAndNewlines)
             let stdout = result.stdoutString.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -408,9 +493,14 @@ final class HerdrIntegrationManager {
         if error is HostConnection.PTYUnavailable {
             return "Connect and authenticate SSH to this host first."
         }
+        if error is CancellationError {
+            return "Cancelled."
+        }
         if let command = error as? RemoteCommandFailure {
             let detail = command.output.isEmpty ? "no error output" : command.output
-            return "The host command exited with status \(command.exitStatus): \(detail)"
+            return boundedFailureMessage(
+                "The host command exited with status \(command.exitStatus): \(detail)"
+            )
         }
         if let execution = error as? SSHCommandExecutionError {
             switch execution {
@@ -436,7 +526,17 @@ final class HerdrIntegrationManager {
         HerdrIntegrationFailure(
             herdrTarget: target.herdrTarget,
             displayName: target.displayName,
-            message: "\(target.displayName): \(message)"
+            message: boundedFailureMessage("\(target.displayName): \(message)")
         )
+    }
+
+    private func restoreAfterCancellation(
+        generation: UInt64,
+        state: State,
+        failures: [HerdrIntegrationFailure]
+    ) {
+        guard operationGeneration == generation else { return }
+        self.state = state
+        self.failures = failures
     }
 }
