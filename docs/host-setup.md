@@ -62,8 +62,9 @@ connection looks like. Verify the fingerprint out of band before you take it.
 
 ## The guided Host Setup sheet
 
-**Manage Hosts → (host) → Host Setup** walks three steps. Every command it would
-run on the host is shown before it runs, and can be copied out and run yourself.
+**Manage Hosts → (host) → Host Setup** walks four steps. Host-changing actions
+require an explicit tap, and their command inputs come from fixed app-owned
+values rather than remote output.
 
 ### 1 · Test the private route
 
@@ -112,6 +113,35 @@ There used to be a separate *File viewer & transfer* card that installed the
 `herdr-file-viewer` plugin itself. It is gone: installing plugins belongs in one
 place. The wiring that is specific to that plugin now lives on its row in the
 manager, as **Send files here**.
+
+### 4 · Session restore
+
+Appears after Herdr is confirmed present. It checks the host's login PATH for
+every AI agent in the app's fixed Herdr 0.8.2 integration registry, then
+compares only those detected agents with `herdr integration status`.
+
+- **Ready** integrations need no change.
+- **Not enabled**, **update needed**, and **repair needed** integrations are
+  included in **Enable or repair all**. This is an explicit host mutation; the
+  app runs one fixed `herdr integration install <target>` command at a time and
+  verifies status again afterwards.
+- An unknown status is shown as unavailable and is never treated as ready or
+  installed speculatively.
+- Installation continues after an individual failure. The final card keeps the
+  status of every detected agent visible and names any per-agent failures, so a
+  partial result is not mistaken for all-or-nothing success.
+
+These integrations allow Herdr to record native session references exposed by
+supported agents. They do not make arbitrary terminal processes restartable,
+and detection alone does not guarantee a conversation will resume: the
+integration must be current, the pane must have reported a usable reference,
+and the agent must still be able to resume it.
+
+Herdr always saves enough session state to recreate its workspace/tab/pane
+layout after its server restarts. Pane screen history is separate and opt-in
+because terminal output can contain credentials, prompts, source, and other
+sensitive data. AI Manager does not enable `[experimental] pane_history` or
+automatically retain a terminal transcript.
 
 ## Managing plugins
 
@@ -193,3 +223,17 @@ separately.
 An unnamed tab runs `herdr`; a named one runs `herdr --session <name>`. Both
 mean "launch or attach", so reopening the app returns you to the same live
 session. Two tabs on the same host with different names are independent.
+
+If the selected tab loses its PTY or SSH connection while the app is active,
+AI Manager tries to attach that same name immediately, then after 2 seconds,
+then after 5 seconds. It stops after the third failed attempt; **Retry** starts
+a new three-attempt budget. Unselected tabs remain lazy, and backgrounding the
+app cancels pending automatic attempts.
+
+When only the client or network link died, attaching reaches the still-running
+Herdr server and its original processes. If a reboot or explicit server stop
+killed Herdr, the SSH connection is re-established first and the attach command
+starts Herdr's snapshot restoration. The layout returns, but arbitrary shells,
+servers, tests, and commands do not. Eligible supported-agent panes may resume
+their native conversations through current integrations; other panes return as
+new shells in their saved directories.

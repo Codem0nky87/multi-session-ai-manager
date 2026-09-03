@@ -45,9 +45,9 @@ Three things are deliberate here:
   detection.
 
 `herdr` means *launch **or attach to*** the persistent session. A dropped
-connection therefore lands back in the same live session, which is why this app
-has no reconnect state machine, no frame sequencing, and no baseline
-negotiation.
+connection can therefore land back in the same live session. The app has a
+bounded reconnect coordinator for transport loss; Herdr, not the app, owns the
+remote session snapshot and any agent-native restore reference.
 
 ### Session states
 
@@ -66,18 +66,72 @@ negotiation.
 do nothing there but re-detect the same mismatch forever. The only real recovery
 is an explicit decision to trust a new key, so it is presented as exactly that.
 
-### `ensureLive()` is the only entry point
+### Recovery after PTY or SSH loss
 
-Every UI trigger — first appearance, tab switch, scene becoming active, the
-Retry button — calls `ensureLive()`, never `start()`. `start()` early-returns on
-a cached `.live` and reuses a cached `HostConnection`, and neither is
-invalidated when the transport dies underneath them. `ensureLive()` reconciles
-that cached state against reality first:
+`ensureLive()` is the lifecycle entry point for initial appearance, tab
+selection, and return to the foreground. A manual **Retry** uses `retry()` so it
+can cancel an old cycle and grant a fresh attempt budget.
 
-- `.live` but the channel is closed → reset to `.idle` without disconnecting
-  (the SSH connection is fine and Herdr will reattach).
-- `.failed` → drop the possibly-dead connection so `start()` dials a fresh one.
-- Always → reconcile the outbox watch channel too.
+Only the selected tab has automatic recovery enabled, and only while the app is
+active. `HostTabsModel` applies that flag to sessions it has already created;
+stored background tabs remain dormant. Selecting one lazily creates its session
+and gives it the current foreground context.
+
+One coordinator handles both ways a dead session becomes observable:
+
+```text
+PTY EOF/error ───────────────┐
+                            ├─ selected + foreground?
+failed idle SSH heartbeat ──┘          │
+                                       ▼
+                            attempts: now, +2 s, +5 s
+                                       │
+                          probe cached authenticated SSH
+                              │ alive             │ dead
+                              ▼                   ▼
+                            reuse          disconnect + redial
+                              └──────────┬─────────┘
+                                         ▼
+                            attach the same Herdr session
+                                         ▼
+                              reopen the outbox watcher
+```
+
+Each cycle makes at most three attach/connect attempts. Success cancels the
+remaining delays. Three failures leave `.failed`; the user can then press
+**Retry** for a fresh three attempts. Deselection or backgrounding cancels a
+pending automatic cycle, and a deliberate tab close is generation-fenced so its
+PTY callback cannot revive the session.
+
+Before every attempt, the coordinator probes a cached authenticated SSH
+connection. A healthy connection is reused when only the Herdr client PTY died;
+a failed probe retires it so the attempt reconnects SSH. A successful attach
+also recreates the separate `tail -F` watcher for `~/.msam/outbox`.
+
+### What a host restart restores
+
+Recovery re-runs the same command and session name; it does not reconstruct
+remote state on the iPad.
+
+| Remote condition | What comes back |
+|---|---|
+| Client/SSH detached; Herdr server still running | The same live pane PTYs and processes. |
+| Herdr server stopped or host rebooted | Herdr's saved workspaces, tabs, pane layout, working directories, and focus. Old shell processes, servers, tests, and other arbitrary commands do not survive. |
+| Restored pane with a valid supported-agent session reference | Herdr can launch that agent's native resume command when the matching official integration is current and the agent still accepts the reference. |
+| Other restored pane | A new shell in the saved directory. |
+
+Herdr's pane screen-history replay is a separate opt-in feature. It stores
+terminal contents, which may include secrets, tokens, prompts, and command
+output. AI Manager never enables `[experimental] pane_history` and never
+captures a transcript as part of recovery.
+
+Host Setup's `HerdrIntegrationManager` detects only the Herdr 0.8.2 targets in
+its compiled registry whose executables are present in the remote login PATH.
+It compares them with `herdr integration status`; one explicit action installs
+or repairs missing, outdated, or repair-needed integrations sequentially, then
+re-probes. Results remain per-agent, so one failure does not conceal successful
+or already-current integrations. An unsupported agent, a missing/stale native
+reference, or an agent-side resume failure cannot be promised to restore.
 
 ### Generation fencing
 
@@ -112,6 +166,7 @@ under Swift 6 a `@MainActor` callback invoked off-main traps at runtime.
 | `Core/HerdrHostSession.swift` | One tab's live state: connection + PTY + terminal + file bridge |
 | `Core/HerdrLaunchCommand.swift` | The remote command and the missing-Herdr sentinel |
 | `Core/HerdrInstaller.swift` | Probe / install / verify Herdr on a host (min 0.8.2) |
+| `Core/HerdrIntegrationManager.swift` | Detect supported agents and verify/provision native restore integrations |
 | `Core/HostConnection.swift` | Auth, host-key policy, connection lifecycle |
 | `Core/NIOSSHTransport.swift` | SwiftNIO SSH + Citadel transport, PTY channels, forwarding |
 | `Core/SSHService.swift` | Bounded remote commands with a normalised PATH |

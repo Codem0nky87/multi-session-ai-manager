@@ -37,7 +37,7 @@ does not, and upstream has no `0.3.4` tag at all. Pointing this at
 
 ## Tests
 
-Over 360 unit tests across 61 suites, using
+Over 550 unit tests, using
 [Swift Testing](https://developer.apple.com/documentation/testing).
 
 ```sh
@@ -50,6 +50,73 @@ xcodebuild -scheme MultiSessionAIManager \
 
 The unit suite is hermetic — it uses `FakeSSHTransport`, `FakeFileTransfer`, and
 `FakeKeyInstaller`, and touches no network and no real host.
+
+### Disposable-host session recovery diagnostic
+
+> **Destructive opt-in only.** The following procedure stops a Herdr session,
+> which terminates its pane processes; the reboot variant also interrupts SSH
+> and every service on the machine. Run it only on a disposable macOS or Linux
+> test host that you are authorized to restart, with console access available.
+> Never run it on a workstation, shared server, production host, or a host that
+> contains work you need. The ordinary unit suite must never run these commands.
+
+Prerequisites:
+
+- Herdr 0.8.2 or newer and SSH access are configured on the disposable host.
+- AI Manager has a named tab `msam-restore-test`, and that tab is selected while
+  the app remains in the foreground.
+- The session has a recognizable multi-pane layout. If testing agent-native
+  restore, use a supported agent, create a real conversation, and confirm its
+  integration says `current` in **Host Setup → 4 · Session restore** (or with
+  `herdr integration status`). Give Herdr a few seconds to persist recent
+  layout/reference changes before stopping it.
+
+First inventory the exact test session from a separate SSH shell:
+
+```sh
+herdr --version
+herdr integration status
+herdr session list
+```
+
+To test a Herdr-server death without rebooting the host, stop only the named
+test session:
+
+```sh
+herdr session stop msam-restore-test
+```
+
+The selected foreground tab should notice PTY EOF, show reconnecting state, and
+run `herdr --session msam-restore-test` again. It may recover on the immediate
+attempt. Expect the saved layout and working directories, not the killed shell
+processes. A supported agent conversation resumes only if Herdr saved a valid
+native reference through a current integration and the agent accepts it. With
+pane history left off, old screen contents are not replayed.
+
+For the full host-loss path, repeat the setup and then, from the disposable
+host's separate SSH shell, run:
+
+```sh
+sudo reboot
+```
+
+The app makes at most three automatic attempts: immediately, after 2 seconds,
+and after 5 seconds. A normal reboot may outlast that budget; after SSH is back,
+press **Retry** for a fresh three attempts. Confirm that no unselected tab tried
+to connect and that a successful selected-tab attach restores the same named
+layout. The file-transfer outbox watcher is reopened as part of a successful
+attach.
+
+Cleanup: close the named tab in AI Manager first so automatic recovery cannot
+recreate it, then run these commands on the disposable host:
+
+```sh
+herdr session stop msam-restore-test
+herdr session delete msam-restore-test
+```
+
+Finally remove the test host/key from AI Manager and decommission or reimage the
+disposable host according to the test environment's normal cleanup policy.
 
 ### Live UI tests
 

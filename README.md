@@ -33,9 +33,19 @@ iPad (AI Manager)                                    host
 ```
 
 One tab = one SSH channel = `herdr` (or `herdr --session <name>`) on that host.
-`herdr` means *launch **or attach to*** the persistent session, so a dropped
-connection lands back in the same live session — the app keeps no reconnect
-state machine of its own.
+`herdr` means *launch **or attach to*** the persistent session. If the selected
+tab loses its PTY or SSH connection while the app is active, the app tries the
+same session immediately, then after 2 seconds, then after 5 seconds. After the
+third failure it stops and offers **Retry**, which starts a fresh three-attempt
+budget. Other tabs remain lazy and do not reconnect until selected.
+
+If Herdr's server survived, this reattaches to the original live panes and
+processes. If a host reboot or `herdr server stop` killed it, Herdr recreates the
+saved workspace/tab/pane layout; arbitrary shell processes are gone. A supported
+AI agent can resume its native conversation only when its current official
+Herdr integration captured a valid session reference. AI Manager does not
+enable Herdr's opt-in pane screen-history persistence, so recovery does not
+silently turn terminal output into a stored transcript.
 
 ## Features
 
@@ -59,10 +69,14 @@ state machine of its own.
 - **Port forwarding + in-app browser** — forward a port on the host (optionally
   through a second SSH hop) to a loopback listener on the iPad and open it in an
   embedded web view. See [docs/port-forwarding.md](docs/port-forwarding.md).
-- **Guided host setup** — a three-step sheet that tests the route to the host,
-  installs or updates Herdr, and manages its plugins. Every command is shown
-  before it runs, and Herdr's own state on the host decides what is reported —
-  never an exit status.
+- **Guided host setup** — a four-step sheet that tests the route to the host,
+  installs or updates Herdr, manages its plugins, and checks native session
+  restore for every supported AI agent detected in the host's login PATH. One
+  explicit action enables or repairs the integrations that need work, and
+  reports per-agent partial failures without hiding integrations already ready.
+  Host-changing actions require a tap, commands come from fixed app-owned
+  values, and Herdr's verified state on the host decides what is reported —
+  never an exit status alone.
 - **One-time password key install** — authenticate once with a password and the
   app appends your public key to the host's `authorized_keys`. The password is
   used for that single connection and is **never stored**. Copying the exported
@@ -144,9 +158,9 @@ generated `.pbxproj` or `App/Info.plist`.
 ## Status
 
 **v1 beta.** The app is in daily use and covered by a hermetic unit suite of
-over 360 tests across 61 suites, but it has not been through a public release
-cycle. Expect rough edges, and treat the host-key and file-transfer paths as the
-ones worth reading before you trust them.
+over 550 tests, but it has not been through a public release cycle. Expect rough
+edges, and treat the host-key and file-transfer paths as the ones worth reading
+before you trust them.
 
 ## License
 
