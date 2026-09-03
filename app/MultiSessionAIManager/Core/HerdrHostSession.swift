@@ -4,8 +4,8 @@ import Observation
 
 /// One host tab's live state: an authenticated SSH connection, a PTY running
 /// Herdr, and the terminal painting it. Herdr's own "launch or attach" semantics
-/// mean a reconnect lands back in the same remote session, so this type does not
-/// reconcile any state of its own.
+/// mean recovery can reopen the named remote session without reconstructing its
+/// panes on the client.
 @MainActor
 @Observable
 final class HerdrHostSession {
@@ -63,6 +63,12 @@ final class HerdrHostSession {
         var probeTimeout: Duration = .seconds(10)
     }
 
+    /// Delays before each attempt in one recovery cycle. The default provides
+    /// one immediate attach followed by two bounded retries.
+    struct RecoveryPolicy: Sendable {
+        var attemptDelays: [Duration] = [.zero, .seconds(2), .seconds(5)]
+    }
+
     let connection: HostConnection
     let sessionName: String?
     /// Identifies this tab's outbox watcher on the host. Stable across app
@@ -70,6 +76,16 @@ final class HerdrHostSession {
     let watchIdentity: String
     let terminal: TerminalEmulator
     let liveness: LivenessPolicy
+    let recovery: RecoveryPolicy
+
+    /// Set by the selected-tab lifecycle owner. Turning this off never closes
+    /// a healthy channel; it only retires an automatic cycle already in flight.
+    var automaticRecoveryEnabled = false {
+        didSet {
+            guard !automaticRecoveryEnabled else { return }
+            cancelAutomaticRecovery()
+        }
+    }
 
     private(set) var status: Status = .idle
     private var channel: PTYChannel?
@@ -78,6 +94,11 @@ final class HerdrHostSession {
     /// `stop()`, by any status change (generation guard), or by its own
     /// recovery hand-off.
     private var heartbeat: Task<Void, Never>?
+    /// EOF and heartbeat failures share this one task. A manual retry replaces
+    /// it and therefore receives a fresh attempt budget.
+    private var recoveryTask: Task<Void, Never>?
+    private var recoveryGeneration: UInt64 = 0
+    private var recoveryIsAutomatic = false
     /// Stamped off-main on every PTY output chunk; read by the heartbeat to
     /// skip probing while traffic already proves the link alive.
     private let lastOutputAt = NIOLockedValueBox(ContinuousClock.now)
@@ -102,13 +123,15 @@ final class HerdrHostSession {
         sessionName: String?,
         watchIdentity: String = "default",
         terminal: TerminalEmulator = TerminalEmulator(),
-        liveness: LivenessPolicy = .init()
+        liveness: LivenessPolicy = .init(),
+        recovery: RecoveryPolicy = .init()
     ) {
         self.connection = connection
         self.sessionName = sessionName
         self.watchIdentity = watchIdentity
         self.terminal = terminal
         self.liveness = liveness
+        self.recovery = recovery
     }
 
     /// Whether the heartbeat should spend a round trip: only when the link has
@@ -124,6 +147,14 @@ final class HerdrHostSession {
 
     func start() async {
         guard status != .connecting, status != .live else { return }
+        cancelRecovery(setIdleIfConnecting: false)
+        _ = await startAttempt()
+    }
+
+    /// Performs exactly one connect/attach attempt. Recovery owns the loop and
+    /// calls this once per policy delay, so this method never retries itself.
+    @discardableResult
+    private func startAttempt() async -> Bool {
         operationGeneration &+= 1
         let generation = operationGeneration
         status = .connecting
@@ -132,14 +163,14 @@ final class HerdrHostSession {
         if connection.state != .connected {
             await connection.connect()
         }
-        guard operationGeneration == generation else { return }
+        guard operationGeneration == generation, !Task.isCancelled else { return false }
         guard connection.state == .connected else {
             if case .hostKeyChanged(let fingerprint) = connection.state {
                 status = .hostKeyChanged(fingerprint)
             } else {
                 status = .failed(Self.message(for: connection.state))
             }
-            return
+            return false
         }
 
         do {
@@ -151,34 +182,49 @@ final class HerdrHostSession {
             let channel = try await connection.openHerdrPTY(
                 sessionName: sessionName,
                 cols: terminal.cols,
-                rows: terminal.rows
-            ) { [weak self] data in
-                lastOutputAt.withLockedValue { $0 = .now }
-                terminal.feed(data)
-                // Off-main, bounded, byte-level scan — no String allocation, and it
-                // stops looking (cheaply) once the preamble window has passed.
-                let hit = scanState.withLockedValue { state -> Bool in
-                    guard !state.finished else { return false }
-                    state.buffer.append(data)
-                    if state.buffer.range(of: sentinelBytes) != nil {
-                        state.finished = true
-                        state.buffer = Data()   // release; scanning is over either way
-                        return true
+                rows: terminal.rows,
+                onOutput: { [weak self] data in
+                    lastOutputAt.withLockedValue { $0 = .now }
+                    terminal.feed(data)
+                    // Off-main, bounded, byte-level scan — no String allocation, and it
+                    // stops looking (cheaply) once the preamble window has passed.
+                    let hit = scanState.withLockedValue { state -> Bool in
+                        guard !state.finished else { return false }
+                        state.buffer.append(data)
+                        if state.buffer.range(of: sentinelBytes) != nil {
+                            state.finished = true
+                            state.buffer = Data()   // release; scanning is over either way
+                            return true
+                        }
+                        if state.buffer.count >= SentinelScanState.scanLimit {
+                            state.finished = true
+                            state.buffer = Data()   // release; nothing more will ever be scanned
+                        }
+                        return false
                     }
-                    if state.buffer.count >= SentinelScanState.scanLimit {
-                        state.finished = true
-                        state.buffer = Data()   // release; nothing more will ever be scanned
+                    guard hit else { return }
+                    Task { @MainActor in self?.markHerdrMissing(generation: generation) }
+                },
+                onClose: { [weak self] in
+                    Task { @MainActor in
+                        self?.herdrPTYDidClose(generation: generation)
                     }
-                    return false
                 }
-                guard hit else { return }
-                Task { @MainActor in self?.markHerdrMissing(generation: generation) }
-            }
-            guard operationGeneration == generation else {
+            )
+            guard operationGeneration == generation, !Task.isCancelled else {
                 // Superseded by a stop() or a newer start() while we were opening
                 // the PTY — don't leak the channel we just got.
                 channel.close()
-                return
+                return false
+            }
+            // EOF can race the async hand-off and arrive before openPTY returns.
+            // Never publish a channel that is already closed as a live session;
+            // in a recovery cycle this simply consumes the current attempt.
+            guard channel.isOpen else {
+                self.channel = nil
+                terminal.pty = nil
+                status = .failed("The remote session closed unexpectedly")
+                return false
             }
             self.channel = channel
             terminal.pty = channel
@@ -188,10 +234,17 @@ final class HerdrHostSession {
             status = sawMissingSentinel ? .herdrMissing : .live
             if status == .live {
                 startHeartbeat(generation: generation)
+                return true
             }
+            return false
         } catch {
-            guard operationGeneration == generation else { return }
+            guard operationGeneration == generation else { return false }
+            if error is CancellationError || Task.isCancelled {
+                status = .idle
+                return false
+            }
             status = .failed(SSHFailure.classify(message: String(describing: error)).userMessage)
+            return false
         }
     }
 
@@ -283,12 +336,6 @@ final class HerdrHostSession {
     /// and reuses a cached `HostConnection`, neither of which is invalidated by
     /// the transport dying underneath them.
     func ensureLive() async {
-        // The outbox watch is reconciled the same way the PTY is -- by checking
-        // whether it is still open rather than by a push callback, which is the
-        // pattern this type already uses. Without this a reconnect leaves the
-        // watch dead and files silently stop arriving with nothing to see.
-        defer { Task { await self.ensureWatching() } }
-
         // An open-looking channel proves nothing: a NAT-evicted idle flow dies
         // with no FIN, so `isOpen` stays true over a corpse forever (issue #1).
         // Probe before trusting `.live`, so a tab switch or a return to the
@@ -297,33 +344,48 @@ final class HerdrHostSession {
             let generation = operationGeneration
             let alive = await connection.verifyAlive(timeout: liveness.probeTimeout)
             guard operationGeneration == generation else { return }
+            if status == .live, alive {
+                await ensureWatching()
+                return
+            }
             if status == .live, !alive {
-                await recoverLostConnection()
+                let task = beginRecovery(automatic: false, connectionKnownDead: true)
+                await task?.value
+                return
             }
         }
 
-        // Stale .live: the channel died while nobody was watching. Reset, but do
-        // NOT disconnect -- the SSH connection is fine and herdr reattaches.
-        if status == .live, channel?.isOpen != true {
-            channel = nil
-            terminal.pty = nil
-            status = .idle
+        if status == .connecting {
+            guard recoveryTask != nil else { return }
+            let task = beginRecovery(automatic: false)
+            await task?.value
+            return
         }
-        // A previous attempt failed: the cached connection may be a corpse
-        // (HostConnection.state is never invalidated by transport death).
-        // Drop it so start() reconnects instead of reusing it.
-        if case .failed = status {
-            await connection.disconnect()
+
+        // A first launch is not a recovery cycle. Once a live/failed session is
+        // being reconciled, however, this method is the manual Retry entry point
+        // and always receives a new three-attempt budget.
+        if status == .idle, connection.state == .idle {
+            await start()
+            if status == .live {
+                await ensureWatching()
+            }
+            return
         }
-        await start()
+
+        if case .hostKeyChanged = status {
+            await start()
+            return
+        }
+
+        let task = beginRecovery(automatic: false)
+        await task?.value
     }
 
     /// While `.live` and quiet, probe the connection every `interval`. The
     /// probe's traffic is the keepalive; its failure is the drop detector. On
-    /// failure the session recovers itself -- herdr reattaches to the same
-    /// remote session, so one silent redial is safe. If the redial fails,
-    /// `start()` lands on `.failed`, no new heartbeat is started, and the
-    /// overlay's Retry is the only way forward: no retry loop.
+    /// failure the session hands off to the same bounded coordinator used by
+    /// PTY EOF, so concurrent loss signals cannot create parallel redials.
     ///
     /// Battery: in the background iOS suspends the process (the sleep simply
     /// freezes), and while output is flowing `shouldProbe` skips the round
@@ -347,29 +409,163 @@ final class HerdrHostSession {
                 let alive = await self.connection.verifyAlive(timeout: policy.probeTimeout)
                 guard self.operationGeneration == generation, self.status == .live else { return }
                 guard !alive else { continue }
-                await self.recoverLostConnection()
-                // ensureLive (not start) so the outbox watch is re-established
-                // along with the PTY. Its own start() supersedes this task's
-                // generation, so the loop must end here either way.
-                await self.ensureLive()
+                self.detectedUnexpectedLoss(connectionKnownDead: true)
                 return
             }
         }
     }
 
-    /// The connection under a live tab is dead (a probe failed). Tear down the
-    /// channel AND the connection -- unlike a dead channel over a healthy
-    /// connection, reusing this one would just reopen a PTY over a corpse.
-    private func recoverLostConnection() async {
+    /// Handles both heartbeat loss and a PTY close after the initial callback's
+    /// generation check. The coordinator probes the cached connection itself,
+    /// so healthy SSH is reused while a dead transport is discarded.
+    private func detectedUnexpectedLoss(connectionKnownDead: Bool = false) {
+        guard status == .live else { return }
+        if automaticRecoveryEnabled {
+            _ = beginRecovery(automatic: true, connectionKnownDead: connectionKnownDead)
+        } else {
+            operationGeneration &+= 1
+            heartbeat?.cancel()
+            heartbeat = nil
+            channel?.close()
+            channel = nil
+            watchChannel?.close()
+            watchChannel = nil
+            terminal.pty = nil
+            status = .failed("The remote session closed unexpectedly")
+        }
+    }
+
+    private func herdrPTYDidClose(generation: UInt64) {
+        guard operationGeneration == generation, status == .live else { return }
+        detectedUnexpectedLoss()
+    }
+
+    /// Starts one bounded recovery cycle. Automatic triggers coalesce; a manual
+    /// Retry always cancels the prior cycle and starts with a fresh budget.
+    @discardableResult
+    private func beginRecovery(
+        automatic: Bool,
+        connectionKnownDead: Bool = false
+    ) -> Task<Void, Never>? {
+        if automatic {
+            guard automaticRecoveryEnabled else { return nil }
+        }
+
+        // Duplicate signals from the retired PTY are fenced by operationGeneration
+        // and `.live`. If an automatic close reaches here while a task still
+        // exists, it belongs to the replacement PTY already published by that
+        // task, so it is a new loss and must replace the finishing cycle.
+        cancelRecovery(setIdleIfConnecting: false)
+        recoveryGeneration &+= 1
+        let generation = recoveryGeneration
+        recoveryIsAutomatic = automatic
+
+        // Invalidate the PTY callback before closing anything locally. That
+        // makes stop/retry teardown indistinguishable from an old EOF callback.
+        operationGeneration &+= 1
+        heartbeat?.cancel()
+        heartbeat = nil
         channel?.close()
         channel = nil
+        watchChannel?.close()
+        watchChannel = nil
         terminal.pty = nil
+        status = .connecting
+
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.runRecovery(
+                generation: generation,
+                automatic: automatic,
+                connectionKnownDead: connectionKnownDead
+            )
+        }
+        recoveryTask = task
+        return task
+    }
+
+    private func runRecovery(
+        generation: UInt64,
+        automatic: Bool,
+        connectionKnownDead: Bool
+    ) async {
+        var connectionKnownDead = connectionKnownDead
+        for (attemptIndex, delay) in recovery.attemptDelays.prefix(3).enumerated() {
+            if attemptIndex > 0 {
+                // A failed intermediate attempt is not exhaustion. Keep the
+                // reconnecting state visible until the next attempt or until
+                // deselection/backgrounding cancels the cycle back to idle.
+                status = .connecting
+            }
+            do {
+                try await Task.sleep(for: delay)
+            } catch {
+                return
+            }
+            guard recoveryGeneration == generation, !Task.isCancelled else { return }
+            if automatic, !automaticRecoveryEnabled { return }
+
+            // HostConnection caches authentication state, so probe before every
+            // attach. A failed probe retires that cache and forces this attempt
+            // to reconnect; a healthy connection opens only a replacement PTY.
+            if connection.state == .connected {
+                if !connectionKnownDead {
+                    connectionKnownDead = !(await connection.verifyAlive(
+                        timeout: liveness.probeTimeout
+                    ))
+                    guard recoveryGeneration == generation, !Task.isCancelled else { return }
+                }
+                if connectionKnownDead {
+                    await connection.disconnect()
+                    guard recoveryGeneration == generation, !Task.isCancelled else { return }
+                }
+            }
+            connectionKnownDead = false
+
+            let succeeded = await startAttempt()
+            guard recoveryGeneration == generation, !Task.isCancelled else { return }
+            if succeeded {
+                await ensureWatching()
+                finishRecovery(generation: generation)
+                return
+            }
+
+            // Neither condition can improve through unattended retries.
+            switch status {
+            case .hostKeyChanged, .herdrMissing:
+                finishRecovery(generation: generation)
+                return
+            default:
+                break
+            }
+        }
+        finishRecovery(generation: generation)
+    }
+
+    private func finishRecovery(generation: UInt64) {
+        guard recoveryGeneration == generation else { return }
+        recoveryTask = nil
+        recoveryIsAutomatic = false
+    }
+
+    private func cancelAutomaticRecovery() {
+        guard recoveryIsAutomatic else { return }
+        cancelRecovery(setIdleIfConnecting: true)
+    }
+
+    private func cancelRecovery(setIdleIfConnecting: Bool) {
+        recoveryGeneration &+= 1
+        recoveryTask?.cancel()
+        recoveryTask = nil
+        recoveryIsAutomatic = false
+        guard setIdleIfConnecting, status == .connecting else { return }
+        operationGeneration &+= 1
         status = .idle
-        await connection.disconnect()
     }
 
     func stop() async {
         operationGeneration &+= 1
+        cancelRecovery(setIdleIfConnecting: false)
         heartbeat?.cancel()
         heartbeat = nil
         channel?.close()

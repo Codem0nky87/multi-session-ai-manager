@@ -17,6 +17,9 @@ final class FakeSSHTransport: SSHTransport, @unchecked Sendable {
     // MARK: Connect recording
     private(set) var lastConnectHost: Host?
     private(set) var lastConnectKey: SSHKeyMaterial?
+    private(set) var connectAttemptCount = 0
+    /// One deterministic result per upcoming connect. `nil` means success.
+    var connectErrors: [SSHTransportError?] = []
     private let connectionOwnership = SSHConnectionOwnership<Connection>()
     var isConnected: Bool { connectionOwnership.current() != nil }
     private(set) var disconnectCount = 0
@@ -30,6 +33,7 @@ final class FakeSSHTransport: SSHTransport, @unchecked Sendable {
     /// Optional async gates for deterministic cancellation tests.
     var beforeConnect: (@Sendable () async throws -> Void)?
     var beforeCommand: (@Sendable (String) async throws -> Void)?
+    var beforeOpenPTY: (@Sendable (String) async throws -> Void)?
 
     // MARK: Command recording / canned responses
     var commandResponses: [String: String] = [:]
@@ -66,15 +70,21 @@ final class FakeSSHTransport: SSHTransport, @unchecked Sendable {
     private(set) var openedDirectTCPIPTargets: [DirectTCPIPTarget] = []
     private(set) var openedDirectTCPIPChannels: [FakeDirectTCPIPChannel] = []
     var directTCPIPError: Error?
+    /// Simulates a remote PTY that reaches EOF before `openPTY` hands it back.
+    var closeNextPTYBeforeReturning = false
 
     init() {}
 
     func connect(host: Host, key: SSHKeyMaterial,
                  hostKeyValidator: @escaping @Sendable (String) -> Bool) async throws {
         let attempt = connectionOwnership.beginConnect()
+        connectAttemptCount += 1
         lastConnectHost = host
         lastConnectKey = key
         try await beforeConnect?()
+        if !connectErrors.isEmpty, let queuedError = connectErrors.removeFirst() {
+            throw queuedError
+        }
         if let connectError { throw connectError }
         let accepted = hostKeyValidator(hostKeyToPresent)
         lastHostKeyDecision = accepted
@@ -150,6 +160,8 @@ final class FakeSSHTransport: SSHTransport, @unchecked Sendable {
         onClose: @escaping @Sendable () -> Void
     ) async throws -> PTYChannel {
         guard isConnected else { throw SSHTransportError.notConnected }
+        try await beforeOpenPTY?(command)
+        guard isConnected else { throw SSHTransportError.notConnected }
         let ch = FakePTYChannel(
             command: command,
             cols: cols,
@@ -158,6 +170,10 @@ final class FakeSSHTransport: SSHTransport, @unchecked Sendable {
             onClose: onClose
         )
         openedPTYs.append(ch)
+        if closeNextPTYBeforeReturning {
+            closeNextPTYBeforeReturning = false
+            ch.close()
+        }
         return ch
     }
 

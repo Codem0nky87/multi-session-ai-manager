@@ -102,6 +102,21 @@ final class HostConnection {
         state == .connected ? service : nil
     }
 
+    func openHerdrPTY(
+        sessionName: String?,
+        cols: Int,
+        rows: Int,
+        onOutput: @escaping @Sendable (Data) -> Void
+    ) async throws -> PTYChannel {
+        try await openHerdrPTY(
+            sessionName: sessionName,
+            cols: cols,
+            rows: rows,
+            onOutput: onOutput,
+            onClose: {}
+        )
+    }
+
     /// Open an interactive PTY running Herdr on this host. Available only while
     /// this exact connection is authenticated, mirroring the provisioner's rule:
     /// it reuses the host-key-verified service and never opens a parallel session.
@@ -109,14 +124,16 @@ final class HostConnection {
         sessionName: String?,
         cols: Int,
         rows: Int,
-        onOutput: @escaping @Sendable (Data) -> Void
+        onOutput: @escaping @Sendable (Data) -> Void,
+        onClose: @escaping @Sendable () -> Void
     ) async throws -> PTYChannel {
         guard state == .connected else { throw PTYUnavailable() }
         return try await service.openPTY(
             command: HerdrLaunchCommand.launch(sessionName: sessionName),
             cols: cols,
             rows: rows,
-            onOutput: onOutput
+            onOutput: onOutput,
+            onClose: onClose
         )
     }
 
