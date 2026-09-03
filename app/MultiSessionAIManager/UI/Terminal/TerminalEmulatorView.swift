@@ -444,22 +444,29 @@ struct TerminalEmulatorView: View {
 }
 
 struct TerminalLayoutAnchorGate {
-    private var pending = false
-
-    mutating func request() -> Bool {
-        guard !pending else { return false }
-        pending = true
-        return true
+    struct Token: Equatable {
+        fileprivate let sequence: UInt64
     }
 
-    mutating func consume() -> Bool {
-        guard pending else { return false }
-        pending = false
+    private var nextSequence: UInt64 = 0
+    private var pendingToken: Token?
+
+    mutating func request() -> Token? {
+        guard pendingToken == nil else { return nil }
+        nextSequence += 1
+        let token = Token(sequence: nextSequence)
+        pendingToken = token
+        return token
+    }
+
+    mutating func consume(_ token: Token) -> Bool {
+        guard pendingToken == token else { return false }
+        pendingToken = nil
         return true
     }
 
     mutating func cancel() {
-        pending = false
+        pendingToken = nil
     }
 }
 
@@ -862,9 +869,9 @@ private struct TerminalScrollContainer<Content: View>: UIViewControllerRepresent
         }
 
         private func scheduleAnchorAfterLayout() {
-            guard anchorGate.request() else { return }
+            guard let token = anchorGate.request() else { return }
             DispatchQueue.main.async { [weak self] in
-                guard let self, self.anchorGate.consume() else { return }
+                guard let self, self.anchorGate.consume(token) else { return }
                 guard !self.coordinator.isUserInteracting else { return }
 
                 if TerminalScrollAnchor.pinsToTop(isAltScreen: self.coordinator.isAltScreen) {

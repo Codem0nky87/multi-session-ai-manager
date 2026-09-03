@@ -106,33 +106,49 @@ import Testing
 
 @Suite struct TerminalLayoutAnchorGateTests {
 
-    @Test func repeatedRequestsCoalesceUntilThePendingAnchorRuns() {
+    @Test func repeatedRequestsCoalesceUntilThePendingAnchorRuns() throws {
         var gate = TerminalLayoutAnchorGate()
 
-        let firstRequest = gate.request()
+        let pendingRequest = gate.request()
+        let firstRequest = try #require(pendingRequest)
         let repeatedRequest = gate.request()
-        let firstConsume = gate.consume()
-        let repeatedConsume = gate.consume()
+        let firstConsume = gate.consume(firstRequest)
+        let repeatedConsume = gate.consume(firstRequest)
         let requestAfterConsume = gate.request()
 
-        #expect(firstRequest)
-        #expect(!repeatedRequest)
+        #expect(repeatedRequest == nil)
         #expect(firstConsume)
         #expect(!repeatedConsume)
-        #expect(requestAfterConsume)
+        #expect(requestAfterConsume != nil)
     }
 
-    @Test func cancellingDropsTheQueuedAnchor() {
+    @Test func cancellingDropsTheQueuedAnchor() throws {
         var gate = TerminalLayoutAnchorGate()
 
-        let firstRequest = gate.request()
+        let pendingRequest = gate.request()
+        let firstRequest = try #require(pendingRequest)
         gate.cancel()
-        let consumeAfterCancel = gate.consume()
+        let consumeAfterCancel = gate.consume(firstRequest)
         let requestAfterCancel = gate.request()
 
-        #expect(firstRequest)
         #expect(!consumeAfterCancel)
-        #expect(requestAfterCancel)
+        #expect(requestAfterCancel != nil)
+    }
+
+    @Test func aCancelledRequestCannotConsumeItsReplacement() throws {
+        var gate = TerminalLayoutAnchorGate()
+
+        let pendingRequestA = gate.request()
+        let requestA = try #require(pendingRequestA)
+        gate.cancel()
+        let pendingRequestB = gate.request()
+        let requestB = try #require(pendingRequestB)
+
+        let staleRequestConsumed = gate.consume(requestA)
+        let replacementConsumed = gate.consume(requestB)
+
+        #expect(!staleRequestConsumed)
+        #expect(replacementConsumed)
     }
 }
 
