@@ -136,9 +136,7 @@ struct TerminalEmulatorView: View {
                 // Font size FIRST so cols/rows are derived from the new cell metrics.
                 emulator.setFontSize(settings.fontSize)
                 applySize(geometry.size)
-                DispatchQueue.main.async {
-                    if shouldAutomaticallyFocusInput { resolvedInputController.focus() }
-                }
+                requestAutomaticFocusIfEligible()
             }
             .onChange(of: geometry.size) { _, newSize in applySize(newSize) }
             // The scroll view's own bounds are the only honest measure of how
@@ -160,8 +158,8 @@ struct TerminalEmulatorView: View {
             .onChange(of: inputEnabled) { _, enabled in
                 if !enabled {
                     resolvedInputController.blur()
-                } else if shouldAutomaticallyFocusInput {
-                    resolvedInputController.focus()
+                } else {
+                    requestAutomaticFocusIfEligible()
                 }
             }
         }
@@ -477,12 +475,13 @@ struct TerminalEmulatorView: View {
         )
     }
 
-    private var shouldAutomaticallyFocusInput: Bool {
-        TerminalViewLifecycleController.shouldAutomaticallyFocus(
+    private func requestAutomaticFocusIfEligible() {
+        TerminalViewLifecycleController.requestAutomaticFocus(
             isMounted: isMounted,
             isSceneActive: scenePhase == .active,
             inputEnabled: inputEnabled,
-            automaticallyFocusesInput: automaticallyFocusesInput
+            automaticallyFocusesInput: automaticallyFocusesInput,
+            focusInput: resolvedInputController.focus
         )
     }
 
@@ -531,6 +530,22 @@ struct TerminalViewLifecycleController {
         automaticallyFocusesInput: Bool
     ) -> Bool {
         isMounted && isSceneActive && inputEnabled && automaticallyFocusesInput
+    }
+
+    static func requestAutomaticFocus(
+        isMounted: Bool,
+        isSceneActive: Bool,
+        inputEnabled: Bool,
+        automaticallyFocusesInput: Bool,
+        focusInput: () -> Void
+    ) {
+        guard shouldAutomaticallyFocus(
+            isMounted: isMounted,
+            isSceneActive: isSceneActive,
+            inputEnabled: inputEnabled,
+            automaticallyFocusesInput: automaticallyFocusesInput
+        ) else { return }
+        focusInput()
     }
 }
 

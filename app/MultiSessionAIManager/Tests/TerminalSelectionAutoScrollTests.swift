@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import MultiSessionAIManager
 
-@Suite struct TerminalViewLifecycleControllerTests {
+@Suite @MainActor struct TerminalViewLifecycleControllerTests {
 
     @Test func inactiveSceneStopsAutoScrollAndBlursInput() {
         var stops = 0
@@ -82,6 +82,32 @@ import Testing
             inputEnabled: true,
             automaticallyFocusesInput: false
         ))
+    }
+
+    @Test func inactiveLifecycleCancelsFocusBeforeDeferredAttachmentCompletes() async {
+        let controller = KeyInputController()
+
+        TerminalViewLifecycleController.requestAutomaticFocus(
+            isMounted: true,
+            isSceneActive: true,
+            inputEnabled: true,
+            automaticallyFocusesInput: true,
+            focusInput: controller.focus
+        )
+        #expect(controller.isFocusRequested)
+
+        let inputView = TerminalKeyInputView(frame: .zero)
+        controller.view = inputView
+        TerminalViewLifecycleController.handle(
+            .sceneChanged(isActive: false),
+            stopAutoScroll: {},
+            blurInput: controller.blur
+        )
+        await Task.yield()
+        await Task.yield()
+
+        #expect(!controller.isFocusRequested)
+        #expect(!inputView.isFirstResponder)
     }
 }
 
