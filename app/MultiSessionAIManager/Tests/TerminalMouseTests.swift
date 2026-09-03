@@ -54,6 +54,28 @@ import Foundation
     @Test func wheelLargerCoords() {
         #expect(TerminalMouse.wheel(up: false, col: 119, row: 49) == Array("\u{1b}[<65;120;50M".utf8))
     }
+
+    @Test @MainActor func hostOwnedHistoryStillForwardsAlternateScreenWheelEvents() async {
+        let clock = TestTerminalFrameClock()
+        let emulator = TerminalEmulator(history: .hostOwned, frameClock: clock)
+        let channel = FakePTYChannel(
+            command: "herdr",
+            cols: emulator.cols,
+            rows: emulator.rows,
+            onOutput: { _ in },
+            onClose: {}
+        )
+        emulator.pty = channel
+        emulator.feed(Data("\u{1b}[?1049h".utf8))
+        await Task.yield()
+        clock.fire()
+        #expect(emulator.isAlternateScreen)
+
+        emulator.scrollWheel(up: true, count: 2, col: 4, row: 2)
+
+        let oneWheelEvent = Array("\u{1b}[<64;5;3M".utf8)
+        #expect(channel.sent == Data(oneWheelEvent + oneWheelEvent))
+    }
 }
 
 @Suite struct TerminalScrollTicksTests {

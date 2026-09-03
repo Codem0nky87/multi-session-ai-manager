@@ -10,29 +10,40 @@ import Testing
         liveness: HerdrHostSession.LivenessPolicy = .init(),
         recovery: HerdrHostSession.RecoveryPolicy = .init(),
         automaticRecoveryEnabled: Bool = true,
-        terminal: TerminalEmulator = TerminalEmulator()
+        terminal: TerminalEmulator? = nil
     ) throws -> HerdrHostSession {
         let suite = "HerdrHostSessionTests.\(UUID().uuidString)"
         let keyStore = KeyStore(backing: InMemoryKeychain())
         let keyID = try keyStore.generateEd25519(label: "thin-herdr")
-        let session = HerdrHostSession(
-            connection: HostConnection(
-                host: Host(
-                    name: "mac",
-                    address: "192.0.2.10",
-                    username: "alice",
-                    keyID: keyID,
-                    defaultWorkdir: "/Users/alice"
-                ),
-                keyStore: keyStore,
-                knownHosts: knownHosts ?? KnownHostsStore(defaults: UserDefaults(suiteName: suite)!),
-                transport: transport
+        let connection = HostConnection(
+            host: Host(
+                name: "mac",
+                address: "192.0.2.10",
+                username: "alice",
+                keyID: keyID,
+                defaultWorkdir: "/Users/alice"
             ),
-            sessionName: sessionName,
-            terminal: terminal,
-            liveness: liveness,
-            recovery: recovery
+            keyStore: keyStore,
+            knownHosts: knownHosts ?? KnownHostsStore(defaults: UserDefaults(suiteName: suite)!),
+            transport: transport
         )
+        let session: HerdrHostSession
+        if let terminal {
+            session = HerdrHostSession(
+                connection: connection,
+                sessionName: sessionName,
+                terminal: terminal,
+                liveness: liveness,
+                recovery: recovery
+            )
+        } else {
+            session = HerdrHostSession(
+                connection: connection,
+                sessionName: sessionName,
+                liveness: liveness,
+                recovery: recovery
+            )
+        }
         session.automaticRecoveryEnabled = automaticRecoveryEnabled
         return session
     }
@@ -60,6 +71,13 @@ import Testing
     private func watchPTYs(_ transport: FakeSSHTransport) -> [FakePTYChannel] {
         let command = RemoteFileDownload.watchCommand(identity: "default")
         return transport.openedPTYs.filter { $0.command == command }
+    }
+
+    @Test func defaultTerminalKeepsScrollbackOnTheHost() throws {
+        let session = try makeSession(transport: FakeSSHTransport())
+
+        #expect(session.terminal.history == .hostOwned)
+        #expect(session.terminal.localScrollbackLimit == 0)
     }
 
     @Test func successfulStartBindsThePTYAndGoesLive() async throws {

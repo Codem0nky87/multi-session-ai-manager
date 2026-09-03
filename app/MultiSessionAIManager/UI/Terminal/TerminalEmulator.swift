@@ -20,6 +20,20 @@ import Foundation
 import SwiftUI
 import SwiftTerm
 
+enum TerminalHistoryPolicy: Equatable, Sendable {
+    case hostOwned
+    case local(limit: Int)
+
+    var localLimit: Int {
+        switch self {
+        case .hostOwned:
+            0
+        case .local(let limit):
+            max(limit, 0)
+        }
+    }
+}
+
 @MainActor
 @Observable
 final class TerminalEmulator {
@@ -36,6 +50,10 @@ final class TerminalEmulator {
     /// Current geometry, surfaced so callers can reuse it when re-attaching a PTY.
     @ObservationIgnored private(set) var cols: Int
     @ObservationIgnored private(set) var rows: Int
+
+    /// The owner and bound for scrollback retained by this terminal core.
+    @ObservationIgnored let history: TerminalHistoryPolicy
+    @ObservationIgnored let localScrollbackLimit: Int
 
     /// Bumped every time `resize` changes geometry after a font, rotation, or
     /// display change.
@@ -105,11 +123,14 @@ final class TerminalEmulator {
         cols: Int = 80,
         rows: Int = 24,
         fontSize: CGFloat = 13,
+        history: TerminalHistoryPolicy = .local(limit: 1_000),
         frameClock: TerminalFrameClock = DisplayLinkTerminalFrameClock()
     ) {
         self.cols = max(cols, 1)
         self.rows = max(rows, 1)
         self.fontSize = fontSize
+        self.history = history
+        self.localScrollbackLimit = history.localLimit
         self.fontMetrics = TerminalFontMetrics(fontSize: fontSize)
         self.frameClock = frameClock
 
@@ -119,7 +140,7 @@ final class TerminalEmulator {
         let options = TerminalOptions(cols: self.cols,
                                       rows: self.rows,
                                       termName: "xterm-256color",
-                                      scrollback: 1000)
+                                      scrollback: localScrollbackLimit)
         self.terminal = Terminal(delegate: delegate, options: options)
 
         stringSupplier.terminal = terminal

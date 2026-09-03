@@ -136,7 +136,7 @@ final class HerdrHostSession {
         connection: HostConnection,
         sessionName: String?,
         watchIdentity: String = "default",
-        terminal: TerminalEmulator = TerminalEmulator(),
+        terminal: TerminalEmulator = TerminalEmulator(history: .hostOwned),
         liveness: LivenessPolicy = .init(),
         recovery: RecoveryPolicy = .init()
     ) {

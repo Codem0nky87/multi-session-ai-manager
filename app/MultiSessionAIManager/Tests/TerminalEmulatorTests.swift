@@ -46,6 +46,34 @@ final class TestTerminalFrameClock: TerminalFrameClock {
         #expect(e.renderGeneration == 0)
     }
 
+    @Test func negativeLocalHistoryLimitNormalizesToZero() {
+        let clock = TestTerminalFrameClock()
+        let e = TerminalEmulator(history: .local(limit: -1), frameClock: clock)
+
+        #expect(e.history == .local(limit: -1))
+        #expect(e.localScrollbackLimit == 0)
+    }
+
+    @Test func hostOwnedHistoryPublishesOnlyTheViewportAfterSustainedOutput() async {
+        let rowCount = 5
+        let clock = TestTerminalFrameClock()
+        let e = TerminalEmulator(
+            cols: 20,
+            rows: rowCount,
+            history: .hostOwned,
+            frameClock: clock
+        )
+        let output = (0..<2_000).map { "line-\($0)\r\n" }.joined()
+
+        e.feed(Data(output.utf8))
+        await Task.yield()
+        #expect(clock.startCount == 1)
+        clock.fire()
+
+        #expect(e.lines.count <= rowCount)
+        #expect(e.visibleText().contains("line-1999"))
+    }
+
     @Test func burstFeedCoalescesIntoOneFrameAndPublishesRealTerminalState() async {
         let clock = TestTerminalFrameClock()
         let e = TerminalEmulator(cols: 20, rows: 5, frameClock: clock)
@@ -294,7 +322,12 @@ final class TestTerminalFrameClock: TerminalFrameClock {
     /// the scroll-invariant→Position.row mapping holds once linesTop advances.
     @Test func selectedTextRoundTripsAfterScrollbackTrim() async {
         let clock = TestTerminalFrameClock()
-        let e = TerminalEmulator(cols: 40, rows: 6, frameClock: clock)
+        let e = TerminalEmulator(
+            cols: 40,
+            rows: 6,
+            history: .local(limit: 1_000),
+            frameClock: clock
+        )
         // Push well past the 1000-line scrollback so linesTop advances.
         for n in 0..<1100 {
             e.feed(Data("line\(n)\r\n".utf8))
@@ -303,6 +336,8 @@ final class TestTerminalFrameClock: TerminalFrameClock {
         await Task.yield()
         #expect(clock.startCount == 1)
         clock.fire()
+        #expect(e.lines.count > e.rows)
+        #expect(e.lines.count <= e.rows + e.localScrollbackLimit)
         // The renderer's last rendered row index is lines.count-1 (scroll-invariant).
         // "FINDME" is on the current cursor row = the last non-empty rendered row.
         let lastRow = e.lines.count - 1

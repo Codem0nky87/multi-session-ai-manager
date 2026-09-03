@@ -160,6 +160,13 @@ import Testing
         )
     }
 
+    @Test func defaultTerminalRetainsBoundedLocalHistory() {
+        let terminal = session("true").terminal
+
+        #expect(terminal.history == .local(limit: 1_000))
+        #expect(terminal.localScrollbackLimit == 1_000)
+    }
+
     @Test func theCommandRunsInALoginShellSoItSeesTheUsersPATH() {
         // An installer that has just written to ~/.profile is invisible
         // otherwise, which is the whole reason this sheet exists.
