@@ -520,6 +520,9 @@ final class HerdrHostSession {
         if automaticRecoveryEnabled {
             _ = beginRecovery(automatic: true, connectionKnownDead: connectionKnownDead)
         } else {
+            // The loss has not consumed a recovery attempt. Keep it dormant so
+            // foreground selection can start the normal bounded cycle; `.failed`
+            // is reserved for a cycle that actually exhausted its budget.
             operationGeneration &+= 1
             heartbeat?.cancel()
             heartbeat = nil
@@ -527,7 +530,7 @@ final class HerdrHostSession {
             channel = nil
             retireWatch()
             terminal.pty = nil
-            status = .failed("The remote session closed unexpectedly")
+            status = .idle
         }
     }
 

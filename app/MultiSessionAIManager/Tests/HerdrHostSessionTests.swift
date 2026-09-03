@@ -234,6 +234,37 @@ import Testing
         #expect(replacement?.isOpen == true)
     }
 
+    @Test func inactivePTYLossWaitsForReselectionBeforeRecovering() async throws {
+        let transport = FakeSSHTransport()
+        let session = try makeSession(
+            transport: transport,
+            recovery: .init(attemptDelays: [.zero, .milliseconds(10), .milliseconds(20)]),
+            automaticRecoveryEnabled: false
+        )
+        await session.start()
+        await session.ensureWatching()
+        let attachesBeforeLoss = herdrPTYCount(transport)
+        let watcher = watchPTYs(transport).last
+        let herdrPTY = transport.openedPTYs.last {
+            $0.command == HerdrLaunchCommand.launch(sessionName: nil)
+        }
+
+        herdrPTY?.close()
+        try await waitUntil { session.status != .live }
+        #expect(session.status == .idle)
+        try await Task.sleep(for: .milliseconds(80))
+
+        #expect(herdrPTYCount(transport) == attachesBeforeLoss)
+        #expect(session.terminal.pty == nil)
+        #expect(watcher?.closed == true)
+
+        session.automaticRecoveryEnabled = true
+        await session.ensureLive()
+
+        #expect(session.status == .live)
+        #expect(herdrPTYCount(transport) == attachesBeforeLoss + 1)
+    }
+
     @Test func hostLossStopsAfterThreeRecoveryAttempts() async throws {
         let transport = FakeSSHTransport()
         let session = try makeSession(
@@ -258,6 +289,15 @@ import Testing
         #expect(transport.connectAttemptCount - connectsBeforeLoss == 3)
         guard case .failed = session.status else {
             Issue.record("Expected recovery exhaustion to remain failed, got \(session.status)")
+            return
+        }
+
+        transport.connectErrors = [nil]
+        await session.ensureLive()
+
+        #expect(transport.connectAttemptCount - connectsBeforeLoss == 3)
+        guard case .failed = session.status else {
+            Issue.record("Expected lifecycle reconciliation to preserve terminal failure")
             return
         }
     }
@@ -426,6 +466,32 @@ import Testing
 
         #expect(transport.connectAttemptCount - connectsBeforeLoss == 1)
         #expect(session.status == .idle)
+    }
+
+    @Test func foregroundingResumesAnAutomaticCycleCancelledInBackground() async throws {
+        let transport = FakeSSHTransport()
+        let session = try makeSession(
+            transport: transport,
+            recovery: .init(attemptDelays: [.zero, .milliseconds(150), .milliseconds(150)])
+        )
+        await session.start()
+        let connectsBeforeLoss = transport.connectAttemptCount
+
+        transport.connectErrors = [.commandFailed("backgrounded attempt")]
+        await transport.disconnect()
+        try await waitUntil {
+            session.status == .connecting && transport.connectAttemptCount - connectsBeforeLoss == 1
+        }
+
+        session.automaticRecoveryEnabled = false
+        #expect(session.status == .idle)
+
+        transport.connectErrors = [nil]
+        session.automaticRecoveryEnabled = true
+        await session.ensureLive()
+
+        #expect(session.status == .live)
+        #expect(transport.connectAttemptCount - connectsBeforeLoss == 2)
     }
 
     @Test func deliberateStopDoesNotRecoverThroughPTYClose() async throws {

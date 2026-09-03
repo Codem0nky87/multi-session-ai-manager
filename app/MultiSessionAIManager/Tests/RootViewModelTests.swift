@@ -77,6 +77,21 @@ private actor RestoreOperationStartGate {
         return (model, hosts, tabStore, host)
     }
 
+    private func waitUntil(
+        timeout: Duration = .seconds(2),
+        _ condition: @MainActor () -> Bool
+    ) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while !condition() {
+            guard clock.now < deadline else {
+                Issue.record("Timed out waiting for condition")
+                return
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
     @Test func aSessionIsCreatedOncePerTabAndReused() throws {
         let (model, _, _, host) = try makeModel()
         let tab = HostTab(hostID: host.id, sessionName: nil)
@@ -120,6 +135,35 @@ private actor RestoreOperationStartGate {
 
         #expect(!firstSession.automaticRecoveryEnabled)
         #expect(secondSession.automaticRecoveryEnabled)
+    }
+
+    @Test func reselectingADormantSessionRecoversItsLostPTY() async throws {
+        let transport = FakeSSHTransport()
+        let (model, _, _, host) = try makeModel(sharedTransport: transport)
+        let first = HostTab(hostID: host.id, sessionName: nil)
+        let second = HostTab(hostID: host.id, sessionName: "second")
+        let session = model.session(for: first)
+        model.setRecoveryContext(selectedTabID: first.id, isForeground: true)
+        await session.start()
+        let herdrCommand = HerdrLaunchCommand.launch(sessionName: nil)
+        func herdrAttachCount() -> Int {
+            transport.openedPTYs.filter { $0.command == herdrCommand }.count
+        }
+        let attachesBeforeLoss = herdrAttachCount()
+
+        model.setRecoveryContext(selectedTabID: second.id, isForeground: true)
+        transport.openedPTYs.last?.close()
+        try await waitUntil { session.status != .live }
+        #expect(session.status == .idle)
+        try await Task.sleep(for: .milliseconds(80))
+
+        #expect(herdrAttachCount() == attachesBeforeLoss)
+
+        model.setRecoveryContext(selectedTabID: first.id, isForeground: true)
+        await session.ensureLive()
+
+        #expect(session.status == .live)
+        #expect(herdrAttachCount() == attachesBeforeLoss + 1)
     }
 
     @Test func inactiveSceneDisablesRecoveryForEveryExistingSession() throws {
