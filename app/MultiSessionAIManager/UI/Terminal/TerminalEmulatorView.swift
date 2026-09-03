@@ -46,6 +46,7 @@ struct TerminalEmulatorView: View {
 
     @State private var localKeyInputController = KeyInputController()
     @State private var isMounted = false
+    @State private var visibilityOwner = TerminalVisibilityOwner()
 
     private var resolvedInputController: KeyInputController {
         inputController ?? localKeyInputController
@@ -136,7 +137,7 @@ struct TerminalEmulatorView: View {
                 emulator.setFontSize(settings.fontSize)
                 applySize(geometry.size)
                 DispatchQueue.main.async {
-                    if inputEnabled, automaticallyFocusesInput { resolvedInputController.focus() }
+                    if shouldAutomaticallyFocusInput { resolvedInputController.focus() }
                 }
             }
             .onChange(of: geometry.size) { _, newSize in applySize(newSize) }
@@ -149,11 +150,17 @@ struct TerminalEmulatorView: View {
                 emulator.setFontSize(newSize)
                 applySize(lastSize)
             }
-            .onChange(of: scenePhase) { _, _ in synchronizeVisibility() }
+            .onChange(of: scenePhase) { _, newPhase in
+                synchronizeVisibility()
+                handleLifecycle(.sceneChanged(isActive: newPhase == .active))
+            }
+            .onChange(of: selecting) { _, isSelecting in
+                handleLifecycle(.selectionChanged(isSelecting: isSelecting))
+            }
             .onChange(of: inputEnabled) { _, enabled in
                 if !enabled {
                     resolvedInputController.blur()
-                } else if automaticallyFocusesInput {
+                } else if shouldAutomaticallyFocusInput {
                     resolvedInputController.focus()
                 }
             }
@@ -184,7 +191,8 @@ struct TerminalEmulatorView: View {
         )
         .onDisappear {
             isMounted = false
-            synchronizeVisibility()
+            emulator.removeVisibilityOwner(visibilityOwner)
+            handleLifecycle(.disappeared)
         }
     }
 
@@ -456,9 +464,33 @@ struct TerminalEmulatorView: View {
     }
 
     private func synchronizeVisibility() {
-        emulator.isVisible = TerminalVisibilityPolicy.shouldRender(
+        guard isMounted else {
+            emulator.removeVisibilityOwner(visibilityOwner)
+            return
+        }
+        emulator.setVisibility(
+            TerminalVisibilityPolicy.shouldRender(
+                isMounted: isMounted,
+                isSceneActive: scenePhase == .active
+            ),
+            for: visibilityOwner
+        )
+    }
+
+    private var shouldAutomaticallyFocusInput: Bool {
+        TerminalViewLifecycleController.shouldAutomaticallyFocus(
             isMounted: isMounted,
-            isSceneActive: scenePhase == .active
+            isSceneActive: scenePhase == .active,
+            inputEnabled: inputEnabled,
+            automaticallyFocusesInput: automaticallyFocusesInput
+        )
+    }
+
+    private func handleLifecycle(_ event: TerminalViewLifecycleController.Event) {
+        TerminalViewLifecycleController.handle(
+            event,
+            stopAutoScroll: stopAutoScroll,
+            blurInput: resolvedInputController.blur
         )
     }
 }
@@ -466,6 +498,39 @@ struct TerminalEmulatorView: View {
 struct TerminalVisibilityPolicy {
     static func shouldRender(isMounted: Bool, isSceneActive: Bool) -> Bool {
         isMounted && isSceneActive
+    }
+}
+
+struct TerminalViewLifecycleController {
+    enum Event {
+        case sceneChanged(isActive: Bool)
+        case disappeared
+        case selectionChanged(isSelecting: Bool)
+    }
+
+    static func handle(
+        _ event: Event,
+        stopAutoScroll: () -> Void,
+        blurInput: () -> Void
+    ) {
+        switch event {
+        case .sceneChanged(isActive: false), .disappeared:
+            stopAutoScroll()
+            blurInput()
+        case .selectionChanged(isSelecting: false):
+            stopAutoScroll()
+        case .sceneChanged(isActive: true), .selectionChanged(isSelecting: true):
+            break
+        }
+    }
+
+    static func shouldAutomaticallyFocus(
+        isMounted: Bool,
+        isSceneActive: Bool,
+        inputEnabled: Bool,
+        automaticallyFocusesInput: Bool
+    ) -> Bool {
+        isMounted && isSceneActive && inputEnabled && automaticallyFocusesInput
     }
 }
 

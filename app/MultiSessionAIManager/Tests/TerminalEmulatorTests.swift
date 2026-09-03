@@ -46,6 +46,51 @@ final class TestTerminalFrameClock: TerminalFrameClock {
         #expect(e.renderGeneration == 0)
     }
 
+    @Test func multipleOwnersKeepRenderingUntilTheLastActiveOwnerLeaves() {
+        let clock = TestTerminalFrameClock()
+        let e = TerminalEmulator(cols: 20, rows: 5, frameClock: clock)
+        let ownerA = TerminalVisibilityOwner()
+        let ownerB = TerminalVisibilityOwner()
+
+        #expect(!e.setVisibility(true, for: ownerA))
+        #expect(!e.setVisibility(true, for: ownerB))
+        #expect(!e.setVisibility(false, for: ownerA))
+        #expect(e.isVisible)
+        #expect(!e.removeVisibilityOwner(ownerA))
+        #expect(e.isVisible)
+
+        #expect(e.setVisibility(false, for: ownerB))
+        #expect(!e.isVisible)
+        #expect(clock.startCount == 0)
+
+        #expect(e.setVisibility(true, for: ownerB))
+        #expect(e.isVisible)
+        #expect(clock.startCount == 1)
+        #expect(clock.isRunning)
+
+        clock.fire()
+
+        #expect(e.renderGeneration == 1)
+        #expect(!clock.isRunning)
+        #expect(e.removeVisibilityOwner(ownerB))
+        #expect(!e.isVisible)
+    }
+
+    @Test func replacementRegistersBeforeRemovalWithoutVisibilityChurn() {
+        let clock = TestTerminalFrameClock()
+        let e = TerminalEmulator(frameClock: clock)
+        let oldOwner = TerminalVisibilityOwner()
+        let newOwner = TerminalVisibilityOwner()
+
+        #expect(!e.setVisibility(true, for: oldOwner))
+        #expect(!e.setVisibility(true, for: newOwner))
+        #expect(!e.removeVisibilityOwner(oldOwner))
+
+        #expect(e.isVisible)
+        #expect(clock.startCount == 0)
+        #expect(clock.stopCount == 0)
+    }
+
     @Test func negativeLocalHistoryLimitNormalizesToZero() {
         let clock = TestTerminalFrameClock()
         let e = TerminalEmulator(history: .local(limit: -1), frameClock: clock)
@@ -219,7 +264,8 @@ final class TestTerminalFrameClock: TerminalFrameClock {
     @Test func offscreenInputDrainsWithoutStartingAFrameOrPublishingRows() async {
         let clock = TestTerminalFrameClock()
         let e = TerminalEmulator(cols: 20, rows: 5, frameClock: clock)
-        e.isVisible = false
+        let owner = TerminalVisibilityOwner()
+        e.setVisibility(false, for: owner)
 
         e.feed(Data("hello".utf8))
         await Task.yield()
@@ -235,12 +281,13 @@ final class TestTerminalFrameClock: TerminalFrameClock {
     @Test func hidingWithQueuedInputStopsTheFrameAndDrainsImmediately() async {
         let clock = TestTerminalFrameClock()
         let e = TerminalEmulator(cols: 20, rows: 5, frameClock: clock)
+        let owner = TerminalVisibilityOwner()
         e.feed(Data("pending".utf8))
         await Task.yield()
         #expect(clock.isRunning)
         #expect(e.coreCursorColumn == 0)
 
-        e.isVisible = false
+        e.setVisibility(false, for: owner)
 
         #expect(!clock.isRunning)
         #expect(e.coreCursorColumn == 7)
@@ -252,11 +299,12 @@ final class TestTerminalFrameClock: TerminalFrameClock {
     @Test func showingAHiddenTerminalRequestsOneFullViewportFrame() async {
         let clock = TestTerminalFrameClock()
         let e = TerminalEmulator(cols: 20, rows: 5, frameClock: clock)
-        e.isVisible = false
+        let owner = TerminalVisibilityOwner()
+        e.setVisibility(false, for: owner)
         e.feed(Data("hello".utf8))
         await Task.yield()
 
-        e.isVisible = true
+        e.setVisibility(true, for: owner)
 
         #expect(clock.startCount == 1)
         #expect(clock.isRunning)
@@ -277,7 +325,8 @@ final class TestTerminalFrameClock: TerminalFrameClock {
             history: .hostOwned,
             frameClock: clock
         )
-        e.isVisible = false
+        let owner = TerminalVisibilityOwner()
+        e.setVisibility(false, for: owner)
 
         e.feed(Data("hidden".utf8))
         await Task.yield()
@@ -288,7 +337,7 @@ final class TestTerminalFrameClock: TerminalFrameClock {
         #expect(clock.startCount == 0)
         #expect(!clock.isRunning)
 
-        e.isVisible = true
+        e.setVisibility(true, for: owner)
         e.feed(Data(" selected".utf8))
         await Task.yield()
 
@@ -307,9 +356,10 @@ final class TestTerminalFrameClock: TerminalFrameClock {
     @Test func repeatedVisibleAssignmentDoesNotScheduleAFrame() {
         let clock = TestTerminalFrameClock()
         let e = TerminalEmulator(frameClock: clock)
+        let owner = TerminalVisibilityOwner()
 
-        e.isVisible = true
-        e.isVisible = true
+        #expect(!e.setVisibility(true, for: owner))
+        #expect(!e.setVisibility(true, for: owner))
 
         #expect(clock.startCount == 0)
         #expect(clock.stopCount == 0)
@@ -319,9 +369,10 @@ final class TestTerminalFrameClock: TerminalFrameClock {
     @Test func repeatedHiddenAssignmentDoesNotCreateWork() {
         let clock = TestTerminalFrameClock()
         let e = TerminalEmulator(frameClock: clock)
+        let owner = TerminalVisibilityOwner()
 
-        e.isVisible = false
-        e.isVisible = false
+        #expect(e.setVisibility(false, for: owner))
+        #expect(!e.setVisibility(false, for: owner))
 
         #expect(clock.startCount == 0)
         #expect(clock.stopCount == 0)
@@ -335,7 +386,8 @@ final class TestTerminalFrameClock: TerminalFrameClock {
         let e = TerminalEmulator(cols: 20, rows: 5, fontSize: 13, frameClock: clock)
         let oldCellWidth = e.fontMetrics.width
         let oldBackground = e.colorMap.background
-        e.isVisible = false
+        let owner = TerminalVisibilityOwner()
+        e.setVisibility(false, for: owner)
 
         e.setFontSize(9)
         #expect(e.fontMetrics.width < oldCellWidth)
@@ -356,7 +408,7 @@ final class TestTerminalFrameClock: TerminalFrameClock {
         #expect(e.lines.isEmpty)
         #expect(e.renderGeneration == 0)
 
-        e.isVisible = true
+        e.setVisibility(true, for: owner)
         #expect(clock.startCount == 1)
         #expect(clock.isRunning)
         clock.fire()

@@ -34,6 +34,12 @@ enum TerminalHistoryPolicy: Equatable, Sendable {
     }
 }
 
+struct TerminalVisibilityOwner: Hashable, Sendable {
+    private let id = UUID()
+
+    init() {}
+}
+
 /// Builds a complete candidate row array without mutating the currently
 /// published rows. A source failure therefore cannot expose a partial frame.
 enum TerminalRenderedRows {
@@ -127,23 +133,48 @@ final class TerminalEmulator {
     @ObservationIgnored private let delegate: EmulatorDelegate
     @ObservationIgnored private let frameClock: TerminalFrameClock
     @ObservationIgnored private var stopped = false
+    @ObservationIgnored private var ownerVisibility: [TerminalVisibilityOwner: Bool] = [:]
+    @ObservationIgnored private var usesVisibilityOwners = false
 
     /// When false (pane off-screen or its scene not foreground), inbound bytes
     /// still drain into the core terminal but no SwiftUI rows are produced.
     /// Showing the terminal requests one full viewport rebuild.
-    @ObservationIgnored var isVisible: Bool = true {
-        didSet {
-            guard isVisible != oldValue else { return }
-            guard !stopped else { return }
-            if isVisible {
-                forceFullRebuild = true
-                lastCursorLocation = (-1, -1)
-                requestFrame()
-            } else {
-                frameClock.stop()
-                drainIntoCore()
-            }
+    /// Headless terminals remain visible until a view registers an owner. From
+    /// then on, visibility is the union of all registered owners.
+    @ObservationIgnored private(set) var isVisible: Bool = true
+
+    /// Returns true only when this owner's update changes effective visibility.
+    @discardableResult
+    func setVisibility(_ isVisible: Bool, for owner: TerminalVisibilityOwner) -> Bool {
+        usesVisibilityOwners = true
+        ownerVisibility[owner] = isVisible
+        return updateEffectiveVisibility()
+    }
+
+    /// Removing the last active owner hides the terminal. Once owner management
+    /// begins, an empty owner set remains hidden rather than reverting to the
+    /// headless default.
+    @discardableResult
+    func removeVisibilityOwner(_ owner: TerminalVisibilityOwner) -> Bool {
+        guard ownerVisibility.removeValue(forKey: owner) != nil else { return false }
+        return updateEffectiveVisibility()
+    }
+
+    private func updateEffectiveVisibility() -> Bool {
+        guard usesVisibilityOwners else { return false }
+        let shouldBeVisible = ownerVisibility.values.contains(true)
+        guard shouldBeVisible != isVisible else { return false }
+        isVisible = shouldBeVisible
+        guard !stopped else { return true }
+        if isVisible {
+            forceFullRebuild = true
+            lastCursorLocation = (-1, -1)
+            requestFrame()
+        } else {
+            frameClock.stop()
+            drainIntoCore()
         }
+        return true
     }
 
     /// The core terminal's current cursor column — advances as content is fed.

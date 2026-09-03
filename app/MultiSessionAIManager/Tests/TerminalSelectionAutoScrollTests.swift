@@ -2,6 +2,89 @@ import Foundation
 import Testing
 @testable import MultiSessionAIManager
 
+@Suite struct TerminalViewLifecycleControllerTests {
+
+    @Test func inactiveSceneStopsAutoScrollAndBlursInput() {
+        var stops = 0
+        var blurs = 0
+
+        TerminalViewLifecycleController.handle(
+            .sceneChanged(isActive: false),
+            stopAutoScroll: { stops += 1 },
+            blurInput: { blurs += 1 }
+        )
+
+        #expect(stops == 1)
+        #expect(blurs == 1)
+    }
+
+    @Test func disappearanceStopsAutoScrollAndBlursInput() {
+        var stops = 0
+        var blurs = 0
+
+        TerminalViewLifecycleController.handle(
+            .disappeared,
+            stopAutoScroll: { stops += 1 },
+            blurInput: { blurs += 1 }
+        )
+
+        #expect(stops == 1)
+        #expect(blurs == 1)
+    }
+
+    @Test func selectionExitStopsAutoScrollWithoutChangingFocus() {
+        var stops = 0
+        var blurs = 0
+
+        TerminalViewLifecycleController.handle(
+            .selectionChanged(isSelecting: false),
+            stopAutoScroll: { stops += 1 },
+            blurInput: { blurs += 1 }
+        )
+        TerminalViewLifecycleController.handle(
+            .selectionChanged(isSelecting: true),
+            stopAutoScroll: { stops += 1 },
+            blurInput: { blurs += 1 }
+        )
+
+        #expect(stops == 1)
+        #expect(blurs == 0)
+    }
+
+    @Test func automaticFocusRequiresMountedActiveEnabledAndOptedIn() {
+        #expect(TerminalViewLifecycleController.shouldAutomaticallyFocus(
+            isMounted: true,
+            isSceneActive: true,
+            inputEnabled: true,
+            automaticallyFocusesInput: true
+        ))
+        #expect(!TerminalViewLifecycleController.shouldAutomaticallyFocus(
+            isMounted: false,
+            isSceneActive: true,
+            inputEnabled: true,
+            automaticallyFocusesInput: true
+        ))
+        #expect(!TerminalViewLifecycleController.shouldAutomaticallyFocus(
+            isMounted: true,
+            isSceneActive: false,
+            inputEnabled: true,
+            automaticallyFocusesInput: true
+        ))
+        #expect(!TerminalViewLifecycleController.shouldAutomaticallyFocus(
+            isMounted: true,
+            isSceneActive: true,
+            inputEnabled: false,
+            automaticallyFocusesInput: true
+        ))
+        #expect(!TerminalViewLifecycleController.shouldAutomaticallyFocus(
+            isMounted: true,
+            isSceneActive: true,
+            inputEnabled: true,
+            automaticallyFocusesInput: false
+        ))
+    }
+}
+
 /// Selection disables scrollback panning, so without this a drag can only ever
 /// select what is already on screen -- dragging past the bottom edge does
 /// nothing. These pin the edge-proximity ramp that reveals more rows mid-drag.
