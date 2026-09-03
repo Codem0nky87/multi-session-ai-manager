@@ -61,8 +61,8 @@ struct TerminalEmulatorView: View {
     /// applied relative to where the gesture began (not compounded each tick).
     @State private var pinchStartSize: CGFloat? = nil
 
-    /// Selection anchors in renderer cell coordinates: `row` is the scroll-invariant
-    /// row index (same index as `emulator.lines` / the row passed to `selectedText`),
+    /// Selection anchors in renderer cell coordinates: `row` is the bounded,
+    /// buffer-relative index (same as `emulator.lines` / the row passed to `selectedText`),
     /// `col` is the 0-based cell. Both nil = no active selection. Set by a
     /// long-press-then-drag inside the scroll content (so plain drags still scroll).
     /// Set by the scroll container so the selection drag can auto-scroll. Takes a
@@ -231,7 +231,7 @@ struct TerminalEmulatorView: View {
     /// Long-press (0.35s) THEN drag to select. The long-press requirement is what keeps
     /// a plain one-finger drag scrolling the ScrollView — only once the press has been
     /// held does the drag start extending a selection. Both anchors are renderer cell
-    /// coordinates (scroll-invariant row + 0-based col), so they feed `selectedText`
+    /// coordinates (bounded buffer-relative row + 0-based col), so they feed `selectedText`
     /// directly. The drag location is in the scroll-content space (this gesture is on
     /// the VStack), so `cellAt` maps it to a row that matches `emulator.lines`.
     private var selectionGesture: some Gesture {

@@ -322,17 +322,15 @@ final class TestTerminalFrameClock: TerminalFrameClock {
 
     /// A real geometry change bumps `resizeGeneration` so the view can react (the
     /// divider-handle refresh observes it); a no-op resize must NOT bump it.
-    /// `selectedText` maps the renderer's scroll-invariant row index straight to
-    /// `Terminal.getText`'s Position.row. On a fresh buffer (no scrollback trimming)
-    /// the visible rows ARE the scroll-invariant rows, so a selection over a known
-    /// string round-trips. End column is inclusive.
+    /// `selectedText` and the renderer both use bounded, buffer-relative rows, so
+    /// a selection over a known string round-trips. End column is inclusive.
     @Test func selectedTextRoundTripsKnownString() async {
         let clock = TestTerminalFrameClock()
         let e = TerminalEmulator(cols: 40, rows: 6, frameClock: clock)
         e.feed(Data("COPYME".utf8))
         await Task.yield()
         clock.fire()
-        // "COPYME" lives on the first rendered row (scroll-invariant row 0), cols 0..5.
+        // "COPYME" lives on the first rendered row (buffer-relative row 0), cols 0..5.
         let s = e.selectedText(fromRow: 0, fromCol: 0, toRow: 0, toCol: 5)
         #expect(s.contains("COPYME"))
     }
@@ -350,9 +348,8 @@ final class TestTerminalFrameClock: TerminalFrameClock {
         #expect(forward.contains("ABCDEF"))
     }
 
-    /// After the scrollback fills and old lines are trimmed (linesTop > 0), a
-    /// selection over a row that is STILL on-screen must still round-trip — proving
-    /// the scroll-invariant→Position.row mapping holds once linesTop advances.
+    /// After the scrollback fills and old lines are trimmed, a selection over a
+    /// retained buffer-relative row must still round-trip.
     @Test func selectedTextRoundTripsAfterScrollbackTrim() async {
         let clock = TestTerminalFrameClock()
         let e = TerminalEmulator(
@@ -361,7 +358,7 @@ final class TestTerminalFrameClock: TerminalFrameClock {
             history: .local(limit: 1_000),
             frameClock: clock
         )
-        // Push well past the 1000-line scrollback so linesTop advances.
+        // Push well past the 1000-line scrollback so the bounded ring recycles.
         for n in 0..<1100 {
             e.feed(Data("line\(n)\r\n".utf8))
         }
@@ -371,7 +368,7 @@ final class TestTerminalFrameClock: TerminalFrameClock {
         clock.fire()
         #expect(e.lines.count > e.rows)
         #expect(e.lines.count <= e.rows + e.localScrollbackLimit)
-        // The renderer's last rendered row index is lines.count-1 (scroll-invariant).
+        // The renderer's last rendered row index is lines.count-1 (buffer-relative).
         // "FINDME" is on the current cursor row = the last non-empty rendered row.
         let lastRow = e.lines.count - 1
         // Search the last few rows for the marker via selectedText to confirm mapping.
@@ -408,6 +405,135 @@ final class TestTerminalFrameClock: TerminalFrameClock {
 
         #expect(!firstRenderedRow.plainText.isEmpty)
         #expect(firstRenderedRow.plainText == selectedFirstRow)
+        #expect(e.lines.count <= e.rows + e.localScrollbackLimit)
+    }
+
+    @Test func localRowsStayAlignedWhenTheRingRecyclesAcrossLaterFrames() async throws {
+        let frameClock = TestTerminalFrameClock()
+        let e = TerminalEmulator(
+            cols: 40,
+            rows: 4,
+            history: .local(limit: 12),
+            frameClock: frameClock
+        )
+
+        e.feed(Data((0..<30).map { "first-\($0)\r\n" }.joined().utf8))
+        await Task.yield()
+        frameClock.fire()
+        let firstSourceBeforeRecycle = try #require(e.sourceRow(at: 0)?.plainText)
+        #expect(e.lines.count == e.rows + e.localScrollbackLimit)
+
+        e.feed(Data((30..<40).map { "second-\($0)\r\n" }.joined().utf8))
+        await Task.yield()
+        frameClock.fire()
+        e.feed(Data(((40..<50).map { "third-\($0)\r\n" }.joined() + "STAGED-LATEST").utf8))
+        await Task.yield()
+        frameClock.fire()
+
+        let firstSourceAfterRecycle = try #require(e.sourceRow(at: 0)?.plainText)
+        let selectedFirstRow = e.selectedText(
+            fromRow: 0,
+            fromCol: 0,
+            toRow: 0,
+            toCol: e.cols - 1
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(firstSourceAfterRecycle != firstSourceBeforeRecycle)
+        #expect(firstSourceAfterRecycle == selectedFirstRow)
+        #expect(e.lines.count == e.rows + e.localScrollbackLimit)
+        #expect(e.lines.indices.compactMap { e.sourceRow(at: $0)?.plainText }
+            .contains { $0.contains("STAGED-LATEST") })
+    }
+
+    @Test func resetAndRetrimAfterAnEarlierTrimUsesCurrentBufferRelativeRows() async throws {
+        let frameClock = TestTerminalFrameClock()
+        let e = TerminalEmulator(
+            cols: 40,
+            rows: 4,
+            history: .local(limit: 8),
+            frameClock: frameClock
+        )
+        e.feed(Data((0..<80).map { "old-\($0)\r\n" }.joined().utf8))
+        await Task.yield()
+        frameClock.fire()
+
+        let resetOutput = "\u{1b}c"
+            + (0..<30).map { "reset-\($0)\r\n" }.joined()
+            + "RESET-LATEST"
+        e.feed(Data(resetOutput.utf8))
+        await Task.yield()
+        let elapsed = ContinuousClock().measure {
+            frameClock.fire()
+        }
+
+        let firstSource = try #require(e.sourceRow(at: 0)?.plainText)
+        let selectedFirstRow = e.selectedText(
+            fromRow: 0,
+            fromCol: 0,
+            toRow: 0,
+            toCol: e.cols - 1
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(elapsed < .seconds(1))
+        #expect(firstSource == selectedFirstRow)
+        #expect(e.lines.count == e.rows + e.localScrollbackLimit)
+        #expect(e.lines.indices.compactMap { e.sourceRow(at: $0)?.plainText }
+            .contains { $0.contains("RESET-LATEST") })
+    }
+
+    @Test func localRowsStayBufferRelativeAcrossAlternateScreenTransitions() async throws {
+        let frameClock = TestTerminalFrameClock()
+        let e = TerminalEmulator(
+            cols: 40,
+            rows: 4,
+            history: .local(limit: 8),
+            frameClock: frameClock
+        )
+        let rowPadding = CharacterSet.whitespacesAndNewlines.union(.controlCharacters)
+
+        e.feed(Data(((0..<20).map { "normal-\($0)\r\n" }.joined() + "NORMAL-LATEST").utf8))
+        await Task.yield()
+        frameClock.fire()
+        let normalRow = try #require(e.lines.indices.first {
+            e.sourceRow(at: $0)?.plainText.contains("NORMAL-LATEST") == true
+        })
+        #expect(e.sourceRow(at: normalRow)?.plainText.trimmingCharacters(in: rowPadding)
+            == e.selectedText(
+            fromRow: normalRow,
+            fromCol: 0,
+            toRow: normalRow,
+            toCol: e.cols - 1
+        ).trimmingCharacters(in: .whitespacesAndNewlines))
+
+        e.feed(Data("\u{1b}[?1049hALT-LATEST".utf8))
+        await Task.yield()
+        frameClock.fire()
+        #expect(e.isAlternateScreen)
+        let alternateRow = try #require(e.lines.indices.first {
+            e.sourceRow(at: $0)?.plainText.contains("ALT-LATEST") == true
+        })
+        let alternateSource = e.sourceRow(at: alternateRow)?.plainText
+            .trimmingCharacters(in: rowPadding)
+        let alternateSelection = e.selectedText(
+            fromRow: alternateRow,
+            fromCol: 0,
+            toRow: alternateRow,
+            toCol: e.cols - 1
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(alternateSource == alternateSelection)
+
+        e.feed(Data("\u{1b}[?1049l".utf8))
+        await Task.yield()
+        frameClock.fire()
+        #expect(!e.isAlternateScreen)
+        let restoredRow = try #require(e.lines.indices.first {
+            e.sourceRow(at: $0)?.plainText.contains("NORMAL-LATEST") == true
+        })
+        #expect(e.sourceRow(at: restoredRow)?.plainText.trimmingCharacters(in: rowPadding)
+            == e.selectedText(
+            fromRow: restoredRow,
+            fromCol: 0,
+            toRow: restoredRow,
+            toCol: e.cols - 1
+        ).trimmingCharacters(in: .whitespacesAndNewlines))
         #expect(e.lines.count <= e.rows + e.localScrollbackLimit)
     }
 

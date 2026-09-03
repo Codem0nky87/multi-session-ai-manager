@@ -18,11 +18,29 @@ import SwiftUI
 /// buffer-relative and bounded; the supplier resolves SwiftTerm's differing row
 /// spaces before constructing this value.
 struct TerminalRowSource {
-    fileprivate let line: BufferLine
+    fileprivate let columnCount: Int
+    fileprivate let cellAtColumn: (Int) -> CharData
     fileprivate let cursorColumn: Int?
 
     let uiRow: Int
-    var plainText: String { line.translateToString(trimRight: true) }
+
+    var plainText: String {
+        var cells = ""
+        var trimmedCellCount = 0
+        for column in 0..<columnCount {
+            let cell = cellAtColumn(column)
+            let character = cell.getCharacter()
+            cells.append(character)
+            if character != "\0" {
+                trimmedCellCount = min(column + Int(cell.width), columnCount)
+            }
+        }
+        return String(cells.prefix(trimmedCellCount))
+    }
+
+    fileprivate func cell(at column: Int) -> CharData {
+        cellAtColumn(column)
+    }
 }
 
 /// Splits a row of cells into coalesced `Text` runs.
@@ -95,22 +113,27 @@ final class TerminalStringSupplier {
         guard let terminal, let line = terminal.getLine(row: row) else { return nil }
         let cursor = terminal.getCursorLocation()
         return TerminalRowSource(
-            line: line,
+            columnCount: terminal.cols,
+            cellAtColumn: { line[$0] },
             cursorColumn: cursorVisible && row == cursor.y ? cursor.x : nil,
             uiRow: row
         )
     }
 
-    /// Resolve a bounded, buffer-relative UI row through SwiftTerm's absolute
-    /// scroll-invariant API. `scrollInvariantBase` is the current `linesTop`.
-    func sourceForBufferRow(_ row: Int, scrollInvariantBase: Int) -> TerminalRowSource? {
-        guard let terminal,
-              let line = terminal.getScrollInvariantLine(row: scrollInvariantBase + row)
-        else { return nil }
+    /// Resolve a bounded UI row directly in the buffer-relative coordinate space
+    /// shared by SwiftTerm's selection and text-extraction APIs.
+    func sourceForBufferRow(_ row: Int, rowCount: Int) -> TerminalRowSource? {
+        guard let terminal, row >= 0, row < rowCount else { return nil }
+        let buffer = terminal.buffer
         let cursor = terminal.getCursorLocation()
         let cursorRow = terminal.getTopVisibleRow() + cursor.y
         return TerminalRowSource(
-            line: line,
+            columnCount: terminal.cols,
+            cellAtColumn: { column in
+                buffer.getChar(
+                    atBufferRelative: Position(col: column, row: row)
+                )
+            },
             cursorColumn: cursorVisible && row == cursorRow ? cursor.x : nil,
             uiRow: row
         )
@@ -118,7 +141,7 @@ final class TerminalStringSupplier {
 
     func attributedString(for source: TerminalRowSource) -> AnyView {
         let cells = (0..<terminal.cols).map { j in
-            let data = source.line[j]
+            let data = source.cell(at: j)
             let character = data.getCharacter()
             return (char: character == "\0" ? " " : character,
                     attribute: data.attribute,
