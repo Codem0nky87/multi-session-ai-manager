@@ -111,6 +111,20 @@ private final class OwnedSSHClient {}
     #expect(callbackCount.value == 1)
 }
 
+@Test func ptyCloseCoordinatorWaitsForPumpTermination() {
+    let callbackCount = Box(0)
+    let coordinator = PTYCloseCoordinator {
+        callbackCount.mutate { $0 += 1 }
+    }
+
+    coordinator.requestClose()
+    #expect(callbackCount.value == 0)
+
+    coordinator.pumpDidEnd()
+    coordinator.pumpDidEnd()
+    #expect(callbackCount.value == 1)
+}
+
 @Test func fakeRunCommandBeforeConnectThrows() async {
     let t = FakeSSHTransport()
     await #expect(throws: SSHTransportError.self) {

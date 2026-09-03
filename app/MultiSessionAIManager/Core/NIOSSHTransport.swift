@@ -491,8 +491,7 @@ final class NIOSSHTransport: SSHTransport, @unchecked Sendable {
         // continuation so `openPTY` can return, then keep the closure alive on a
         // "channel closed" signal that `PTYChannel.close()` (or server EOF) trips.
         let writerBox = WriterBox()
-        let closeSignal = CloseSignal()
-        let closeNotifier = ChannelCloseNotifier(onClose: onClose)
+        let closeCoordinator = PTYCloseCoordinator(onClose: onClose)
 
         let pump = Task { [weak writerBox] in
             do {
@@ -518,7 +517,7 @@ final class NIOSSHTransport: SSHTransport, @unchecked Sendable {
                             }
                         }
                         group.addTask {
-                            await closeSignal.wait()
+                            await closeCoordinator.waitForCloseRequest()
                         }
                         // Whichever finishes first (EOF or user close) ends the PTY.
                         _ = try await group.next()
@@ -530,7 +529,7 @@ final class NIOSSHTransport: SSHTransport, @unchecked Sendable {
                 // the channel is being torn down.
             }
             writerBox?.markClosed()
-            closeNotifier.notifyOnce()
+            closeCoordinator.pumpDidEnd()
         }
 
         // Wait until the writer is available (or the pump failed before publishing).
@@ -542,8 +541,7 @@ final class NIOSSHTransport: SSHTransport, @unchecked Sendable {
         return NIOPTYChannel(
             writer: writer,
             writerBox: writerBox,
-            closeSignal: closeSignal,
-            closeNotifier: closeNotifier,
+            closeCoordinator: closeCoordinator,
             pump: pump
         )
     }
@@ -778,14 +776,38 @@ private actor CloseSignal {
     }
 }
 
+/// Coordinates an explicit PTY close request with the terminal callback from
+/// the pump. Requesting close only wakes the pump; observers are notified once
+/// the pump has actually ended, so recovery cannot overlap the old PTY.
+final class PTYCloseCoordinator: @unchecked Sendable {
+    private let closeSignal = CloseSignal()
+    private let closeNotifier: ChannelCloseNotifier
+
+    init(onClose: @escaping @Sendable () -> Void) {
+        closeNotifier = ChannelCloseNotifier(onClose: onClose)
+    }
+
+    func waitForCloseRequest() async {
+        await closeSignal.wait()
+    }
+
+    func requestClose() {
+        let closeSignal = self.closeSignal
+        Task { await closeSignal.trip() }
+    }
+
+    func pumpDidEnd() {
+        closeNotifier.notifyOnce()
+    }
+}
+
 /// `PTYChannel` over a Citadel interactive shell. `send`/`resize`/`close` are
 /// synchronous (the seam is sync) and dispatch the underlying async nio writes
 /// onto detached Tasks; ordering of `send`s is preserved by a serial queue Task.
 private final class NIOPTYChannel: PTYChannel, @unchecked Sendable {
     private let writer: TTYStdinWriter
     private let writerBox: WriterBox
-    private let closeSignal: CloseSignal
-    private let closeNotifier: ChannelCloseNotifier
+    private let closeCoordinator: PTYCloseCoordinator
     private let pump: Task<Void, Never>
 
     var isOpen: Bool { writerBox.isOpen }
@@ -793,21 +815,19 @@ private final class NIOPTYChannel: PTYChannel, @unchecked Sendable {
     init(
         writer: TTYStdinWriter,
         writerBox: WriterBox,
-        closeSignal: CloseSignal,
-        closeNotifier: ChannelCloseNotifier,
+        closeCoordinator: PTYCloseCoordinator,
         pump: Task<Void, Never>
     ) {
         self.writer = writer
         self.writerBox = writerBox
-        self.closeSignal = closeSignal
-        self.closeNotifier = closeNotifier
+        self.closeCoordinator = closeCoordinator
         self.pump = pump
     }
 
     func send(_ data: Data) {
         let writer = self.writer
         let writerBox = self.writerBox
-        let closeSignal = self.closeSignal
+        let closeCoordinator = self.closeCoordinator
         Task {
             do {
                 try await writer.write(ByteBuffer(bytes: data))
@@ -817,7 +837,7 @@ private final class NIOPTYChannel: PTYChannel, @unchecked Sendable {
                 // silently swallowed error into a stale channel the session's
                 // reconciliation can actually see.
                 writerBox.markClosed()
-                await closeSignal.trip()
+                closeCoordinator.requestClose()
             }
         }
     }
@@ -831,8 +851,6 @@ private final class NIOPTYChannel: PTYChannel, @unchecked Sendable {
 
     func close() {
         writerBox.markClosed()
-        closeNotifier.notifyOnce()
-        let closeSignal = self.closeSignal
-        Task { await closeSignal.trip() }
+        closeCoordinator.requestClose()
     }
 }
