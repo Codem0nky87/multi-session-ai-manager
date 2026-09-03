@@ -111,13 +111,30 @@ final class SSHService: @unchecked Sendable {
         command: String,
         cols: Int,
         rows: Int,
-        onOutput: @escaping @Sendable (Data) -> Void
+        onOutput: @escaping @Sendable (Data) -> Void,
+        onClose: @escaping @Sendable () -> Void
     ) async throws -> PTYChannel {
         try await transport.openPTY(
             command: command,
             cols: cols,
             rows: rows,
-            onOutput: onOutput
+            onOutput: onOutput,
+            onClose: onClose
+        )
+    }
+
+    func openPTY(
+        command: String,
+        cols: Int,
+        rows: Int,
+        onOutput: @escaping @Sendable (Data) -> Void
+    ) async throws -> PTYChannel {
+        try await openPTY(
+            command: command,
+            cols: cols,
+            rows: rows,
+            onOutput: onOutput,
+            onClose: {}
         )
     }
 

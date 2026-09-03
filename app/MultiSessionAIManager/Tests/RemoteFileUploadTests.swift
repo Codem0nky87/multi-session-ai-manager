@@ -171,7 +171,8 @@ import Testing
                      hostKeyValidator: @escaping @Sendable (String) -> Bool) async throws {}
         func runCommand(_ cmd: String) async throws -> String { "" }
         func openPTY(command: String, cols: Int, rows: Int,
-                     onOutput: @escaping @Sendable (Data) -> Void) async throws -> PTYChannel {
+                     onOutput: @escaping @Sendable (Data) -> Void,
+                     onClose: @escaping @Sendable () -> Void) async throws -> PTYChannel {
             throw SSHTransportError.notConnected
         }
         func disconnect() async {}

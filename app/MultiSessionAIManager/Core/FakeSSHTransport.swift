@@ -142,10 +142,21 @@ final class FakeSSHTransport: SSHTransport, @unchecked Sendable {
         return data.count
     }
 
-    func openPTY(command: String, cols: Int, rows: Int,
-                 onOutput: @escaping @Sendable (Data) -> Void) async throws -> PTYChannel {
+    func openPTY(
+        command: String,
+        cols: Int,
+        rows: Int,
+        onOutput: @escaping @Sendable (Data) -> Void,
+        onClose: @escaping @Sendable () -> Void
+    ) async throws -> PTYChannel {
         guard isConnected else { throw SSHTransportError.notConnected }
-        let ch = FakePTYChannel(command: command, cols: cols, rows: rows, onOutput: onOutput)
+        let ch = FakePTYChannel(
+            command: command,
+            cols: cols,
+            rows: rows,
+            onOutput: onOutput,
+            onClose: onClose
+        )
         openedPTYs.append(ch)
         return ch
     }
@@ -220,17 +231,27 @@ final class FakePTYChannel: PTYChannel {
 
     private(set) var sent = Data()
     private(set) var lastResize: (cols: Int, rows: Int)?
-    private(set) var closed = false
 
+    private let lock = NSLock()
+    private var _closed = false
     private let onOutput: @Sendable (Data) -> Void
+    private let onClose: @Sendable () -> Void
 
+    var closed: Bool { lock.withLock { _closed } }
     var isOpen: Bool { !closed }
 
-    init(command: String, cols: Int, rows: Int, onOutput: @escaping @Sendable (Data) -> Void) {
+    init(
+        command: String,
+        cols: Int,
+        rows: Int,
+        onOutput: @escaping @Sendable (Data) -> Void,
+        onClose: @escaping @Sendable () -> Void
+    ) {
         self.command = command
         self.openCols = cols
         self.openRows = rows
         self.onOutput = onOutput
+        self.onClose = onClose
     }
 
     func send(_ data: Data) {
@@ -242,7 +263,12 @@ final class FakePTYChannel: PTYChannel {
     }
 
     func close() {
-        closed = true
+        let shouldNotify = lock.withLock {
+            guard !_closed else { return false }
+            _closed = true
+            return true
+        }
+        if shouldNotify { onClose() }
     }
 
     /// Test hook: simulate the server emitting output bytes.

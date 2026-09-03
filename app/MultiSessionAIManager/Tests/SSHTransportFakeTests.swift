@@ -90,6 +90,27 @@ private final class OwnedSSHClient {}
     #expect((ch as! FakePTYChannel).closed == true)
 }
 
+@Test func fakePTYNotifiesCloseExactlyOnce() async throws {
+    let transport = FakeSSHTransport()
+    try await transport.connect(
+        host: host(),
+        key: SSHKeyMaterial(ed25519Seed: Data(count: 32))
+    ) { _ in true }
+    let callbackCount = Box(0)
+    let channel = try await transport.openPTY(
+        command: "/bin/sh",
+        cols: 80,
+        rows: 24,
+        onOutput: { _ in },
+        onClose: { callbackCount.mutate { $0 += 1 } }
+    )
+
+    channel.close()
+    channel.close()
+
+    #expect(callbackCount.value == 1)
+}
+
 @Test func fakeRunCommandBeforeConnectThrows() async {
     let t = FakeSSHTransport()
     await #expect(throws: SSHTransportError.self) {

@@ -465,8 +465,13 @@ final class NIOSSHTransport: SSHTransport, @unchecked Sendable {
 
     // MARK: - Open PTY (interactive shell)
 
-    func openPTY(command: String, cols: Int, rows: Int,
-                 onOutput: @escaping @Sendable (Data) -> Void) async throws -> PTYChannel {
+    func openPTY(
+        command: String,
+        cols: Int,
+        rows: Int,
+        onOutput: @escaping @Sendable (Data) -> Void,
+        onClose: @escaping @Sendable () -> Void
+    ) async throws -> PTYChannel {
         let client = try currentClient()
 
         let ptyRequest = SSHChannelRequestEvent.PseudoTerminalRequest(
@@ -487,6 +492,7 @@ final class NIOSSHTransport: SSHTransport, @unchecked Sendable {
         // "channel closed" signal that `PTYChannel.close()` (or server EOF) trips.
         let writerBox = WriterBox()
         let closeSignal = CloseSignal()
+        let closeNotifier = ChannelCloseNotifier(onClose: onClose)
 
         let pump = Task { [weak writerBox] in
             do {
@@ -524,6 +530,7 @@ final class NIOSSHTransport: SSHTransport, @unchecked Sendable {
                 // the channel is being torn down.
             }
             writerBox?.markClosed()
+            closeNotifier.notifyOnce()
         }
 
         // Wait until the writer is available (or the pump failed before publishing).
@@ -536,6 +543,7 @@ final class NIOSSHTransport: SSHTransport, @unchecked Sendable {
             writer: writer,
             writerBox: writerBox,
             closeSignal: closeSignal,
+            closeNotifier: closeNotifier,
             pump: pump
         )
     }
@@ -550,7 +558,7 @@ final class NIOSSHTransport: SSHTransport, @unchecked Sendable {
     ) async throws -> any DirectTCPIPChannel {
         let client = try currentClient()
         let originator = try SocketAddress(ipAddress: "127.0.0.1", port: 0)
-        let closeNotifier = DirectTCPIPCloseNotifier(onClose: onClose)
+        let closeNotifier = ChannelCloseNotifier(onClose: onClose)
 
         do {
             let channel = try await client.createDirectTCPIPChannel(
@@ -583,7 +591,7 @@ final class NIOSSHTransport: SSHTransport, @unchecked Sendable {
     }
 }
 
-private final class DirectTCPIPCloseNotifier: @unchecked Sendable {
+private final class ChannelCloseNotifier: @unchecked Sendable {
     private let lock = NSLock()
     private var notified = false
     private let onClose: @Sendable () -> Void
@@ -606,11 +614,11 @@ private final class DirectTCPIPInboundHandler: ChannelInboundHandler, @unchecked
     typealias InboundIn = ByteBuffer
 
     private let onOutput: @Sendable (Data) -> Void
-    private let closeNotifier: DirectTCPIPCloseNotifier
+    private let closeNotifier: ChannelCloseNotifier
 
     init(
         onOutput: @escaping @Sendable (Data) -> Void,
-        closeNotifier: DirectTCPIPCloseNotifier
+        closeNotifier: ChannelCloseNotifier
     ) {
         self.onOutput = onOutput
         self.closeNotifier = closeNotifier
@@ -634,9 +642,9 @@ private final class DirectTCPIPInboundHandler: ChannelInboundHandler, @unchecked
 
 private final class NIODirectTCPIPChannel: DirectTCPIPChannel, @unchecked Sendable {
     private let channel: Channel
-    private let closeNotifier: DirectTCPIPCloseNotifier
+    private let closeNotifier: ChannelCloseNotifier
 
-    init(channel: Channel, closeNotifier: DirectTCPIPCloseNotifier) {
+    init(channel: Channel, closeNotifier: ChannelCloseNotifier) {
         self.channel = channel
         self.closeNotifier = closeNotifier
     }
@@ -777,6 +785,7 @@ private final class NIOPTYChannel: PTYChannel, @unchecked Sendable {
     private let writer: TTYStdinWriter
     private let writerBox: WriterBox
     private let closeSignal: CloseSignal
+    private let closeNotifier: ChannelCloseNotifier
     private let pump: Task<Void, Never>
 
     var isOpen: Bool { writerBox.isOpen }
@@ -785,11 +794,13 @@ private final class NIOPTYChannel: PTYChannel, @unchecked Sendable {
         writer: TTYStdinWriter,
         writerBox: WriterBox,
         closeSignal: CloseSignal,
+        closeNotifier: ChannelCloseNotifier,
         pump: Task<Void, Never>
     ) {
         self.writer = writer
         self.writerBox = writerBox
         self.closeSignal = closeSignal
+        self.closeNotifier = closeNotifier
         self.pump = pump
     }
 
@@ -820,6 +831,7 @@ private final class NIOPTYChannel: PTYChannel, @unchecked Sendable {
 
     func close() {
         writerBox.markClosed()
+        closeNotifier.notifyOnce()
         let closeSignal = self.closeSignal
         Task { await closeSignal.trip() }
     }

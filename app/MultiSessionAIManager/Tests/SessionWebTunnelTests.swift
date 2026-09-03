@@ -699,7 +699,8 @@ private final class BlockingWebTunnelSSHTransport: SSHTransport, @unchecked Send
         command: String,
         cols: Int,
         rows: Int,
-        onOutput: @escaping @Sendable (Data) -> Void
+        onOutput: @escaping @Sendable (Data) -> Void,
+        onClose: @escaping @Sendable () -> Void
     ) async throws -> PTYChannel {
         throw SSHTransportError.commandFailed("not implemented")
     }

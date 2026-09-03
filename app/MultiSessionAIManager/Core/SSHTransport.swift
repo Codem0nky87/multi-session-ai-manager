@@ -74,11 +74,13 @@ protocol SSHTransport: AnyObject, Sendable {
     /// Run one bounded command and retain stdout/stderr plus a definite exit
     /// status. Real transports override this at their streaming boundary.
     func runCommand(_ request: SSHCommandRequest) async throws -> SSHCommandResult
-    /// Open an interactive PTY running `command`, delivering output bytes to `onOutput`.
-    /// `onOutput` is `@Sendable` because the real transport delivers bytes on a
-    /// nio EventLoop (off the main thread). The UI bridge hops to main itself.
+    /// Open an interactive PTY running `command`, delivering output bytes to
+    /// `onOutput` and reporting the end of the PTY through `onClose` exactly once.
+    /// Both callbacks are `@Sendable` because the real transport may invoke them
+    /// off the main thread. The UI bridge hops to main itself.
     func openPTY(command: String, cols: Int, rows: Int,
-                 onOutput: @escaping @Sendable (Data) -> Void) async throws -> PTYChannel
+                 onOutput: @escaping @Sendable (Data) -> Void,
+                 onClose: @escaping @Sendable () -> Void) async throws -> PTYChannel
     /// Open a raw TCP connection FROM the SSH server to `targetHost:targetPort`
     /// on this already-authenticated SSH connection.
     func openDirectTCPIP(
@@ -104,6 +106,21 @@ protocol SSHTransport: AnyObject, Sendable {
 /// (for example a probe-only test double). The real and general fake transports
 /// override this; callers receive an explicit disabled/error state, never fake success.
 extension SSHTransport {
+    func openPTY(
+        command: String,
+        cols: Int,
+        rows: Int,
+        onOutput: @escaping @Sendable (Data) -> Void
+    ) async throws -> PTYChannel {
+        try await openPTY(
+            command: command,
+            cols: cols,
+            rows: rows,
+            onOutput: onOutput,
+            onClose: {}
+        )
+    }
+
     func runCommand(_ request: SSHCommandRequest) async throws -> SSHCommandResult {
         guard !request.command.isEmpty,
               request.outputLimit > 0,
