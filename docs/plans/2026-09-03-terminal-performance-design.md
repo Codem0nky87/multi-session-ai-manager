@@ -120,3 +120,45 @@ Automated tests will prove:
 A manual Instruments pass will compare idle main-thread wakeups, sustained
 output, tab switching, and memory before and after the change. Real-host tests
 remain opt-in and must not stop a user's Herdr server.
+
+## Implementation result and verification
+
+Automated verification on 2026-09-03:
+
+- `xcodegen generate` exited 0, produced no tracked project-file change, and
+  included `TerminalFrameClock.swift` in the generated application source
+  phase.
+- The complete `MultiSessionAIManagerTests` run on the iPad Pro 13-inch (M5)
+  iOS Simulator exited 0 with 607 tests executed: 606 passed, 1 intentionally
+  skipped live SSH diagnostic (`realSSHTransportRunsCommandAndOpensPTY()`), and
+  0 failed.
+- The Release build for `generic/platform=iOS Simulator` exited 0 with
+  `BUILD SUCCEEDED` and no Swift concurrency errors. Xcode emitted one
+  unrelated metadata warning because the app has no App Intents framework
+  dependency.
+- The removed-hazard search found no permanent frame-rate setting, legacy
+  display-link startup/proxy, `[AnyView]` row array, or `Array(zip(...))` row
+  traversal. The post-layout anchor search found no layout invalidation in the
+  anchor path. `CADisplayLink` is isolated to
+  `DisplayLinkTerminalFrameClock` in `TerminalFrameClock.swift`, and the only
+  direct `isVisible` assignment is internal to `TerminalEmulator`.
+
+### Manual device Instruments acceptance — NOT RUN / pending
+
+These checks require a physical iPad Instruments pass; they are acceptance
+criteria, not measured results:
+
+- idle on one selected Herdr tab: no continuously running terminal display
+  link;
+- ten open hidden tabs: no terminal frame timers and no growing SwiftUI row
+  stores;
+- sustained agent output: one temporary display link per visible burst, then
+  it retires;
+- select a previously hidden tab: one current-viewport repaint;
+- scroll inside Herdr: the host redraws older/newer pane content while iPad row
+  count remains viewport-bounded;
+- repeat tab switching/output for ten minutes under Time Profiler and
+  Allocations: no upward idle-wakeup slope and no retained row-tree growth.
+
+No device performance numbers are claimed until this pending Instruments pass
+is run.
