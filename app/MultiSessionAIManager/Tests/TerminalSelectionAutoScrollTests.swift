@@ -111,6 +111,32 @@ import Testing
     }
 }
 
+@Suite struct TerminalAutoScrollTickGateTests {
+
+    @Test func currentTickCanStep() {
+        var gate = TerminalAutoScrollTickGate()
+        let tick = gate.start()
+        var steps = 0
+
+        let didStep = gate.perform(tick) { steps += 1 }
+
+        #expect(didStep)
+        #expect(steps == 1)
+    }
+
+    @Test func cleanupFencesAQueuedTickBeforeItCanStep() {
+        var gate = TerminalAutoScrollTickGate()
+        let queuedTick = gate.start()
+        var steps = 0
+
+        gate.cancel()
+        let didStep = gate.perform(queuedTick) { steps += 1 }
+
+        #expect(!didStep)
+        #expect(steps == 0)
+    }
+}
+
 /// Selection disables scrollback panning, so without this a drag can only ever
 /// select what is already on screen -- dragging past the bottom edge does
 /// nothing. These pin the edge-proximity ramp that reveals more rows mid-drag.

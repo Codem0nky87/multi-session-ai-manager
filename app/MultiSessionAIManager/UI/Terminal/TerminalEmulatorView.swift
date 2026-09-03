@@ -75,6 +75,7 @@ struct TerminalEmulatorView: View {
     @State private var viewportHeight: CGFloat = 0
     /// Drives the auto-scroll repeat while the drag is held near an edge.
     @State private var autoScrollTimer: Timer? = nil
+    @State private var autoScrollTickGate = TerminalAutoScrollTickGate()
     /// Latest drag point in VIEWPORT coordinates (the gesture reports content
     /// coordinates, which move as we scroll).
     @State private var lastDragViewportY: CGFloat = 0
@@ -283,8 +284,11 @@ struct TerminalEmulatorView: View {
     /// drag events, but must keep scrolling.
     private func startAutoScrollIfNeeded() {
         guard autoScrollTimer == nil else { return }
+        let tick = autoScrollTickGate.start()
         let timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { _ in
-            Task { @MainActor in stepAutoScroll() }
+            Task { @MainActor in
+                autoScrollTickGate.perform(tick) { stepAutoScroll() }
+            }
         }
         RunLoop.main.add(timer, forMode: .common)
         autoScrollTimer = timer
@@ -300,6 +304,7 @@ struct TerminalEmulatorView: View {
     }
 
     private func stopAutoScroll() {
+        autoScrollTickGate.cancel()
         autoScrollTimer?.invalidate()
         autoScrollTimer = nil
     }
@@ -546,6 +551,33 @@ struct TerminalViewLifecycleController {
             automaticallyFocusesInput: automaticallyFocusesInput
         ) else { return }
         focusInput()
+    }
+}
+
+struct TerminalAutoScrollTickGate {
+    struct Token: Equatable {
+        fileprivate let sequence: UInt64
+    }
+
+    private var nextSequence: UInt64 = 0
+    private var activeToken: Token?
+
+    mutating func start() -> Token {
+        nextSequence &+= 1
+        let token = Token(sequence: nextSequence)
+        activeToken = token
+        return token
+    }
+
+    mutating func cancel() {
+        activeToken = nil
+    }
+
+    @discardableResult
+    func perform(_ token: Token, step: () -> Void) -> Bool {
+        guard activeToken == token else { return false }
+        step()
+        return true
     }
 }
 
