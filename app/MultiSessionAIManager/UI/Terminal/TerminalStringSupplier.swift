@@ -2,44 +2,52 @@
 //  TerminalStringSupplier.swift
 //  MultiSessionAIManager
 //
-//  Turns one core-`Terminal` buffer row into a SwiftUI `Text`-run view. Adapted
-//  from NewTerm's `StringSupplier`: it coalesces adjacent cells with the same
-//  attribute into a single `Text`, sizes each run by display columns, and draws
-//  the cursor cell inverted. This is the heart of the "render the buffer each
-//  frame" approach — erases/clears are always reflected because we rebuild from
-//  the live buffer rather than diffing a UIKit draw tree.
+//  Turns one core-`Terminal` buffer row into stable value runs. SwiftUI styling
+//  happens separately in `TerminalRenderedRowView`, so unchanged terminal rows
+//  remain equatable across render frames.
 //
 
 import Foundation
 import SwiftTerm
 import SwiftUI
 
-/// The live SwiftTerm row consumed by the production renderer. UI row indices are
-/// buffer-relative and bounded; the supplier resolves SwiftTerm's differing row
-/// spaces before constructing this value.
-struct TerminalRowSource {
-    fileprivate let columnCount: Int
-    fileprivate let cellAtColumn: (Int) -> CharData
-    fileprivate let cursorColumn: Int?
+struct TerminalRenderedRun: Identifiable, Equatable {
+    let id: Int
+    let text: String
+    let attribute: Attribute
+    let isCursor: Bool
+    let columns: Int
+}
 
-    let uiRow: Int
+struct TerminalRenderedRow: Identifiable, Equatable {
+    let id: Int
+    let runs: [TerminalRenderedRun]
 
+    /// The retained row text without blank cells used only to pad the terminal
+    /// grid. It is derived from runs so the renderer stores no duplicate string.
     var plainText: String {
-        var cells = ""
-        var trimmedCellCount = 0
-        for column in 0..<columnCount {
-            let cell = cellAtColumn(column)
-            let character = cell.getCharacter()
-            cells.append(character)
-            if character != "\0" {
-                trimmedCellCount = min(column + Int(cell.width), columnCount)
-            }
-        }
-        return String(cells.prefix(trimmedCellCount))
+        let text = runs.map(\.text).joined()
+        return String(text.reversed().drop(while: { $0 == " " }).reversed())
     }
+}
 
-    fileprivate func cell(at column: Int) -> CharData {
-        cellAtColumn(column)
+extension TerminalRenderedRow {
+    init(
+        id: Int,
+        cells: [(char: Character, attribute: Attribute, isCursor: Bool)]
+    ) {
+        self.id = id
+        self.runs = TerminalRunSplitter.runs(cells: cells).enumerated().map { index, run in
+            TerminalRenderedRun(
+                id: index,
+                text: run.text,
+                attribute: run.attribute,
+                isCursor: run.isCursor,
+                columns: run.text.unicodeScalars.reduce(0) {
+                    $0 + UnicodeUtil.columnWidth(rune: $1)
+                }
+            )
+        }
     }
 }
 
@@ -104,68 +112,78 @@ enum TerminalRunSplitter {
 
 final class TerminalStringSupplier {
     var terminal: Terminal!
-    var colorMap: TerminalColorMap!
-    var fontMetrics: TerminalFontMetrics!
     var cursorVisible = true
 
-    /// Resolve a host-owned row directly from SwiftTerm's visible viewport.
-    func sourceForViewportRow(_ row: Int) -> TerminalRowSource? {
-        guard let terminal, let line = terminal.getLine(row: row) else { return nil }
+    /// Render a host-owned row directly from SwiftTerm's visible viewport.
+    func renderedViewportRow(_ row: Int) -> TerminalRenderedRow? {
+        guard let terminal,
+              row >= 0,
+              row < terminal.rows,
+              let line = terminal.getLine(row: row)
+        else { return nil }
         let cursor = terminal.getCursorLocation()
-        return TerminalRowSource(
-            columnCount: terminal.cols,
-            cellAtColumn: { line[$0] },
+        return renderedRow(
+            row: row,
             cursorColumn: cursorVisible && row == cursor.y ? cursor.x : nil,
-            uiRow: row
+            cellAtColumn: { line[$0] }
         )
     }
 
-    /// Resolve a bounded UI row directly in the buffer-relative coordinate space
+    /// Render a bounded UI row directly in the buffer-relative coordinate space
     /// shared by SwiftTerm's selection and text-extraction APIs.
-    func sourceForBufferRow(_ row: Int, rowCount: Int) -> TerminalRowSource? {
+    func renderedBufferRow(_ row: Int, rowCount: Int) -> TerminalRenderedRow? {
         guard let terminal, row >= 0, row < rowCount else { return nil }
         let buffer = terminal.buffer
         let cursor = terminal.getCursorLocation()
         let cursorRow = terminal.getTopVisibleRow() + cursor.y
-        return TerminalRowSource(
-            columnCount: terminal.cols,
+        return renderedRow(
+            row: row,
+            cursorColumn: cursorVisible && row == cursorRow ? cursor.x : nil,
             cellAtColumn: { column in
                 buffer.getChar(
                     atBufferRelative: Position(col: column, row: row)
                 )
-            },
-            cursorColumn: cursorVisible && row == cursorRow ? cursor.x : nil,
-            uiRow: row
+            }
         )
     }
 
-    func attributedString(for source: TerminalRowSource) -> AnyView {
+    private func renderedRow(
+        row: Int,
+        cursorColumn: Int?,
+        cellAtColumn: (Int) -> CharData
+    ) -> TerminalRenderedRow? {
+        guard let terminal else { return nil }
         let cells = (0..<terminal.cols).map { j in
-            let data = source.cell(at: j)
+            let data = cellAtColumn(j)
             let character = data.getCharacter()
             return (char: character == "\0" ? " " : character,
                     attribute: data.attribute,
-                    isCursor: j == source.cursorColumn)
+                    isCursor: j == cursorColumn)
         }
-        let views = TerminalRunSplitter.runs(cells: cells).enumerated().map { index, run in
-            IdentifiedRun(index: index,
-                          view: text(run.text, attribute: run.attribute, isCursor: run.isCursor))
-        }
+        return TerminalRenderedRow(id: row, cells: cells)
+    }
+}
 
-        return AnyView(HStack(alignment: .firstTextBaseline, spacing: 0) {
-            ForEach(views) { $0.view }
-        })
+struct TerminalRenderedRowView: View, Equatable {
+    let row: TerminalRenderedRow
+    let colorMap: TerminalColorMap
+    let fontMetrics: TerminalFontMetrics
+    let styleGeneration: Int
+
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.row == rhs.row && lhs.styleGeneration == rhs.styleGeneration
     }
 
-    /// A single attributed run within a row, identified by position so SwiftUI can
-    /// diff the `HStack` cheaply.
-    private struct IdentifiedRun: Identifiable {
-        let index: Int
-        let view: AnyView
-        var id: Int { index }
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 0) {
+            ForEach(row.runs) { run in
+                text(run)
+            }
+        }
     }
 
-    private func text(_ run: String, attribute: Attribute, isCursor: Bool = false) -> AnyView {
+    private func text(_ run: TerminalRenderedRun) -> some View {
+        let attribute = run.attribute
         var fgColor = attribute.fg
         var bgColor = attribute.bg
 
@@ -175,44 +193,45 @@ final class TerminalStringSupplier {
             if bgColor == .defaultColor { bgColor = .defaultInvertedColor }
         }
 
-        let foreground = colorMap?.color(for: fgColor,
-                                         isForeground: true,
-                                         isBold: attribute.style.contains(.bold),
-                                         isCursor: isCursor)
-        let background = colorMap?.color(for: bgColor,
-                                         isForeground: false,
-                                         isCursor: isCursor)
+        let foreground = colorMap.color(for: fgColor,
+                                        isForeground: true,
+                                        isBold: attribute.style.contains(.bold),
+                                        isCursor: run.isCursor)
+        let background = colorMap.color(for: bgColor,
+                                        isForeground: false,
+                                        isCursor: run.isCursor)
 
-        let font: UIFont?
+        let font: UIFont
         if attribute.style.contains(.bold) || attribute.style.contains(.blink) {
-            font = attribute.style.contains(.italic) ? fontMetrics?.boldItalicFont : fontMetrics?.boldFont
+            font = attribute.style.contains(.italic)
+                ? fontMetrics.boldItalicFont : fontMetrics.boldFont
         } else if attribute.style.contains(.dim) {
-            font = attribute.style.contains(.italic) ? fontMetrics?.lightItalicFont : fontMetrics?.lightFont
+            font = attribute.style.contains(.italic)
+                ? fontMetrics.lightItalicFont : fontMetrics.lightFont
         } else {
-            font = attribute.style.contains(.italic) ? fontMetrics?.italicFont : fontMetrics?.regularFont
+            font = attribute.style.contains(.italic)
+                ? fontMetrics.italicFont : fontMetrics.regularFont
         }
 
-        let width = CGFloat(run.unicodeScalars.reduce(0, { $0 + UnicodeUtil.columnWidth(rune: $1) })) * (fontMetrics?.width ?? 0)
+        let width = CGFloat(run.columns) * fontMetrics.width
 
-        return AnyView(
-            Text(run)
-                .foregroundColor(Color(foreground ?? .white))
-                .font(Font(font ?? .monospacedSystemFont(ofSize: 12, weight: .regular)))
-                .underline(attribute.style.contains(.underline))
-                .strikethrough(attribute.style.contains(.crossedOut))
-                .tracking(0)
-                .allowsTightening(false)
-                .lineLimit(1)
-                // `fixedSize` keeps the Text at its natural size so it never
-                // ellipsizes to "…", while the EXACT-width frame pins the run to
-                // its grid allocation. A run whose fallback glyphs render wider
-                // than `columns x cellWidth` overdraws its right neighbour (as
-                // real terminals do) instead of pushing the rest of the row
-                // sideways -- drawn cells must coincide with the cells reported
-                // by TerminalMouse, or taps land beside their visual target.
-                .fixedSize(horizontal: true, vertical: true)
-                .frame(width: width, alignment: .leading)
-                .background(Color(background ?? .black))
-        )
+        return Text(run.text)
+            .foregroundColor(Color(foreground))
+            .font(Font(font))
+            .underline(attribute.style.contains(.underline))
+            .strikethrough(attribute.style.contains(.crossedOut))
+            .tracking(0)
+            .allowsTightening(false)
+            .lineLimit(1)
+            // `fixedSize` keeps the Text at its natural size so it never
+            // ellipsizes to "…", while the EXACT-width frame pins the run to
+            // its grid allocation. A run whose fallback glyphs render wider
+            // than `columns x cellWidth` overdraws its right neighbour (as
+            // real terminals do) instead of pushing the rest of the row
+            // sideways -- drawn cells must coincide with the cells reported
+            // by TerminalMouse, or taps land beside their visual target.
+            .fixedSize(horizontal: true, vertical: true)
+            .frame(width: width, alignment: .leading)
+            .background(Color(background))
     }
 }

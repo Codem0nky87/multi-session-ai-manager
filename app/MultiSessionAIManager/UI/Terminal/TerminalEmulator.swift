@@ -38,14 +38,17 @@ enum TerminalHistoryPolicy: Equatable, Sendable {
 @Observable
 final class TerminalEmulator {
 
-    /// Published visible rows. The SwiftUI view observes this and re-lays-out when
-    /// it changes. Each entry is one fully-rendered terminal row.
-    private(set) var lines: [AnyView] = []
+    /// Published visible rows. Stable values let SwiftUI skip unchanged rows.
+    private(set) var lines: [TerminalRenderedRow] = []
 
     /// Bumped whenever rendered row content changes, even if the row count stays the
     /// same. The scroll container uses this to keep following the tail while output
     /// repaints existing viewport rows.
     private(set) var renderGeneration = 0
+
+    /// Bumped only when row styling really changes. Row views include this in
+    /// their custom equality without coupling value rows to mutable style state.
+    private(set) var renderStyleGeneration = 0
 
     /// Current geometry, surfaced so callers can reuse it when re-attaching a PTY.
     @ObservationIgnored private(set) var cols: Int
@@ -154,8 +157,6 @@ final class TerminalEmulator {
         }
 
         stringSupplier.terminal = terminal
-        stringSupplier.colorMap = colorMap
-        stringSupplier.fontMetrics = fontMetrics
 
         // The delegate forwards core responses to whatever PTY is bound at the time.
         delegate.onSend = { [weak self] bytes in
@@ -254,7 +255,7 @@ final class TerminalEmulator {
         // published as a successful-looking EmptyView placeholder.
         while lines.count < total {
             let row = lines.count
-            guard let rendered = renderedLine(at: row) else {
+            guard let rendered = renderedRow(at: row) else {
                 assertionFailure("Missing terminal source row \(row)")
                 break
             }
@@ -279,7 +280,7 @@ final class TerminalEmulator {
         }
 
         for i in linesToUpdate where i >= 0 && i < lines.count {
-            guard let rendered = renderedLine(at: i) else {
+            guard let rendered = renderedRow(at: i) else {
                 assertionFailure("Missing terminal source row \(i)")
                 continue
             }
@@ -290,19 +291,14 @@ final class TerminalEmulator {
         renderGeneration &+= 1
     }
 
-    /// The real source for a published UI row. Production rendering and tests use
-    /// this same seam, so an unresolved SwiftTerm row cannot hide behind AnyView.
-    func sourceRow(at row: Int) -> TerminalRowSource? {
+    /// Resolve one bounded UI row into the stable value consumed by SwiftUI.
+    private func renderedRow(at row: Int) -> TerminalRenderedRow? {
         switch history {
         case .hostOwned:
-            stringSupplier.sourceForViewportRow(row)
+            stringSupplier.renderedViewportRow(row)
         case .local:
-            stringSupplier.sourceForBufferRow(row, rowCount: renderedRowCount)
+            stringSupplier.renderedBufferRow(row, rowCount: renderedRowCount)
         }
-    }
-
-    private func renderedLine(at row: Int) -> AnyView? {
-        sourceRow(at: row).map(stringSupplier.attributedString(for:))
     }
 
     private var renderedRowCount: Int {
@@ -371,7 +367,7 @@ final class TerminalEmulator {
         terminal.clearUpdateRange()
         lines.removeAll(keepingCapacity: true)
         for row in 0..<total {
-            guard let rendered = renderedLine(at: row) else {
+            guard let rendered = renderedRow(at: row) else {
                 assertionFailure("Missing terminal source row \(row)")
                 break
             }
@@ -469,7 +465,7 @@ final class TerminalEmulator {
         guard size != fontSize else { return }
         fontSize = size
         fontMetrics = TerminalFontMetrics(fontSize: size)
-        stringSupplier.fontMetrics = fontMetrics
+        renderStyleGeneration &+= 1
         forceFullRebuild = true
         lastCursorLocation = (-1, -1)
         requestFrame()
@@ -482,7 +478,7 @@ final class TerminalEmulator {
         guard theme.id != themeID else { return }
         themeID = theme.id
         colorMap = TerminalColorMap(theme: theme)
-        stringSupplier.colorMap = colorMap
+        renderStyleGeneration &+= 1
         forceFullRebuild = true
         lastCursorLocation = (-1, -1)
         requestFrame()

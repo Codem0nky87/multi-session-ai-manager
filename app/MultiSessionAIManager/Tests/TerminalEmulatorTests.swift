@@ -73,10 +73,8 @@ final class TestTerminalFrameClock: TerminalFrameClock {
         #expect(clock.startCount == 1)
         clock.fire()
 
-        let publishedSources = e.lines.indices.compactMap { e.sourceRow(at: $0) }
         #expect(e.lines.count == rowCount)
-        #expect(publishedSources.count == e.lines.count)
-        #expect(publishedSources.map(\.plainText).joined(separator: "\n").contains("line-1999"))
+        #expect(e.lines.map(\.plainText).joined(separator: "\n").contains("line-1999"))
         #expect(e.visibleText().contains("line-1999"))
     }
 
@@ -87,24 +85,21 @@ final class TestTerminalFrameClock: TerminalFrameClock {
         e.feed(Data("NORMAL-MARKER".utf8))
         await Task.yield()
         clock.fire()
-        #expect(e.lines.indices.compactMap { e.sourceRow(at: $0)?.plainText }
-            .contains { $0.contains("NORMAL-MARKER") })
+        #expect(e.lines.contains { $0.plainText.contains("NORMAL-MARKER") })
 
         e.feed(Data("\u{1b}[?1049hALT-MARKER".utf8))
         await Task.yield()
         clock.fire()
         #expect(e.isAlternateScreen)
         #expect(e.lines.count == e.rows)
-        #expect(e.lines.indices.compactMap { e.sourceRow(at: $0)?.plainText }
-            .contains { $0.contains("ALT-MARKER") })
+        #expect(e.lines.contains { $0.plainText.contains("ALT-MARKER") })
 
         e.feed(Data("\u{1b}[?1049l".utf8))
         await Task.yield()
         clock.fire()
         #expect(!e.isAlternateScreen)
         #expect(e.lines.count == e.rows)
-        #expect(e.lines.indices.compactMap { e.sourceRow(at: $0)?.plainText }
-            .contains { $0.contains("NORMAL-MARKER") })
+        #expect(e.lines.contains { $0.plainText.contains("NORMAL-MARKER") })
     }
 
     @Test func burstFeedCoalescesIntoOneFrameAndPublishesRealTerminalState() async {
@@ -129,6 +124,22 @@ final class TestTerminalFrameClock: TerminalFrameClock {
         #expect(e.renderGeneration == 1)
         #expect(!clock.isRunning)
         #expect(clock.stopCount == 1)
+    }
+
+    @Test func unchangedRowsRemainEqualAcrossADirtyRowUpdate() async {
+        let clock = TestTerminalFrameClock()
+        let e = TerminalEmulator(cols: 20, rows: 5, frameClock: clock)
+        e.feed(Data("one\r\ntwo".utf8))
+        await Task.yield()
+        clock.fire()
+        let before = e.lines
+
+        e.feed(Data("!".utf8))
+        await Task.yield()
+        clock.fire()
+
+        #expect(e.lines[0] == before[0])
+        #expect(e.lines[1] != before[1])
     }
 
     @Test func appendDuringFrameRetirementRestartsAndDrainsTheNextFrame() async {
@@ -301,6 +312,25 @@ final class TestTerminalFrameClock: TerminalFrameClock {
         #expect(!clock.isRunning)
     }
 
+    @Test func renderStyleGenerationChangesOnlyForRealStyleChanges() {
+        let clock = TestTerminalFrameClock()
+        let e = TerminalEmulator(cols: 40, rows: 10, fontSize: 13, frameClock: clock)
+
+        #expect(e.renderStyleGeneration == 0)
+        e.setFontSize(13)
+        #expect(e.renderStyleGeneration == 0)
+        e.setFontSize(12)
+        #expect(e.renderStyleGeneration == 1)
+        e.setFontSize(12)
+        #expect(e.renderStyleGeneration == 1)
+        e.setTheme(.dark)
+        #expect(e.renderStyleGeneration == 1)
+        e.setTheme(.light)
+        #expect(e.renderStyleGeneration == 2)
+        e.setTheme(.light)
+        #expect(e.renderStyleGeneration == 2)
+    }
+
     @Test func setThemeSchedulesAndRepaintsRows() async {
         let clock = TestTerminalFrameClock()
         let e = TerminalEmulator(cols: 40, rows: 10, frameClock: clock)
@@ -395,7 +425,7 @@ final class TestTerminalFrameClock: TerminalFrameClock {
         await Task.yield()
         clock.fire()
 
-        let firstRenderedRow = try #require(e.sourceRow(at: 0))
+        let firstRenderedRow = try #require(e.lines.first)
         let selectedFirstRow = e.selectedText(
             fromRow: 0,
             fromCol: 0,
@@ -420,7 +450,7 @@ final class TestTerminalFrameClock: TerminalFrameClock {
         e.feed(Data((0..<30).map { "first-\($0)\r\n" }.joined().utf8))
         await Task.yield()
         frameClock.fire()
-        let firstSourceBeforeRecycle = try #require(e.sourceRow(at: 0)?.plainText)
+        let firstSourceBeforeRecycle = try #require(e.lines.first?.plainText)
         #expect(e.lines.count == e.rows + e.localScrollbackLimit)
 
         e.feed(Data((30..<40).map { "second-\($0)\r\n" }.joined().utf8))
@@ -430,7 +460,7 @@ final class TestTerminalFrameClock: TerminalFrameClock {
         await Task.yield()
         frameClock.fire()
 
-        let firstSourceAfterRecycle = try #require(e.sourceRow(at: 0)?.plainText)
+        let firstSourceAfterRecycle = try #require(e.lines.first?.plainText)
         let selectedFirstRow = e.selectedText(
             fromRow: 0,
             fromCol: 0,
@@ -440,8 +470,7 @@ final class TestTerminalFrameClock: TerminalFrameClock {
         #expect(firstSourceAfterRecycle != firstSourceBeforeRecycle)
         #expect(firstSourceAfterRecycle == selectedFirstRow)
         #expect(e.lines.count == e.rows + e.localScrollbackLimit)
-        #expect(e.lines.indices.compactMap { e.sourceRow(at: $0)?.plainText }
-            .contains { $0.contains("STAGED-LATEST") })
+        #expect(e.lines.contains { $0.plainText.contains("STAGED-LATEST") })
     }
 
     @Test func resetAndRetrimAfterAnEarlierTrimUsesCurrentBufferRelativeRows() async throws {
@@ -465,7 +494,7 @@ final class TestTerminalFrameClock: TerminalFrameClock {
             frameClock.fire()
         }
 
-        let firstSource = try #require(e.sourceRow(at: 0)?.plainText)
+        let firstSource = try #require(e.lines.first?.plainText)
         let selectedFirstRow = e.selectedText(
             fromRow: 0,
             fromCol: 0,
@@ -475,8 +504,7 @@ final class TestTerminalFrameClock: TerminalFrameClock {
         #expect(elapsed < .seconds(1))
         #expect(firstSource == selectedFirstRow)
         #expect(e.lines.count == e.rows + e.localScrollbackLimit)
-        #expect(e.lines.indices.compactMap { e.sourceRow(at: $0)?.plainText }
-            .contains { $0.contains("RESET-LATEST") })
+        #expect(e.lines.contains { $0.plainText.contains("RESET-LATEST") })
     }
 
     @Test func localRowsStayBufferRelativeAcrossAlternateScreenTransitions() async throws {
@@ -492,10 +520,10 @@ final class TestTerminalFrameClock: TerminalFrameClock {
         e.feed(Data(((0..<20).map { "normal-\($0)\r\n" }.joined() + "NORMAL-LATEST").utf8))
         await Task.yield()
         frameClock.fire()
-        let normalRow = try #require(e.lines.indices.first {
-            e.sourceRow(at: $0)?.plainText.contains("NORMAL-LATEST") == true
+        let normalRow = try #require(e.lines.firstIndex {
+            $0.plainText.contains("NORMAL-LATEST")
         })
-        #expect(e.sourceRow(at: normalRow)?.plainText.trimmingCharacters(in: rowPadding)
+        #expect(e.lines[normalRow].plainText.trimmingCharacters(in: rowPadding)
             == e.selectedText(
             fromRow: normalRow,
             fromCol: 0,
@@ -507,10 +535,10 @@ final class TestTerminalFrameClock: TerminalFrameClock {
         await Task.yield()
         frameClock.fire()
         #expect(e.isAlternateScreen)
-        let alternateRow = try #require(e.lines.indices.first {
-            e.sourceRow(at: $0)?.plainText.contains("ALT-LATEST") == true
+        let alternateRow = try #require(e.lines.firstIndex {
+            $0.plainText.contains("ALT-LATEST")
         })
-        let alternateSource = e.sourceRow(at: alternateRow)?.plainText
+        let alternateSource = e.lines[alternateRow].plainText
             .trimmingCharacters(in: rowPadding)
         let alternateSelection = e.selectedText(
             fromRow: alternateRow,
@@ -524,10 +552,10 @@ final class TestTerminalFrameClock: TerminalFrameClock {
         await Task.yield()
         frameClock.fire()
         #expect(!e.isAlternateScreen)
-        let restoredRow = try #require(e.lines.indices.first {
-            e.sourceRow(at: $0)?.plainText.contains("NORMAL-LATEST") == true
+        let restoredRow = try #require(e.lines.firstIndex {
+            $0.plainText.contains("NORMAL-LATEST")
         })
-        #expect(e.sourceRow(at: restoredRow)?.plainText.trimmingCharacters(in: rowPadding)
+        #expect(e.lines[restoredRow].plainText.trimmingCharacters(in: rowPadding)
             == e.selectedText(
             fromRow: restoredRow,
             fromCol: 0,

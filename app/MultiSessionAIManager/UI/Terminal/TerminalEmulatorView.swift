@@ -198,8 +198,14 @@ struct TerminalEmulatorView: View {
 
     private var rowsContent: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(zip(emulator.lines, emulator.lines.indices)), id: \.1) { line, i in
-                line
+            ForEach(emulator.lines) { row in
+                TerminalRenderedRowView(
+                    row: row,
+                    colorMap: emulator.colorMap,
+                    fontMetrics: emulator.fontMetrics,
+                    styleGeneration: emulator.renderStyleGeneration
+                )
+                    .equatable()
                     // Pin each row to the exact (whole-point) cell height and fill
                     // it with the terminal background BEFORE rasterizing. The glyph
                     // runs paint no background of their own, so without this the
@@ -215,7 +221,7 @@ struct TerminalEmulatorView: View {
                            alignment: .topLeading)
                     .background(backgroundColor)
                     .drawingGroup(opaque: true)
-                    .id(i)
+                    .id(row.id)
             }
             // Invisible bottom anchor. While it's on-screen the user is
             // "following" the tail, so new output auto-scrolls; once they

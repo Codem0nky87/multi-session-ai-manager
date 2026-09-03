@@ -1,8 +1,46 @@
 import Foundation
+import SwiftTerm
 import Testing
 @testable import MultiSessionAIManager
 
 @Suite struct TerminalRunSplitterTests {
+
+    private func renderedRow(id: Int = 42) -> TerminalRenderedRow {
+        TerminalRenderedRow(id: id, cells: [
+            ("a", .empty, false),
+            ("b", .empty, false),
+            ("界", .empty, false),
+        ])
+    }
+
+    @Test func renderedRowIdentityIsStable() {
+        #expect(renderedRow().id == 42)
+    }
+
+    @Test func renderedRunIdentityIsPositional() {
+        #expect(renderedRow().runs.map(\.id) == [0, 1])
+    }
+
+    @Test func renderedRunsCoalesceAdjacentASCIIWithTheSameAttribute() {
+        let runs = renderedRow().runs
+        #expect(runs.map(\.text) == ["ab", "界"])
+        #expect(runs.allSatisfy { $0.attribute == .empty })
+    }
+
+    @Test func renderedRunColumnsUseTerminalUnicodeWidths() {
+        let wideColumns = "界".unicodeScalars.reduce(0) {
+            $0 + UnicodeUtil.columnWidth(rune: $1)
+        }
+        #expect(renderedRow().runs.map(\.columns) == [2, wideColumns])
+    }
+
+    @Test func renderedRowAndRunValuesAreEquatable() {
+        let row = renderedRow()
+        let equalRow = renderedRow()
+
+        #expect(row == equalRow)
+        #expect(row.runs[0] == equalRow.runs[0])
+    }
 
     private func split(
         _ cells: [(Character, Int, Bool)]
