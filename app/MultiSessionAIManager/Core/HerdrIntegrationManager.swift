@@ -188,6 +188,7 @@ final class HerdrIntegrationManager {
 
     /// Reports what is installed without changing the host.
     func probe() async {
+        guard state != .probing, state != .installing else { return }
         operationGeneration &+= 1
         let generation = operationGeneration
         state = .probing
@@ -214,6 +215,7 @@ final class HerdrIntegrationManager {
     /// and command success alone is never trusted: only the final status probe
     /// decides readiness.
     func installOrRepairAll() async {
+        guard canInstallOrRepair else { return }
         operationGeneration &+= 1
         let generation = operationGeneration
         let candidates = agents.filter { $0.status.needsProvisioning }

@@ -15,6 +15,7 @@ struct HostSetupHelpSheet: View {
     @State private var herdrStarted = false
     @State private var pluginManager: HerdrPluginManagerModel?
     @State private var integrationManager: HerdrIntegrationManager?
+    @State private var restoreOperations = HostSetupRestoreOperationCoordinator()
     @State private var showingPlugins = false
 
     /// Pass `keyStore`/`knownHosts` to enable the Herdr install card. Callers
@@ -100,8 +101,11 @@ struct HostSetupHelpSheet: View {
             model.cancelRouteCheck()
             // Retire the SSH connection with the sheet — leaving it open would
             // leak an authenticated session per visit.
-            if let lifecycle {
-                Task { await lifecycle.close() }
+            Task {
+                await restoreOperations.cancelAndWait()
+                if let lifecycle {
+                    await lifecycle.close()
+                }
             }
         }
     }
@@ -259,17 +263,21 @@ struct HostSetupHelpSheet: View {
                         isLoading: isInstalling,
                         enabled: !isInstalling
                     ) {
-                        Task { await manager.installOrRepairAll() }
+                        restoreOperations.start {
+                            await manager.installOrRepairAll()
+                        }
                     }
                     .accessibilityIdentifier("host-setup-session-restore-install")
                 }
 
                 if manager.state != .probing && !isInstalling {
-                    herdrActionButton(
+                    sessionRestoreProbeButton(
                         manager.state == .idle ? "Check integrations" : "Check again",
                         id: "host-setup-session-restore-probe"
                     ) {
-                        await manager.probe()
+                        restoreOperations.start {
+                            await manager.probe()
+                        }
                     }
                 }
             }
@@ -277,7 +285,9 @@ struct HostSetupHelpSheet: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("host-setup-session-restore-card")
         .task {
-            await manager.probe()
+            restoreOperations.start {
+                await manager.probe()
+            }
         }
     }
 
@@ -377,6 +387,26 @@ struct HostSetupHelpSheet: View {
         )
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("host-setup-session-restore-agent-\(agent.target.herdrTarget)")
+    }
+
+    /// Unlike the install/update helper below, this button starts its owned
+    /// operation synchronously. That leaves no unretained wrapper task which
+    /// could wake after the sheet has already torn its connection down.
+    private func sessionRestoreProbeButton(
+        _ title: String,
+        id: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(.callout, design: .rounded, weight: .semibold))
+                .foregroundStyle(Theme.accent)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(minHeight: Self.minimumHitTarget, alignment: .leading)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier(id)
     }
 
     /// Install/update Herdr on this host over the authenticated SSH connection.

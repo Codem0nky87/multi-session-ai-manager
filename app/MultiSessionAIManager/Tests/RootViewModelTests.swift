@@ -2,6 +2,53 @@ import Foundation
 import Testing
 @testable import MultiSessionAIManager
 
+@MainActor
+private final class RestoreOperationEvents {
+    private(set) var values: [String] = []
+    private var waiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+
+    func record(_ value: String) {
+        values.append(value)
+        let ready = waiters.filter { values.count >= $0.count }
+        waiters.removeAll { values.count >= $0.count }
+        ready.forEach { $0.continuation.resume() }
+    }
+
+    func waitForCount(_ count: Int) async {
+        if values.count >= count { return }
+        await withCheckedContinuation { continuation in
+            waiters.append((count, continuation))
+        }
+    }
+}
+
+private actor RestoreOperationStartGate {
+    private var isWaiting = false
+    private var waitingContinuation: CheckedContinuation<Void, Never>?
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+    func wait() async {
+        isWaiting = true
+        waitingContinuation?.resume()
+        waitingContinuation = nil
+        await withCheckedContinuation { continuation in
+            releaseContinuation = continuation
+        }
+    }
+
+    func waitUntilBlocked() async {
+        if isWaiting { return }
+        await withCheckedContinuation { continuation in
+            waitingContinuation = continuation
+        }
+    }
+
+    func release() {
+        releaseContinuation?.resume()
+        releaseContinuation = nil
+    }
+}
+
 @Suite @MainActor struct RootViewModelTests {
     /// `sharedTransport` lets a test inspect the PTY a session actually opened.
     /// Left nil, every session gets its own fake, so sessions stay independent.
@@ -216,6 +263,17 @@ import Testing
         #expect(source.contains("await manager.installOrRepairAll()"))
         #expect(source.contains("let hasActionableAgents = manager.agents.contains"))
         #expect(source.contains("enabled: !isInstalling"))
+        #expect(
+            source.contains(
+                "@State private var restoreOperations = HostSetupRestoreOperationCoordinator()"))
+        #expect(source.components(separatedBy: "restoreOperations.start").count - 1 == 3)
+        #expect(!source.contains("Task { await manager.installOrRepairAll() }"))
+        #expect(source.components(separatedBy: "sessionRestoreProbeButton(").count - 1 == 2)
+
+        let cancellation = try #require(
+            source.range(of: "await restoreOperations.cancelAndWait()"))
+        let connectionClose = try #require(source.range(of: "await lifecycle.close()"))
+        #expect(cancellation.lowerBound < connectionClose.lowerBound)
 
         #expect(source.contains("host-setup-session-restore-card"))
         #expect(source.contains("host-setup-session-restore-probe"))
@@ -226,6 +284,84 @@ import Testing
         #expect(source.contains("cannot restore arbitrary processes"))
         #expect(source.contains("agent conversations can resume"))
         #expect(source.contains("Pane history is not automatically captured or retained"))
+    }
+
+    @Test func restoreOperationCoordinatorRejectsConcurrentManualWork() async {
+        let coordinator = HostSetupRestoreOperationCoordinator()
+        let events = RestoreOperationEvents()
+
+        let acceptedProbe = coordinator.start {
+            events.record("probe-started")
+            do {
+                try await Task.sleep(for: .seconds(60))
+            } catch {}
+            events.record("probe-finished")
+        }
+        await events.waitForCount(1)
+        let acceptedInstall = coordinator.start {
+            events.record("install-started")
+        }
+
+        #expect(acceptedProbe)
+        #expect(!acceptedInstall)
+        await coordinator.cancelAndWait()
+        #expect(events.values == ["probe-started", "probe-finished"])
+        #expect(!coordinator.hasActiveOperation)
+    }
+
+    @Test func cancellingRestoreWorkDrainsBeforeTeardownAndAllowsRestart() async {
+        let coordinator = HostSetupRestoreOperationCoordinator()
+        let events = RestoreOperationEvents()
+        #expect(
+            coordinator.start {
+                events.record("operation-started")
+                do {
+                    try await Task.sleep(for: .seconds(60))
+                } catch {}
+                events.record("operation-finished")
+            })
+        await events.waitForCount(1)
+
+        await coordinator.cancelAndWait()
+        events.record("connection-closed")
+
+        #expect(
+            coordinator.start {
+                events.record("new-probe-started")
+            })
+        await events.waitForCount(4)
+        await coordinator.cancelAndWait()
+
+        #expect(
+            events.values == [
+                "operation-started",
+                "operation-finished",
+                "connection-closed",
+                "new-probe-started",
+            ])
+        #expect(!coordinator.hasActiveOperation)
+    }
+
+    @Test func cancelledCallerCannotStartRestoreWorkAfterTeardown() async {
+        let coordinator = HostSetupRestoreOperationCoordinator()
+        let events = RestoreOperationEvents()
+        let gate = RestoreOperationStartGate()
+        let lateStart = Task { @MainActor in
+            await gate.wait()
+            return coordinator.start {
+                events.record("late-probe-started")
+            }
+        }
+        await gate.waitUntilBlocked()
+
+        lateStart.cancel()
+        await gate.release()
+        let accepted = await lateStart.value
+        await Task.yield()
+
+        #expect(!accepted)
+        #expect(events.values.isEmpty)
+        #expect(!coordinator.hasActiveOperation)
     }
 
     /// Replaces a test that handed the SAME object references to two `RootView`

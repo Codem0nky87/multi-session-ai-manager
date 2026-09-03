@@ -472,6 +472,69 @@ struct HerdrIntegrationManagerTests {
         #expect(manager.failures.first?.message.contains("Repair needed") == true)
     }
 
+    @Test func concurrentInstallRequestDoesNotStartADuplicateHostMutation() async throws {
+        let transport = FakeSSHTransport()
+        let manager = try makeManager(transport: transport)
+        await manager.connection.connect()
+        transport.structuredCommandResults = [
+            result("MSAM_AGENT:codex\n"),
+            result("codex: not installed (/ignored)\n"),
+        ]
+        await manager.probe()
+
+        let gate = FirstIntegrationInstallGate()
+        transport.beforeCommand = { command in
+            try await gate.pauseFirstInstall(command)
+        }
+        transport.structuredCommandResults = [
+            result("installed codex"),
+            result("MSAM_AGENT:codex\n"),
+            result("codex: current (v3) (/verified)\n"),
+        ]
+
+        let first = Task { @MainActor in await manager.installOrRepairAll() }
+        await gate.waitUntilBlocked()
+        let duplicate = Task { @MainActor in await manager.installOrRepairAll() }
+        await duplicate.value
+        await gate.release()
+        await first.value
+
+        #expect(installCommands(in: transport).count == 1)
+        #expect(manager.summary == .allCurrent)
+    }
+
+    @Test func probeDuringInstallDoesNotSupersedeTheHostMutation() async throws {
+        let transport = FakeSSHTransport()
+        let manager = try makeManager(transport: transport)
+        await manager.connection.connect()
+        transport.structuredCommandResults = [
+            result("MSAM_AGENT:codex\n"),
+            result("codex: not installed (/ignored)\n"),
+        ]
+        await manager.probe()
+
+        let gate = FirstIntegrationInstallGate()
+        transport.beforeCommand = { command in
+            try await gate.pauseFirstInstall(command)
+        }
+        transport.structuredCommandResults = [
+            result("installed codex"),
+            result("MSAM_AGENT:codex\n"),
+            result("codex: current (v3) (/verified)\n"),
+        ]
+        let install = Task { @MainActor in await manager.installOrRepairAll() }
+        await gate.waitUntilBlocked()
+        let commandCountDuringInstall = transport.structuredCommandsRun.count
+
+        await manager.probe()
+
+        #expect(transport.structuredCommandsRun.count == commandCountDuringInstall)
+        #expect(manager.state == .installing)
+        await gate.release()
+        await install.value
+        #expect(manager.summary == .allCurrent)
+    }
+
     @Test func ambiguousInstallIsSuccessWhenAuthoritativeReprobeIsCurrent() async throws {
         let transport = FakeSSHTransport()
         let manager = try makeManager(transport: transport)
