@@ -3,23 +3,22 @@
 //  MultiSessionAIManager
 //
 //  The headless terminal controller. Owns SwiftTerm's *core* `Terminal` (NOT its
-//  iOS `TerminalView`) and renders it to SwiftUI on a display-link timer, NewTerm
-//  style: every frame, if the buffer is dirty, rebuild the visible rows from the
-//  live buffer via `TerminalStringSupplier` and publish them. Because each frame
-//  re-derives the rows from the authoritative buffer, erases / `clear` / redraws
-//  always reflect correctly — the class of ghosting bugs that lived in the old
-//  `TerminalView` UIKit draw path simply can't occur.
+//  iOS `TerminalView`) and renders it to SwiftUI on demand, NewTerm style: when
+//  input or a viewport change makes the buffer dirty, rebuild the visible rows
+//  from the live buffer via `TerminalStringSupplier` and publish them. Because each
+//  frame re-derives the rows from the authoritative buffer, erases / `clear` /
+//  redraws always reflect correctly — the class of ghosting bugs that lived in
+//  the old `TerminalView` UIKit draw path simply can't occur.
 //
 //  Concurrency: `@MainActor`. PTY output arrives OFF-main via `feed(_:)`, which
 //  only appends to a lock-guarded byte buffer (no UIKit / Terminal access), so it
-//  is safe to call from any thread. The display tick (main) drains that buffer
-//  into the core `Terminal` and rebuilds the rows, preserving wire byte order.
+//  is safe to call from any thread. A coalesced main-actor wake requests a temporary
+//  display frame, which drains the buffer and rebuilds rows in wire byte order.
 //
 
 import Foundation
 import SwiftUI
 import SwiftTerm
-import QuartzCore
 
 @MainActor
 @Observable
@@ -69,19 +68,24 @@ final class TerminalEmulator {
     @ObservationIgnored weak var pty: PTYChannel?
 
     @ObservationIgnored private let delegate: EmulatorDelegate
-    @ObservationIgnored private var displayLink: CADisplayLink?
+    @ObservationIgnored private let frameClock: TerminalFrameClock
+    @ObservationIgnored private var stopped = false
 
-    /// When false (pane off-screen or its scene not foreground), the tick
-    /// still DRAINS inbound bytes into the core terminal — keeping state and
-    /// scrollback current — but SKIPS the expensive SwiftUI row rebuild.
-    /// The accumulated dirty range is replayed when we become visible again.
+    /// When false (pane off-screen or its scene not foreground), inbound bytes
+    /// still drain into the core terminal but no SwiftUI rows are produced.
+    /// Showing the terminal requests one full viewport rebuild.
     @ObservationIgnored var isVisible: Bool = true {
         didSet {
             guard isVisible != oldValue else { return }
-            // Throttle the background drain when off-screen; full rate when visible.
-            displayLink?.preferredFrameRateRange = isVisible
-                ? .default
-                : CAFrameRateRange(minimum: 5, maximum: 12, preferred: 8)
+            guard !stopped else { return }
+            if isVisible {
+                forceFullRebuild = true
+                lastCursorLocation = (-1, -1)
+                requestFrame()
+            } else {
+                frameClock.stop()
+                drainIntoCore()
+            }
         }
     }
 
@@ -97,11 +101,17 @@ final class TerminalEmulator {
     /// Last cursor position we rendered, so we can repaint the old + new cursor rows.
     @ObservationIgnored private var lastCursorLocation: (x: Int, y: Int) = (-1, -1)
 
-    init(cols: Int = 80, rows: Int = 24, fontSize: CGFloat = 13) {
+    init(
+        cols: Int = 80,
+        rows: Int = 24,
+        fontSize: CGFloat = 13,
+        frameClock: TerminalFrameClock = DisplayLinkTerminalFrameClock()
+    ) {
         self.cols = max(cols, 1)
         self.rows = max(rows, 1)
         self.fontSize = fontSize
         self.fontMetrics = TerminalFontMetrics(fontSize: fontSize)
+        self.frameClock = frameClock
 
         let delegate = EmulatorDelegate()
         self.delegate = delegate
@@ -120,57 +130,70 @@ final class TerminalEmulator {
         delegate.onSend = { [weak self] bytes in
             self?.pty?.send(Data(bytes))
         }
-        startDisplayLink()
     }
 
-    deinit {
-        // Nothing to do here, and nothing that CAN be done: `displayLink` is
-        // MainActor-isolated and deinit is nonisolated. The link's target is a
-        // proxy holding this emulator WEAKLY, so it never kept us alive -- but a
-        // still-scheduled link goes on waking the main thread every frame. It
-        // now notices the emulator is gone on its next fire and invalidates
-        // itself (see DisplayLinkProxy.tick), so a missed `stop()` costs one
-        // frame rather than the life of the process.
+    // MARK: - Demand-driven frame clock
+
+    private func inboundBecameReady() {
+        guard !stopped else { return }
+        if isVisible {
+            requestFrame()
+        } else {
+            drainIntoCore()
+        }
     }
 
-    // MARK: - Display timer
-
-    private func startDisplayLink() {
-        displayLink?.invalidate()
-        let proxy = DisplayLinkProxy(emulator: self)
-        let link = CADisplayLink(target: proxy, selector: #selector(DisplayLinkProxy.tick))
-        // So the link can retire itself once the emulator is gone -- see tick().
-        proxy.link = link
-        link.add(to: .main, forMode: .common)
-        displayLink = link
+    private func requestFrame() {
+        guard !stopped, !frameClock.isRunning else { return }
+        frameClock.start { [weak self] in
+            self?.tick()
+        }
     }
 
-    /// Whether the CADisplayLink render loop is still scheduled. Internal (not
-    /// private) so tests can prove a teardown path actually stopped it: a closed
-    /// tab that skips `stop()` leaves a display link ticking for the life of the
-    /// process, and nothing else observable distinguishes that from a clean tab.
-    var isRenderLoopRunning: Bool { displayLink != nil }
-
-    /// Stop the render loop. Call from the view's `onDisappear` to break the
-    /// CADisplayLink retain cycle deterministically.
-    func stop() {
-        displayLink?.invalidate()
-        displayLink = nil
-    }
-
-    /// One render frame: drain inbound bytes into the core terminal, then rebuild
-    /// any dirty rows (plus the cursor's old/new rows) and republish.
-    func tick() {
-        // Drain inbound bytes (preserving order) and feed the core terminal.
+    private func drainIntoCore() {
         let pending = inbound.drain()
         if !pending.isEmpty {
             terminal.feed(byteArray: pending)
         }
+    }
 
-        // Off-screen: core terminal is now current (drained above); skip the row
-        // rebuild. Do NOT clear the update range — the accumulated dirty rows are all
-        // rebuilt on the first tick after we become visible again.
-        guard isVisible else { return }
+    /// Whether a temporary render frame is currently scheduled. Internal so
+    /// lifecycle tests can distinguish an idle terminal from leaked work.
+    var isRenderLoopRunning: Bool { frameClock.isRunning }
+
+    /// Permanently retire the emulator. Pending input is discarded and later
+    /// feeds are rejected, so a torn-down session cannot restart rendering.
+    func stop() {
+        guard !stopped else { return }
+        stopped = true
+        frameClock.stop()
+        inbound.shutdown()
+    }
+
+    /// One requested render frame: drain inbound bytes into the core terminal,
+    /// rebuild dirty rows, then retire the clock once the work has settled.
+    func tick() {
+        guard !stopped else {
+            frameClock.stop()
+            return
+        }
+        drainIntoCore()
+
+        // A clock can fire just as the pane becomes hidden. Keep the core current,
+        // but leave its dirty range intact for the forced rebuild when shown.
+        guard isVisible else {
+            frameClock.stop()
+            return
+        }
+
+        defer {
+            // If an off-main append races this frame after its drain, either this
+            // check keeps the clock alive or its queued main-actor wake restarts it
+            // after stop. In neither ordering can accepted bytes become stranded.
+            if !inbound.hasPendingBytes && !forceFullRebuild {
+                frameClock.stop()
+            }
+        }
 
         // A font-size change invalidates every laid-out row (the cell size changed):
         // repaint the whole viewport + scrollback wholesale this tick.
@@ -274,8 +297,10 @@ final class TerminalEmulator {
     /// them as literal text.
     nonisolated func feed(_ data: Data) {
         let filtered = TerminalEmulator.dropSizeReportQueries([UInt8](data))
-        guard !filtered.isEmpty else { return }
-        inbound.append(filtered)
+        guard !filtered.isEmpty, inbound.append(filtered) else { return }
+        Task { @MainActor [weak self] in
+            self?.inboundBecameReady()
+        }
     }
 
     /// Apply terminal bytes received from a Herdr pane-frame stream. This intentionally
@@ -318,6 +343,7 @@ final class TerminalEmulator {
         stringSupplier.fontMetrics = fontMetrics
         forceFullRebuild = true
         lastCursorLocation = (-1, -1)
+        requestFrame()
     }
 
     /// Switch the terminal's colour theme: rebuild the colour map + force a full row
@@ -330,6 +356,7 @@ final class TerminalEmulator {
         stringSupplier.colorMap = colorMap
         forceFullRebuild = true
         lastCursorLocation = (-1, -1)
+        requestFrame()
     }
 
     /// Resize the core terminal and the bound PTY.
@@ -341,8 +368,11 @@ final class TerminalEmulator {
         rows = r
         terminal.resize(cols: c, rows: r)
         pty?.resize(cols: c, rows: r)
+        forceFullRebuild = true
+        lastCursorLocation = (-1, -1)
         // Signal observers (e.g. the divider-handle refresh) that the geometry moved.
         resizeGeneration &+= 1
+        requestFrame()
     }
 
     /// Strip xterm window size-report queries from a byte stream. Some shells echo
@@ -397,53 +427,46 @@ enum TerminalScroll {
     }
 }
 
-/// A thread-safe FIFO byte buffer for inbound PTY data. `feed` appends from the
-/// off-main SSH callback; the main display tick drains it. The internal `NSLock`
-/// makes all access safe, so this is genuinely `Sendable`.
+/// A thread-safe FIFO byte buffer for inbound PTY data. It coalesces off-main
+/// appends into one main-actor wake while preserving a wake for any append that
+/// races after a drain.
 private final class InboundBuffer: @unchecked Sendable {
     private var bytes = [UInt8]()
+    private var wakeQueued = false
+    private var acceptingInput = true
     private let lock = NSLock()
 
-    func append(_ newBytes: [UInt8]) {
+    func append(_ newBytes: [UInt8]) -> Bool {
         lock.lock()
+        defer { lock.unlock() }
+        guard acceptingInput else { return false }
         bytes.append(contentsOf: newBytes)
-        lock.unlock()
+        guard !wakeQueued else { return false }
+        wakeQueued = true
+        return true
     }
 
     func drain() -> [UInt8] {
         lock.lock()
-        defer { bytes.removeAll(keepingCapacity: true); lock.unlock() }
-        return bytes
+        defer { lock.unlock() }
+        let drained = bytes
+        bytes.removeAll(keepingCapacity: true)
+        wakeQueued = false
+        return drained
     }
-}
 
-/// CADisplayLink target. The link retains its target; this tiny proxy holds a weak
-/// reference to the emulator so the link doesn't keep the emulator alive. It must
-/// be an NSObject for the `@objc` selector.
-private final class DisplayLinkProxy: NSObject {
-    weak var emulator: TerminalEmulator?
-    /// The link this proxy is the target of. Weak because the run loop owns it;
-    /// a strong reference here would be a cycle the invalidation below is meant
-    /// to avoid needing.
-    weak var link: CADisplayLink?
+    func shutdown() {
+        lock.lock()
+        acceptingInput = false
+        wakeQueued = false
+        bytes.removeAll(keepingCapacity: false)
+        lock.unlock()
+    }
 
-    init(emulator: TerminalEmulator) { self.emulator = emulator }
-
-    @MainActor @objc func tick() {
-        guard let emulator else {
-            // The emulator is gone but this link is still scheduled, so it keeps
-            // waking the main thread every frame doing nothing. `stop()` is the
-            // intended teardown, but it is a call somebody has to remember, and
-            // a sheet dismissed by swipe never makes it. Left alone these
-            // accumulate for the life of the process -- which is exactly the
-            // "gets slower the longer it runs, fine after a restart" shape.
-            //
-            // A weak target cannot leak the emulator, but it also cannot stop
-            // the timer; only the timer can. So it retires itself.
-            link?.invalidate()
-            return
-        }
-        emulator.tick()
+    var hasPendingBytes: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return !bytes.isEmpty
     }
 }
 

@@ -9,7 +9,8 @@ import Testing
         knownHosts: KnownHostsStore? = nil,
         liveness: HerdrHostSession.LivenessPolicy = .init(),
         recovery: HerdrHostSession.RecoveryPolicy = .init(),
-        automaticRecoveryEnabled: Bool = true
+        automaticRecoveryEnabled: Bool = true,
+        terminal: TerminalEmulator = TerminalEmulator()
     ) throws -> HerdrHostSession {
         let suite = "HerdrHostSessionTests.\(UUID().uuidString)"
         let keyStore = KeyStore(backing: InMemoryKeychain())
@@ -28,6 +29,7 @@ import Testing
                 transport: transport
             ),
             sessionName: sessionName,
+            terminal: terminal,
             liveness: liveness,
             recovery: recovery
         )
@@ -108,8 +110,13 @@ import Testing
 
     @Test func stoppingClosesThePTYAndUnbindsTheTerminal() async throws {
         let transport = FakeSSHTransport()
-        let session = try makeSession(transport: transport)
+        let clock = TestTerminalFrameClock()
+        let terminal = TerminalEmulator(frameClock: clock)
+        let session = try makeSession(transport: transport, terminal: terminal)
+        #expect(!session.terminal.isRenderLoopRunning)
         await session.start()
+        session.terminal.feed(Data("pending".utf8))
+        await Task.yield()
         #expect(session.terminal.isRenderLoopRunning)
 
         await session.stop()
@@ -123,9 +130,12 @@ import Testing
         // effect runs, so only the session's own close can satisfy it.
         #expect(transport.ptyClosedStatesAtLastDisconnect.last == true)
         #expect(transport.openedPTYs.last?.closed == true)
-        // Likewise the display link: nothing but `stop()` invalidates it, and a
-        // closed tab that leaves it scheduled ticks for the life of the process.
+        // Likewise pending rendering is retired permanently by session teardown.
         #expect(session.terminal.isRenderLoopRunning == false)
+        session.terminal.feed(Data("late".utf8))
+        await Task.yield()
+        #expect(session.terminal.isRenderLoopRunning == false)
+        #expect(session.terminal.coreCursorColumn == 0)
     }
 
     // Regression: `stop()` used to close the PTY and the terminal but leave the

@@ -223,17 +223,29 @@ import Testing
 /// signature of something scheduled that never gets unscheduled.
 @Suite @MainActor struct TerminalRenderLoopLifecycleTests {
 
-    @Test func stoppingEndsTheRenderLoop() {
-        let emulator = TerminalEmulator(cols: 40, rows: 10)
+    @Test func stoppingPermanentlyEndsPendingRenderWork() async {
+        let clock = TestTerminalFrameClock()
+        let emulator = TerminalEmulator(cols: 40, rows: 10, frameClock: clock)
+        #expect(!emulator.isRenderLoopRunning)
+        emulator.feed(Data("pending".utf8))
+        await Task.yield()
         #expect(emulator.isRenderLoopRunning)
+
         emulator.stop()
         #expect(!emulator.isRenderLoopRunning)
+
+        emulator.feed(Data("late".utf8))
+        await Task.yield()
+        #expect(!emulator.isRenderLoopRunning)
+        #expect(emulator.coreCursorColumn == 0)
     }
 
     @Test func aSessionTeardownStopsItsEmulator() async throws {
-        // Closing a tab must not leave its render loop scheduled.
+        // Closing a tab must retire pending render work permanently.
         let keyStore = KeyStore(backing: InMemoryKeychain())
         let keyID = try keyStore.generateEd25519(label: "loop")
+        let clock = TestTerminalFrameClock()
+        let terminal = TerminalEmulator(frameClock: clock)
         let session = HerdrHostSession(
             connection: HostConnection(
                 host: Host(name: "h", address: "192.0.2.10", username: "alice",
@@ -242,17 +254,27 @@ import Testing
                 knownHosts: KnownHostsStore(defaults: UserDefaults(suiteName: "msam.loop.\(UUID())")!),
                 transport: FakeSSHTransport()
             ),
-            sessionName: nil
+            sessionName: nil,
+            terminal: terminal
         )
+        #expect(!session.terminal.isRenderLoopRunning)
+        terminal.feed(Data("pending".utf8))
+        await Task.yield()
         #expect(session.terminal.isRenderLoopRunning)
         await session.stop()
         #expect(!session.terminal.isRenderLoopRunning)
+        terminal.feed(Data("late".utf8))
+        await Task.yield()
+        #expect(!session.terminal.isRenderLoopRunning)
+        #expect(terminal.coreCursorColumn == 0)
     }
 
     @Test func anInteractiveCommandSheetStopsItsEmulatorToo() async throws {
         // This one is dismissible by SWIPE, which never reaches the Done button.
         let keyStore = KeyStore(backing: InMemoryKeychain())
         let keyID = try keyStore.generateEd25519(label: "loop2")
+        let clock = TestTerminalFrameClock()
+        let terminal = TerminalEmulator(frameClock: clock)
         let session = InteractiveCommandSession(
             connection: HostConnection(
                 host: Host(name: "h", address: "192.0.2.10", username: "alice",
@@ -261,15 +283,18 @@ import Testing
                 knownHosts: KnownHostsStore(defaults: UserDefaults(suiteName: "msam.loop2.\(UUID())")!),
                 transport: FakeSSHTransport()
             ),
-            command: "true"
+            command: "true",
+            terminal: terminal
         )
+        #expect(!session.terminal.isRenderLoopRunning)
+        terminal.feed(Data("pending".utf8))
+        await Task.yield()
         #expect(session.terminal.isRenderLoopRunning)
         await session.stop()
         #expect(!session.terminal.isRenderLoopRunning)
+        terminal.feed(Data("late".utf8))
+        await Task.yield()
+        #expect(!session.terminal.isRenderLoopRunning)
+        #expect(terminal.coreCursorColumn == 0)
     }
-
-    // NOTE: the belt-and-braces half of this — a link retiring ITSELF once its
-    // emulator has been deallocated — cannot be asserted here. It needs a real
-    // run loop to fire the link after the emulator is gone, which a synchronous
-    // test cannot arrange. See DisplayLinkProxy.tick().
 }
