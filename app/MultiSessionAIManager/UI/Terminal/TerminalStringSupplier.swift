@@ -11,23 +11,29 @@ import Foundation
 import SwiftTerm
 import SwiftUI
 
-struct TerminalRenderedRun: Identifiable, Equatable {
+// SwiftTerm 1.13 does not annotate `Attribute` as Sendable, although it contains
+// only value fields. These immutable render snapshots are safe to compare from
+// Equatable's nonisolated requirement.
+struct TerminalRenderedRun: Identifiable, Equatable, @unchecked Sendable {
     let id: Int
     let text: String
     let attribute: Attribute
     let isCursor: Bool
     let columns: Int
+    let isPadding: Bool
 }
 
-struct TerminalRenderedRow: Identifiable, Equatable {
+struct TerminalRenderedRow: Identifiable, Equatable, @unchecked Sendable {
     let id: Int
     let runs: [TerminalRenderedRun]
 
     /// The retained row text without blank cells used only to pad the terminal
     /// grid. It is derived from runs so the renderer stores no duplicate string.
     var plainText: String {
-        let text = runs.map(\.text).joined()
-        return String(text.reversed().drop(while: { $0 == " " }).reversed())
+        guard let lastContent = runs.lastIndex(where: { !$0.isPadding }) else {
+            return ""
+        }
+        return runs[...lastContent].map(\.text).joined()
     }
 }
 
@@ -36,16 +42,41 @@ extension TerminalRenderedRow {
         id: Int,
         cells: [(char: Character, attribute: Attribute, isCursor: Bool)]
     ) {
+        self.init(
+            id: id,
+            cells: cells.map { cell in
+                (
+                    char: cell.char,
+                    attribute: cell.attribute,
+                    isCursor: cell.isCursor,
+                    columns: cell.char.unicodeScalars.reduce(0) {
+                        $0 + UnicodeUtil.columnWidth(rune: $1)
+                    },
+                    isPadding: false
+                )
+            }
+        )
+    }
+
+    init(
+        id: Int,
+        cells: [(
+            char: Character,
+            attribute: Attribute,
+            isCursor: Bool,
+            columns: Int,
+            isPadding: Bool
+        )]
+    ) {
         self.id = id
-        self.runs = TerminalRunSplitter.runs(cells: cells).enumerated().map { index, run in
+        self.runs = TerminalRunSplitter.sizedRuns(cells: cells).enumerated().map { index, run in
             TerminalRenderedRun(
                 id: index,
                 text: run.text,
                 attribute: run.attribute,
                 isCursor: run.isCursor,
-                columns: run.text.unicodeScalars.reduce(0) {
-                    $0 + UnicodeUtil.columnWidth(rune: $1)
-                }
+                columns: run.columns,
+                isPadding: run.isPadding
             )
         }
     }
@@ -80,30 +111,82 @@ enum TerminalRunSplitter {
     static func runs<A: Equatable>(
         cells: [(char: Character, attribute: A, isCursor: Bool)]
     ) -> [(text: String, attribute: A, isCursor: Bool)] {
-        var result = [(text: String, attribute: A, isCursor: Bool)]()
+        sizedRuns(cells: cells.map { cell in
+            (
+                char: cell.char,
+                attribute: cell.attribute,
+                isCursor: cell.isCursor,
+                columns: cell.char.unicodeScalars.reduce(0) {
+                    $0 + UnicodeUtil.columnWidth(rune: $1)
+                },
+                isPadding: false
+            )
+        }).map { (text: $0.text, attribute: $0.attribute, isCursor: $0.isCursor) }
+    }
+
+    static func sizedRuns<A: Equatable>(
+        cells: [(
+            char: Character,
+            attribute: A,
+            isCursor: Bool,
+            columns: Int,
+            isPadding: Bool
+        )]
+    ) -> [(
+        text: String,
+        attribute: A,
+        isCursor: Bool,
+        columns: Int,
+        isPadding: Bool
+    )] {
+        var result = [(
+            text: String,
+            attribute: A,
+            isCursor: Bool,
+            columns: Int,
+            isPadding: Bool
+        )]()
         var buffer = ""
         var bufferAttribute: A?
+        var bufferColumns = 0
+        var bufferIsPadding = false
 
         func flush() {
             if let attribute = bufferAttribute, !buffer.isEmpty {
-                result.append((text: buffer, attribute: attribute, isCursor: false))
+                result.append((
+                    text: buffer,
+                    attribute: attribute,
+                    isCursor: false,
+                    columns: bufferColumns,
+                    isPadding: bufferIsPadding
+                ))
             }
             buffer = ""
             bufferAttribute = nil
+            bufferColumns = 0
+            bufferIsPadding = false
         }
 
         for cell in cells {
+            guard cell.columns > 0 else { continue }
             if cell.isCursor || Self.isolates(cell.char) {
                 flush()
-                result.append((text: String(cell.char), attribute: cell.attribute,
-                               isCursor: cell.isCursor))
+                result.append((
+                    text: String(cell.char),
+                    attribute: cell.attribute,
+                    isCursor: cell.isCursor,
+                    columns: cell.columns,
+                    isPadding: cell.isPadding
+                ))
                 continue
             }
-            if bufferAttribute != cell.attribute {
+            if bufferAttribute != cell.attribute || bufferIsPadding != cell.isPadding {
                 flush()
                 bufferAttribute = cell.attribute
+                bufferIsPadding = cell.isPadding
             }
             buffer.append(cell.char)
+            bufferColumns += cell.columns
         }
         flush()
         return result
@@ -155,20 +238,25 @@ final class TerminalStringSupplier {
         guard let terminal else { return nil }
         let cells = (0..<terminal.cols).map { j in
             let data = cellAtColumn(j)
-            let character = data.getCharacter()
-            return (char: character == "\0" ? " " : character,
-                    attribute: data.attribute,
-                    isCursor: j == cursorColumn)
+            let character = terminal.getCharacter(for: data)
+            let isPadding = character == "\0"
+            return (
+                char: isPadding ? " " : character,
+                attribute: data.attribute,
+                isCursor: j == cursorColumn,
+                columns: Int(data.width),
+                isPadding: isPadding
+            )
         }
         return TerminalRenderedRow(id: row, cells: cells)
     }
 }
 
 struct TerminalRenderedRowView: View, Equatable {
-    let row: TerminalRenderedRow
+    nonisolated let row: TerminalRenderedRow
     let colorMap: TerminalColorMap
     let fontMetrics: TerminalFontMetrics
-    let styleGeneration: Int
+    nonisolated let styleGeneration: Int
 
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.row == rhs.row && lhs.styleGeneration == rhs.styleGeneration

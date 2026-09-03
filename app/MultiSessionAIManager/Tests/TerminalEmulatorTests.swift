@@ -142,6 +142,51 @@ final class TestTerminalFrameClock: TerminalFrameClock {
         #expect(e.lines[1] != before[1])
     }
 
+    @Test func cjkCellsKeepTheirAuthoritativeWidthWithoutAContinuationSpace() async throws {
+        let clock = TestTerminalFrameClock()
+        let e = TerminalEmulator(cols: 10, rows: 3, frameClock: clock)
+        e.feed(Data("界x".utf8))
+        await Task.yield()
+        clock.fire()
+
+        let row = try #require(e.lines.first)
+        let columnsBeforeCursor = row.runs
+            .prefix { !$0.isCursor }
+            .reduce(0) { $0 + $1.columns }
+
+        #expect(row.plainText == "界x")
+        #expect(columnsBeforeCursor == 3)
+        #expect(row.runs.reduce(0) { $0 + $1.columns } == e.cols)
+    }
+
+    @Test func supplementaryEmojiUsesSwiftTermsExtendedCharacterLookup() async throws {
+        let clock = TestTerminalFrameClock()
+        let e = TerminalEmulator(cols: 10, rows: 3, frameClock: clock)
+        e.feed(Data("😀x".utf8))
+        await Task.yield()
+        clock.fire()
+
+        let row = try #require(e.lines.first)
+        let columnsBeforeCursor = row.runs
+            .prefix { !$0.isCursor }
+            .reduce(0) { $0 + $1.columns }
+
+        #expect(row.plainText == "😀x")
+        #expect(columnsBeforeCursor == 3)
+        #expect(row.runs.reduce(0) { $0 + $1.columns } == e.cols)
+    }
+
+    @Test func plainTextPreservesWrittenTrailingSpacesButOmitsTerminalPadding() async throws {
+        let clock = TestTerminalFrameClock()
+        let e = TerminalEmulator(cols: 10, rows: 3, frameClock: clock)
+        e.feed(Data("x ".utf8))
+        await Task.yield()
+        clock.fire()
+
+        let row = try #require(e.lines.first)
+        #expect(row.plainText == "x ")
+    }
+
     @Test func appendDuringFrameRetirementRestartsAndDrainsTheNextFrame() async {
         let clock = TestTerminalFrameClock()
         let e = TerminalEmulator(cols: 20, rows: 5, frameClock: clock)

@@ -20,6 +20,11 @@ enum AnsiColorCode: Int, CaseIterable {
 }
 
 final class TerminalColorMap {
+    private enum ColorCacheKey: Hashable {
+        case ansi(Int)
+        case trueColor(Attribute.Color)
+    }
+
     // Per-theme colours. The 256-cube + truecolor paths below are theme-independent;
     // only the 16 ANSI colours and bg/fg/cursor come from the `TerminalTheme`.
     let background: UIColor
@@ -29,7 +34,7 @@ final class TerminalColorMap {
     let backgroundCursor: UIColor
 
     private let ansiColors: [AnsiColorCode: UIColor]
-    private var colorCache = [Attribute.Color: UIColor]()
+    private var colorCache = [ColorCacheKey: UIColor]()
 
     /// Build a colour map for `theme`. Defaults to the Dark preset so existing call
     /// sites (`TerminalColorMap()`) keep their original appearance unchanged.
@@ -67,7 +72,8 @@ final class TerminalColorMap {
                 return ansiColors[AnsiColorCode.allCases[index]]!
             }
 
-            if let cachedColor = colorCache[termColor] {
+            let cacheKey = ColorCacheKey.ansi(index)
+            if let cachedColor = colorCache[cacheKey] {
                 return cachedColor
             }
 
@@ -88,18 +94,19 @@ final class TerminalColorMap {
             } else {
                 color = foreground
             }
-            colorCache[termColor] = color
+            colorCache[cacheKey] = color
             return color
 
         case .trueColor(let r, let g, let b):
-            if let cachedColor = colorCache[termColor] {
+            let cacheKey = ColorCacheKey.trueColor(termColor)
+            if let cachedColor = colorCache[cacheKey] {
                 return cachedColor
             }
             let color = UIColor(red: CGFloat(r) / 255,
                                 green: CGFloat(g) / 255,
                                 blue: CGFloat(b) / 255,
                                 alpha: 1)
-            colorCache[termColor] = color
+            colorCache[cacheKey] = color
             return color
         }
     }

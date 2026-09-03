@@ -42,6 +42,37 @@ import Testing
         #expect(row.runs[0] == equalRow.runs[0])
     }
 
+    @Test func renderedRowsRejectAnIncompleteFullBuild() {
+        var requestedRows = [Int]()
+
+        let result = TerminalRenderedRows.updated(
+            current: [],
+            rowCount: 3,
+            replacing: []
+        ) { row in
+            requestedRows.append(row)
+            return row == 1 ? nil : renderedRow(id: row)
+        }
+
+        #expect(result == nil)
+        #expect(requestedRows == [0, 1])
+    }
+
+    @Test func renderedRowsRejectAnIncompleteDirtyUpdate() {
+        let original = [renderedRow(id: 0), renderedRow(id: 1)]
+
+        let result = TerminalRenderedRows.updated(
+            current: original,
+            rowCount: original.count,
+            replacing: [0, 1]
+        ) { row in
+            row == 0 ? renderedRow(id: row) : nil
+        }
+
+        #expect(result == nil)
+        #expect(original == [renderedRow(id: 0), renderedRow(id: 1)])
+    }
+
     private func split(
         _ cells: [(Character, Int, Bool)]
     ) -> [(text: String, attribute: Int, isCursor: Bool)] {

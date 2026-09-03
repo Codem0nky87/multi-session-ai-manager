@@ -1,4 +1,5 @@
 import Testing
+import SwiftTerm
 import UIKit
 @testable import MultiSessionAIManager
 
@@ -103,6 +104,44 @@ import UIKit
         TerminalTheme.light.background.getWhite(&lw, alpha: &a)
         TerminalTheme.dark.background.getWhite(&dw, alpha: &a)
         #expect(lw > dw)
+    }
+
+    @Test func ansiCacheKeepsBoldColorDistinctAfterNormalLookup() {
+        let terminalColor = Attribute.Color.ansi256(code: 16)
+        let expectedNormal = TerminalColorMap().color(
+            for: terminalColor,
+            isForeground: true
+        )
+        let expectedBold = TerminalColorMap().color(
+            for: terminalColor,
+            isForeground: true,
+            isBold: true
+        )
+        let map = TerminalColorMap()
+
+        #expect(expectedNormal != expectedBold)
+        #expect(map.color(for: terminalColor, isForeground: true) == expectedNormal)
+        #expect(map.color(for: terminalColor, isForeground: true, isBold: true) == expectedBold)
+        #expect(map.color(for: terminalColor, isForeground: true) == expectedNormal)
+    }
+
+    @Test func ansiCacheKeepsNormalColorDistinctAfterBoldLookup() {
+        let terminalColor = Attribute.Color.ansi256(code: 16)
+        let expectedNormal = TerminalColorMap().color(
+            for: terminalColor,
+            isForeground: true
+        )
+        let expectedBold = TerminalColorMap().color(
+            for: terminalColor,
+            isForeground: true,
+            isBold: true
+        )
+        let map = TerminalColorMap()
+
+        #expect(expectedNormal != expectedBold)
+        #expect(map.color(for: terminalColor, isForeground: true, isBold: true) == expectedBold)
+        #expect(map.color(for: terminalColor, isForeground: true) == expectedNormal)
+        #expect(map.color(for: terminalColor, isForeground: true, isBold: true) == expectedBold)
     }
 }
 

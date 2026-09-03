@@ -34,6 +34,42 @@ enum TerminalHistoryPolicy: Equatable, Sendable {
     }
 }
 
+/// Builds a complete candidate row array without mutating the currently
+/// published rows. A source failure therefore cannot expose a partial frame.
+enum TerminalRenderedRows {
+    static func updated(
+        current: [TerminalRenderedRow],
+        rowCount: Int,
+        replacing rowsToReplace: Set<Int>,
+        renderedRow: (Int) -> TerminalRenderedRow?
+    ) -> [TerminalRenderedRow]? {
+        let boundedCount = max(rowCount, 0)
+        let retainedCount = min(current.count, boundedCount)
+        let boundedReplacements = rowsToReplace.filter { $0 >= 0 && $0 < boundedCount }
+        let requiredRows = Set(retainedCount..<boundedCount).union(boundedReplacements)
+        var replacements = [Int: TerminalRenderedRow]()
+        replacements.reserveCapacity(requiredRows.count)
+
+        for row in requiredRows.sorted() {
+            guard let rendered = renderedRow(row), rendered.id == row else {
+                return nil
+            }
+            replacements[row] = rendered
+        }
+
+        var result = Array(current.prefix(boundedCount))
+        for row in retainedCount..<boundedCount {
+            guard let rendered = replacements[row] else { return nil }
+            result.append(rendered)
+        }
+        for row in boundedReplacements where row < retainedCount {
+            guard let rendered = replacements[row] else { return nil }
+            result[row] = rendered
+        }
+        return result
+    }
+}
+
 @MainActor
 @Observable
 final class TerminalEmulator {
@@ -233,8 +269,11 @@ final class TerminalEmulator {
         // at local-history capacity can mean SwiftTerm recycled its row ring, so
         // every bounded buffer-relative row may now refer to different content.
         if forceFullRebuild || localHistoryNeedsFullRebuild(for: viewportUpdateRange) {
+            guard rebuildAllRows() else {
+                forceFullRebuild = true
+                return
+            }
             forceFullRebuild = false
-            rebuildAllRows()
             return
         }
 
@@ -244,22 +283,6 @@ final class TerminalEmulator {
         let updateRange = rendererUpdateRange(viewportUpdateRange: viewportUpdateRange)
         if updateRange == nil && cursorLocation == lastCursorLocation {
             return // Nothing changed.
-        }
-        terminal.clearUpdateRange()
-
-        // Drop rows that no longer exist.
-        if lines.count > total {
-            lines.removeSubrange(total...)
-        }
-        // Grow only from real source rows. A missing SwiftTerm row must not be
-        // published as a successful-looking EmptyView placeholder.
-        while lines.count < total {
-            let row = lines.count
-            guard let rendered = renderedRow(at: row) else {
-                assertionFailure("Missing terminal source row \(row)")
-                break
-            }
-            lines.append(rendered)
         }
 
         // Compute the set of rows to re-render: the dirty range, plus the cursor's
@@ -279,14 +302,19 @@ final class TerminalEmulator {
             }
         }
 
-        for i in linesToUpdate where i >= 0 && i < lines.count {
-            guard let rendered = renderedRow(at: i) else {
-                assertionFailure("Missing terminal source row \(i)")
-                continue
-            }
-            lines[i] = rendered
+        guard let updatedLines = TerminalRenderedRows.updated(
+            current: lines,
+            rowCount: total,
+            replacing: linesToUpdate,
+            renderedRow: renderedRow(at:)
+        ) else {
+            assertionFailure("Missing terminal source row during dirty update")
+            forceFullRebuild = true
+            return
         }
 
+        lines = updatedLines
+        terminal.clearUpdateRange()
         lastCursorLocation = cursorLocation
         renderGeneration &+= 1
     }
@@ -362,19 +390,24 @@ final class TerminalEmulator {
             && viewportUpdateRange.endY >= terminal.rows - 1
     }
 
-    private func rebuildAllRows() {
+    @discardableResult
+    private func rebuildAllRows() -> Bool {
         let total = renderedRowCount
-        terminal.clearUpdateRange()
-        lines.removeAll(keepingCapacity: true)
-        for row in 0..<total {
-            guard let rendered = renderedRow(at: row) else {
-                assertionFailure("Missing terminal source row \(row)")
-                break
-            }
-            lines.append(rendered)
+        guard let rebuiltLines = TerminalRenderedRows.updated(
+            current: [],
+            rowCount: total,
+            replacing: [],
+            renderedRow: renderedRow(at:)
+        ) else {
+            assertionFailure("Missing terminal source row during full rebuild")
+            return false
         }
+
+        lines = rebuiltLines
+        terminal.clearUpdateRange()
         lastCursorLocation = rendererCursorLocation
         renderGeneration &+= 1
+        return true
     }
 
     // MARK: - Selection / copy
