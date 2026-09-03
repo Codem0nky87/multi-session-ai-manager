@@ -12,6 +12,8 @@ final class HostTabsModel {
     private let keyStore: KeyStore
     private let knownHosts: KnownHostsStore
     private let makeTransport: () -> any SSHTransport
+    private var recoverySelectedTabID: UUID?
+    private var isRecoveryForeground = false
 
     private(set) var sessions: [UUID: HerdrHostSession] = [:]
 
@@ -43,8 +45,20 @@ final class HostTabsModel {
             // The tab's persisted id: stable across relaunches, unique per tab.
             watchIdentity: tab.id.uuidString
         )
+        session.automaticRecoveryEnabled =
+            isRecoveryForeground && recoverySelectedTabID == tab.id
         sessions[tab.id] = session
         return session
+    }
+
+    /// Applies app lifecycle policy only to sessions that already exist. Stored
+    /// tabs remain dormant until the UI selects one and asks for its session.
+    func setRecoveryContext(selectedTabID: UUID?, isForeground: Bool) {
+        recoverySelectedTabID = selectedTabID
+        isRecoveryForeground = isForeground
+        for (tabID, session) in sessions {
+            session.automaticRecoveryEnabled = isForeground && tabID == selectedTabID
+        }
     }
 
     func closeSession(tabID: UUID) async {
@@ -201,6 +215,7 @@ struct RootView: View {
         // the strip goes flush against the bezel again.
         .task {
             tabStore.prune(existingHostIDs: Set(hostStore.hosts.map(\.id)))
+            updateRecoveryContext()
         }
         .onChange(of: hostStore.hosts.map(\.id)) { _, ids in
             tabStore.prune(existingHostIDs: Set(ids))
@@ -212,6 +227,7 @@ struct RootView: View {
         // stay unscrollable and deaf to Herdr on a tab the user came back to.
         .onChange(of: tabStore.selectedTabID) { _, _ in
             selection.exit()
+            updateRecoveryContext()
         }
         // A path queued by `msam-send` on the host. Downloaded here rather than
         // in the session so the session stays free of UI concerns, and only for
@@ -222,6 +238,7 @@ struct RootView: View {
             fetchNextIncoming()
         }
         .onChange(of: scenePhase) { _, phase in
+            updateRecoveryContext()
             guard phase == .active, let tab = selectedTab else { return }
             Task { await tabs.session(for: tab).ensureLive() }
         }
@@ -304,6 +321,13 @@ struct RootView: View {
     private var selectedHost: Host? {
         guard let hostID = selectedTab?.hostID else { return nil }
         return hostStore.hosts.first(where: { $0.id == hostID })
+    }
+
+    private func updateRecoveryContext() {
+        tabs.setRecoveryContext(
+            selectedTabID: tabStore.selectedTabID,
+            isForeground: scenePhase == .active
+        )
     }
 }
 

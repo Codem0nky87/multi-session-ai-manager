@@ -48,6 +48,68 @@ import Testing
         #expect(model.session(for: a) !== model.session(for: b))
     }
 
+    @Test func onlyTheSelectedSessionRecoversWhileForeground() throws {
+        let (model, _, _, host) = try makeModel()
+        let selected = HostTab(hostID: host.id, sessionName: nil)
+        let unselected = HostTab(hostID: host.id, sessionName: "second")
+        let selectedSession = model.session(for: selected)
+        let unselectedSession = model.session(for: unselected)
+
+        model.setRecoveryContext(selectedTabID: selected.id, isForeground: true)
+
+        #expect(selectedSession.automaticRecoveryEnabled)
+        #expect(!unselectedSession.automaticRecoveryEnabled)
+    }
+
+    @Test func switchingSelectionTransfersAutomaticRecovery() throws {
+        let (model, _, _, host) = try makeModel()
+        let first = HostTab(hostID: host.id, sessionName: nil)
+        let second = HostTab(hostID: host.id, sessionName: "second")
+        let firstSession = model.session(for: first)
+        let secondSession = model.session(for: second)
+        model.setRecoveryContext(selectedTabID: first.id, isForeground: true)
+
+        model.setRecoveryContext(selectedTabID: second.id, isForeground: true)
+
+        #expect(!firstSession.automaticRecoveryEnabled)
+        #expect(secondSession.automaticRecoveryEnabled)
+    }
+
+    @Test func inactiveSceneDisablesRecoveryForEveryExistingSession() throws {
+        let (model, _, _, host) = try makeModel()
+        let selected = HostTab(hostID: host.id, sessionName: nil)
+        let other = HostTab(hostID: host.id, sessionName: "second")
+        let selectedSession = model.session(for: selected)
+        let otherSession = model.session(for: other)
+        model.setRecoveryContext(selectedTabID: selected.id, isForeground: true)
+        #expect(selectedSession.automaticRecoveryEnabled)
+
+        model.setRecoveryContext(selectedTabID: selected.id, isForeground: false)
+
+        #expect(!selectedSession.automaticRecoveryEnabled)
+        #expect(!otherSession.automaticRecoveryEnabled)
+    }
+
+    @Test func lazilyCreatedSelectedSessionInheritsRecoveryContext() throws {
+        let (model, _, _, host) = try makeModel()
+        let selected = HostTab(hostID: host.id, sessionName: nil)
+        model.setRecoveryContext(selectedTabID: selected.id, isForeground: true)
+
+        let session = model.session(for: selected)
+
+        #expect(session.automaticRecoveryEnabled)
+    }
+
+    @Test func changingRecoveryContextDoesNotCreateStoredTabSessions() throws {
+        let (model, _, tabStore, host) = try makeModel()
+        let selected = tabStore.open(hostID: host.id, sessionName: nil)
+        _ = tabStore.open(hostID: host.id, sessionName: "second")
+
+        model.setRecoveryContext(selectedTabID: selected.id, isForeground: true)
+
+        #expect(model.sessions.isEmpty)
+    }
+
     @Test func closingATabTearsDownItsSession() async throws {
         let (model, _, _, host) = try makeModel()
         let tab = HostTab(hostID: host.id, sessionName: nil)
@@ -114,6 +176,16 @@ import Testing
         let source = try sourceFile("UI/RootView.swift")
         #expect(source.contains(".onChange(of: tabStore.tabs.map(\\.id))"))
         #expect(source.contains("await tabs.retireSessions()"))
+    }
+
+    @Test func rootViewUpdatesRecoveryContextForInitialSelectionAndSceneChanges() throws {
+        let source = try sourceFile("UI/RootView.swift")
+
+        #expect(source.contains("private func updateRecoveryContext()"))
+        #expect(source.components(separatedBy: "updateRecoveryContext()").count - 1 == 4)
+        #expect(source.contains("selectedTabID: tabStore.selectedTabID"))
+        #expect(source.contains("isForeground: scenePhase == .active"))
+        #expect(source.contains("Task { await tabs.session(for: tab).ensureLive() }"))
     }
 
     @Test func retryButtonUsesExplicitRetryInsteadOfLifecycleReconciliation() throws {
