@@ -435,8 +435,13 @@ update_tool() {
   if native_install_present "$tool" "$native_path"; then
     owners=$((owners + 1)); method=native; owner_path=$native_path
   fi
-  if [ "$brew_package" != - ] && command -v brew >/dev/null 2>&1 && run_bounded "$INSPECT_TIMEOUT_SECONDS" brew list --versions "$brew_package" >/dev/null 2>&1; then
+  if [ "$brew_package" != - ] && command -v brew >/dev/null 2>&1 && run_bounded "$INSPECT_TIMEOUT_SECONDS" brew list --formula --versions "$brew_package" >/dev/null 2>&1; then
     owners=$((owners + 1)); method=homebrew
+    owner_prefix=$(run_bounded "$INSPECT_TIMEOUT_SECONDS" brew --prefix 2>/dev/null || :)
+    owner_path="$owner_prefix/bin/$executable_name"
+  fi
+  if [ "$brew_package" != - ] && command -v brew >/dev/null 2>&1 && run_bounded "$INSPECT_TIMEOUT_SECONDS" brew list --cask --versions "$brew_package" >/dev/null 2>&1; then
+    owners=$((owners + 1)); method=homebrew-cask
     owner_prefix=$(run_bounded "$INSPECT_TIMEOUT_SECONDS" brew --prefix 2>/dev/null || :)
     owner_path="$owner_prefix/bin/$executable_name"
   fi
@@ -462,7 +467,8 @@ update_tool() {
   [ "$owners" -eq 1 ] && [ -n "$owner_path" ] && [ "$executable" = "$owner_path" ] || return 1
 
   case "$method" in
-    homebrew) run_bounded "$COMMAND_TIMEOUT_SECONDS" brew upgrade "$brew_package" || return 1 ;;
+    homebrew) run_bounded "$COMMAND_TIMEOUT_SECONDS" brew upgrade --formula --yes "$brew_package" || return 1 ;;
+    homebrew-cask) run_bounded "$COMMAND_TIMEOUT_SECONDS" brew upgrade --cask --yes "$brew_package" || return 1 ;;
     npm) run_bounded "$COMMAND_TIMEOUT_SECONDS" npm install -g "$node_package@latest" || return 1 ;;
     pnpm) run_bounded "$COMMAND_TIMEOUT_SECONDS" pnpm add -g "$node_package@latest" || return 1 ;;
     bun) run_bounded "$COMMAND_TIMEOUT_SECONDS" bun add -g "$node_package@latest" || return 1 ;;

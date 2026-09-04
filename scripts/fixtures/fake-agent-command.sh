@@ -21,7 +21,23 @@ case "$name" in
   agy)
     [ "${1:-}" = "--version" ] && printf '1.1.26\n'
     ;;
-  brew|pnpm|bun)
+  brew)
+    case " $* " in
+      *" list --formula --versions codex "*)
+        [ "${MSAM_FAKE_CODEX_OWNER:-npm}" = homebrew ] && printf 'codex %s\n' "$(cat "$data/codex.version")"
+        ;;
+      *" list --cask --versions codex "*)
+        [ "${MSAM_FAKE_CODEX_OWNER:-npm}" = homebrew-cask ] && printf 'codex %s\n' "$(cat "$data/codex.version")"
+        ;;
+      *" --prefix "*) printf '%s\n' "${data%/fake}" ;;
+      *" upgrade --formula --yes codex "*|*" upgrade --cask --yes codex "*)
+        [ "$(cat "$data/update-fails")" = "0" ] || exit 1
+        printf '%s\n' "${MSAM_FAKE_CODEX_AFTER_VERSION:-0.153.2}" > "$data/codex.version"
+        ;;
+      *) exit 1 ;;
+    esac
+    ;;
+  pnpm|bun)
     exit 1
     ;;
   npm)

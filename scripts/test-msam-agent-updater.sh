@@ -143,6 +143,28 @@ if "$UPDATER" submit "$bad" >/dev/null 2>&1; then
 fi
 assert_eq "$(wc -c < "$MSAM_UPDATER_TEST_DATA/commands.log" | tr -d ' ')" "0"
 
+# Homebrew casks are distinct, supported owners. The worker must use the cask
+# command and still roll every eligible supported agent conversation.
+new_host
+export MSAM_FAKE_CODEX_OWNER=homebrew-cask
+seed_agent %1 idle claude claude-1 101
+seed_agent %2 "done" codex codex-2 102
+seed_agent %3 idle agy agy-3 103
+batch=10000000-0000-4000-8000-000000000012
+write_request "$batch"
+submit_and_run "$batch"
+log=$(cat "$MSAM_UPDATER_TEST_DATA/commands.log")
+assert_contains "$log" "brew list --formula --versions codex"
+assert_contains "$log" "brew list --cask --versions codex"
+assert_contains "$log" "brew upgrade --cask --yes codex"
+assert_not_contains "$log" "npm install"
+assert_contains "$log" "agent prompt %1 /exit"
+assert_contains "$log" "agent prompt %2 /exit"
+assert_contains "$log" "agent prompt %3 /exit"
+assert_contains "$log" "--kind claude"
+assert_contains "$log" "--kind codex"
+assert_contains "$log" "--kind agy"
+
 # A failed executable update must leave every agent process untouched.
 new_host
 seed_agent %1 idle claude claude-1 101
