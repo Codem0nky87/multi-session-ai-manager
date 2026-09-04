@@ -38,6 +38,65 @@ case "$name" in
   curl)
     exit 1
     ;;
+  uname)
+    case "${1:-}" in
+      -s) printf '%s\n' "${MSAM_FAKE_OS:-Linux}" ;;
+      -m) printf 'arm64\n' ;;
+      *) printf '%s\n' "${MSAM_FAKE_OS:-Linux}" ;;
+    esac
+    ;;
+  codesign)
+    case " $* " in
+      *" --verify "*) [ "${MSAM_FAKE_SIGNING_VALID:-yes}" = yes ] ;;
+      *" -dr "*)
+        printf 'designated => identifier "%s" and anchor apple generic and certificate leaf[subject.OU] = "%s"\n' \
+          "${MSAM_FAKE_IDENTIFIER:-codex}" "${MSAM_FAKE_TEAM:-2DC432GLL2}" >&2
+        ;;
+      *" -dvvv "*)
+        printf 'Identifier=%s\nTeamIdentifier=%s\n' \
+          "${MSAM_FAKE_IDENTIFIER:-codex}" "${MSAM_FAKE_TEAM:-2DC432GLL2}" >&2
+        ;;
+      *) exit 1 ;;
+    esac
+    ;;
+  spctl)
+    [ "${MSAM_FAKE_SPCTL_VALID:-yes}" = yes ]
+    ;;
+  xattr)
+    case " $* " in
+      *" -p com.apple.quarantine "*)
+        [ "$(cat "$data/quarantine")" = yes ]
+        ;;
+      *" -d com.apple.quarantine "*)
+        printf 'no\n' > "$data/quarantine"
+        ;;
+      *) exit 1 ;;
+    esac
+    ;;
+  realpath)
+    count=$(cat "$data/realpath-count")
+    count=$((count + 1))
+    printf '%s\n' "$count" > "$data/realpath-count"
+    case "${MSAM_FAKE_REALPATH_MODE:-artifact}" in
+      artifact) printf '%s\n' "$data/signed-artifact" ;;
+      path-swap)
+        if [ "$count" -gt 1 ]; then
+          printf '%s\n' "$data/swapped-artifact"
+        else
+          printf '%s\n' "$data/signed-artifact"
+        fi
+        ;;
+      directory) printf '%s\n' "$data/signed-directory" ;;
+      parent) printf '%s\n' "$data/.." ;;
+      glob) printf '%s\n' "$data/*" ;;
+      symlink) printf '%s\n' "$data/signed-symlink" ;;
+      unavailable) exit 1 ;;
+      *) exit 1 ;;
+    esac
+    ;;
+  stat)
+    printf '1:42\n'
+    ;;
   herdr)
     action="${1:-} ${2:-}"
     case "$action" in

@@ -40,12 +40,30 @@ new_host() {
   printf '0.153.1\n' > "$MSAM_UPDATER_TEST_DATA/codex.version"
   printf '0\n' > "$MSAM_UPDATER_TEST_DATA/restore-failures"
   printf '0\n' > "$MSAM_UPDATER_TEST_DATA/update-fails"
+  printf 'no\n' > "$MSAM_UPDATER_TEST_DATA/quarantine"
+  printf '0\n' > "$MSAM_UPDATER_TEST_DATA/realpath-count"
+  export MSAM_FAKE_OS=Linux
+  export MSAM_FAKE_SIGNING_VALID=yes
+  export MSAM_FAKE_TEAM=2DC432GLL2
+  export MSAM_FAKE_IDENTIFIER=codex
+  export MSAM_FAKE_SPCTL_VALID=yes
+  export MSAM_FAKE_REALPATH_MODE=artifact
 
   cp "$ROOT/scripts/fixtures/fake-agent-command.sh" "$TEST_ROOT/bin/fake-agent-command"
   chmod 700 "$TEST_ROOT/bin/fake-agent-command"
-  for command in herdr claude codex agy brew npm pnpm bun curl; do
+  cp "$ROOT/scripts/fixtures/fake-agent-command.sh" "$MSAM_UPDATER_TEST_DATA/signed-artifact"
+  chmod 700 "$MSAM_UPDATER_TEST_DATA/signed-artifact"
+  mkdir "$MSAM_UPDATER_TEST_DATA/signed-directory"
+  ln -s signed-artifact "$MSAM_UPDATER_TEST_DATA/signed-symlink"
+  for command in herdr claude codex agy brew npm pnpm bun curl uname codesign spctl xattr realpath stat; do
     ln -s fake-agent-command "$TEST_ROOT/bin/$command"
   done
+  export MSAM_AGENT_UPDATER_CODESIGN="$TEST_ROOT/bin/codesign"
+  export MSAM_AGENT_UPDATER_SPCTL="$TEST_ROOT/bin/spctl"
+  export MSAM_AGENT_UPDATER_XATTR="$TEST_ROOT/bin/xattr"
+  export MSAM_AGENT_UPDATER_REALPATH="$TEST_ROOT/bin/realpath"
+  export MSAM_AGENT_UPDATER_STAT="$TEST_ROOT/bin/stat"
+  export MSAM_AGENT_UPDATER_UNAME="$TEST_ROOT/bin/uname"
   export PATH="$TEST_ROOT/bin:/usr/bin:/bin"
 }
 
@@ -61,11 +79,12 @@ seed_agent() {
 write_request() {
   batch=$1
   update_tool=${2:-codex}
+  policy=${3:-manualApproval}
   request="$MSAM_AGENT_UPDATER_STATE_DIR/incoming/$batch.request"
   {
     printf 'MSAM_AGENT_UPDATE_REQUEST\t1\n'
     printf 'BATCH\t%s\n' "$batch"
-    printf 'POLICY\tmanualApproval\n'
+    printf 'POLICY\t%s\n' "$policy"
     printf 'UPDATE\t%s\n' "$update_tool"
     printf 'TARGET\tdefault\t/tmp/herdr.sock\t%%1\t101\tclaude\tclaude-1\n'
     printf 'TARGET\tdefault\t/tmp/herdr.sock\t%%2\t102\tcodex\tcodex-2\n'
@@ -103,6 +122,9 @@ write_request "$batch"
 submit_and_run "$batch"
 log=$(cat "$MSAM_UPDATER_TEST_DATA/commands.log")
 assert_not_contains "$log" "agent prompt"
+assert_not_contains "$log" "codesign"
+assert_not_contains "$log" "spctl"
+assert_not_contains "$log" "xattr"
 assert_contains "$("$UPDATER" status)" "failed_update"
 
 # Idle and done conversations roll now; working waits until a later pass.
@@ -128,6 +150,9 @@ log=$(cat "$MSAM_UPDATER_TEST_DATA/commands.log")
 assert_contains "$log" "agent prompt %3 /exit"
 assert_contains "$log" "--kind agy"
 assert_contains "$log" "--conversation agy-3"
+assert_not_contains "$log" "codesign"
+assert_not_contains "$log" "spctl"
+assert_not_contains "$log" "xattr"
 
 # Blocked, unknown, and error are attention states and never receive input.
 new_host
@@ -170,6 +195,74 @@ submit_and_run "$batch"
 attempts=$(grep -c 'agent start .*--pane %1' "$MSAM_UPDATER_TEST_DATA/commands.log" || true)
 assert_eq "$attempts" "3"
 assert_contains "$("$UPDATER" status)" "restore_attempts_exhausted"
+
+# Manual Gatekeeper policy never removes quarantine. It waits without touching
+# a conversation until the user has approved the exact executable on the Mac.
+new_host
+export MSAM_FAKE_OS=Darwin
+printf 'yes\n' > "$MSAM_UPDATER_TEST_DATA/quarantine"
+seed_agent %1 idle claude claude-1 101
+seed_agent %2 done codex codex-2 102
+seed_agent %3 idle agy agy-3 103
+batch=10000000-0000-4000-8000-000000000007
+write_request "$batch" codex manualApproval
+submit_and_run "$batch"
+log=$(cat "$MSAM_UPDATER_TEST_DATA/commands.log")
+assert_not_contains "$log" "xattr -d"
+assert_not_contains "$log" "agent prompt"
+assert_contains "$("$UPDATER" status)" "approval_required"
+printf 'no\n' > "$MSAM_UPDATER_TEST_DATA/quarantine"
+"$UPDATER" run-once >/dev/null
+assert_contains "$(cat "$MSAM_UPDATER_TEST_DATA/commands.log")" "agent prompt %1 /exit"
+
+# Verified-artifact policy clears only the exact resolved file, and only after
+# strict signing, fixed publisher identity, and Gatekeeper assessment succeed.
+new_host
+export MSAM_FAKE_OS=Darwin
+printf 'yes\n' > "$MSAM_UPDATER_TEST_DATA/quarantine"
+seed_agent %1 idle claude claude-1 101
+seed_agent %2 done codex codex-2 102
+seed_agent %3 idle agy agy-3 103
+batch=10000000-0000-4000-8000-000000000008
+write_request "$batch" codex verifiedVendorArtifacts
+submit_and_run "$batch"
+artifact="$MSAM_UPDATER_TEST_DATA/signed-artifact"
+log=$(cat "$MSAM_UPDATER_TEST_DATA/commands.log")
+assert_contains "$log" "codesign --verify --strict"
+assert_contains "$log" "spctl --assess --type execute"
+assert_contains "$log" "xattr -d com.apple.quarantine -- $artifact"
+assert_contains "$log" "agent prompt %1 /exit"
+
+# Any failed proof or unsafe/path-raced resolution falls back to approval and
+# never exits a conversation or clears quarantine.
+for failure in signature publisher notarization path-swap directory parent glob symlink unavailable; do
+  new_host
+  export MSAM_FAKE_OS=Darwin
+  printf 'yes\n' > "$MSAM_UPDATER_TEST_DATA/quarantine"
+  case "$failure" in
+    signature) export MSAM_FAKE_SIGNING_VALID=no ;;
+    publisher) export MSAM_FAKE_TEAM=WRONGTEAM ;;
+    notarization) export MSAM_FAKE_SPCTL_VALID=no ;;
+    path-swap|directory|parent|glob|symlink|unavailable)
+      export MSAM_FAKE_REALPATH_MODE=$failure
+      ;;
+  esac
+  seed_agent %1 idle claude claude-1 101
+  seed_agent %2 done codex codex-2 102
+  seed_agent %3 idle agy agy-3 103
+  batch=10000000-0000-4000-8000-000000000009
+  write_request "$batch" codex verifiedVendorArtifacts
+  submit_and_run "$batch"
+  log=$(cat "$MSAM_UPDATER_TEST_DATA/commands.log")
+  assert_not_contains "$log" "xattr -d"
+  assert_not_contains "$log" "agent prompt"
+  assert_contains "$("$UPDATER" status)" "approval_required"
+done
+
+# The helper must never automate security UI or weaken Gatekeeper globally.
+if grep -E 'spctl +(---master-disable|--master-disable|--global-disable)|Anywhere|xattr +(-r|-dR)|osascript|System Events|Accessibility control' "$UPDATER" >/dev/null; then
+  fail "updater contains a forbidden Gatekeeper bypass"
+fi
 
 # Status output and logs remain bounded even if a hostile host left a huge log.
 dd if=/dev/zero bs=1024 count=256 2>/dev/null | tr '\0' x > "$MSAM_AGENT_UPDATER_STATE_DIR/worker.log"

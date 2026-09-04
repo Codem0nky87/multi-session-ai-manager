@@ -14,6 +14,12 @@ CURRENT_FILE="$STATE_DIR/current"
 LOG_FILE="$STATE_DIR/worker.log"
 LOCK_DIR="$STATE_DIR/lock"
 TAB=$(printf '\t')
+CODESIGN_COMMAND=${MSAM_AGENT_UPDATER_CODESIGN:-/usr/bin/codesign}
+SPCTL_COMMAND=${MSAM_AGENT_UPDATER_SPCTL:-/usr/sbin/spctl}
+XATTR_COMMAND=${MSAM_AGENT_UPDATER_XATTR:-/usr/bin/xattr}
+REALPATH_COMMAND=${MSAM_AGENT_UPDATER_REALPATH:-/usr/bin/realpath}
+STAT_COMMAND=${MSAM_AGENT_UPDATER_STAT:-/usr/bin/stat}
+UNAME_COMMAND=${MSAM_AGENT_UPDATER_UNAME:-/usr/bin/uname}
 
 ensure_state() {
   mkdir -p "$INCOMING_DIR" "$QUEUE_DIR" "$BATCHES_DIR"
@@ -155,6 +161,63 @@ tool_values() {
   esac
 }
 
+publisher_values() {
+  case "$1" in
+    claude) printf '%s\t%s\n' Q6L2SF6YDW com.anthropic.claude-code ;;
+    codex) printf '%s\t%s\n' 2DC432GLL2 codex ;;
+    antigravity) printf '%s\t%s\n' EQHXZ8M8AV cli ;;
+    *) return 1 ;;
+  esac
+}
+
+artifact_has_quarantine() {
+  "$XATTR_COMMAND" -p com.apple.quarantine -- "$1" >/dev/null 2>&1
+}
+
+artifact_inode() {
+  "$STAT_COMMAND" -f '%d:%i' -- "$1" 2>/dev/null
+}
+
+gatekeeper_ready() {
+  tool=$1 executable=$2 policy=$3
+  [ "$("$UNAME_COMMAND" -s 2>/dev/null || :)" = Darwin ] || return 0
+
+  artifact=$("$REALPATH_COMMAND" -- "$executable" 2>/dev/null || :)
+  case "$artifact" in /*) : ;; *) return 2 ;; esac
+  [ -f "$artifact" ] && [ ! -L "$artifact" ] || return 2
+  artifact_has_quarantine "$artifact" || return 0
+
+  # Manual mode deliberately leaves macOS in control. The service retries only
+  # after the user has approved this executable and quarantine is absent.
+  [ "$policy" = verifiedVendorArtifacts ] || return 2
+
+  values=$(publisher_values "$tool") || return 2
+  old_ifs=$IFS; IFS=$TAB; set -- $values; IFS=$old_ifs
+  expected_team=$1 expected_identifier=$2
+  inode_before=$(artifact_inode "$artifact")
+  [ -n "$inode_before" ] || return 2
+
+  "$CODESIGN_COMMAND" --verify --strict --verbose=2 -- "$artifact" >/dev/null 2>&1 || return 2
+  signature=$("$CODESIGN_COMMAND" -dvvv -- "$artifact" 2>&1 || :)
+  team=$(printf '%s\n' "$signature" | sed -n 's/^TeamIdentifier=//p' | head -n 1)
+  identifier=$(printf '%s\n' "$signature" | sed -n 's/^Identifier=//p' | head -n 1)
+  [ "$team" = "$expected_team" ] && [ "$identifier" = "$expected_identifier" ] || return 2
+  requirement=$("$CODESIGN_COMMAND" -dr - -- "$artifact" 2>&1 || :)
+  case "$requirement" in *"$expected_team"*"$expected_identifier"*|*"$expected_identifier"*"$expected_team"*) : ;; *) return 2 ;; esac
+  "$SPCTL_COMMAND" --assess --type execute --verbose=4 -- "$artifact" >/dev/null 2>&1 || return 2
+
+  # Re-resolve and re-stat immediately before the only mutation. A symlink swap,
+  # directory, parent path, or inode change falls back to manual approval.
+  artifact_again=$("$REALPATH_COMMAND" -- "$executable" 2>/dev/null || :)
+  [ "$artifact_again" = "$artifact" ] || return 2
+  [ -f "$artifact_again" ] && [ ! -L "$artifact_again" ] || return 2
+  inode_after=$(artifact_inode "$artifact_again")
+  [ "$inode_after" = "$inode_before" ] || return 2
+  "$XATTR_COMMAND" -d com.apple.quarantine -- "$artifact_again" >/dev/null 2>&1 || return 2
+  artifact_has_quarantine "$artifact_again" && return 2
+  return 0
+}
+
 install_antigravity_native() {
   executable=$1 policy=$2
   os=$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]')
@@ -250,6 +313,7 @@ update_tool() {
   after=$(extract_version "$("$executable_after" --version 2>/dev/null | head -n 1)")
   [ -n "$after" ] || return 1
   log_message "updated $tool using $method from $before to $after"
+  gatekeeper_ready "$tool" "$executable_after" "$policy"
 }
 
 activate_next_batch() {
@@ -494,11 +558,42 @@ run_once() {
   [ -n "$batch" ] || return 0
   batch_dir="$BATCHES_DIR/$batch"
   phase=$(cat "$batch_dir/phase")
+  if [ "$phase" = approval_required ]; then
+    policy=$(request_policy "$batch_dir/request")
+    approval_tool=$(cat "$batch_dir/approval-tool" 2>/dev/null || :)
+    values=$(tool_values "$approval_tool" 2>/dev/null || :)
+    old_ifs=$IFS; IFS=$TAB; set -- $values; IFS=$old_ifs
+    executable_name=${1:-}
+    executable=$(command -v "$executable_name" 2>/dev/null || :)
+    if [ -z "$executable" ] || ! gatekeeper_ready "$approval_tool" "$executable" "$policy"; then
+      return 0
+    fi
+    if ! grep -Fx "$approval_tool" "$batch_dir/updated-tools" >/dev/null 2>&1; then
+      printf '%s\n' "$approval_tool" >> "$batch_dir/updated-tools"
+    fi
+    rm -f "$batch_dir/approval-tool"
+    write_value "$batch_dir/phase" updating
+    phase=updating
+  fi
   if [ "$phase" = updating ]; then
     policy=$(request_policy "$batch_dir/request")
+    touch "$batch_dir/updated-tools"
     update_failed=0
     while IFS= read -r tool; do
-      if ! update_tool "$tool" "$policy"; then
+      if grep -Fx "$tool" "$batch_dir/updated-tools" >/dev/null 2>&1; then
+        continue
+      fi
+      if update_tool "$tool" "$policy"; then
+        printf '%s\n' "$tool" >> "$batch_dir/updated-tools"
+      else
+        result=$?
+        if [ "$result" -eq 2 ]; then
+          write_value "$batch_dir/approval-tool" "$tool"
+          write_value "$batch_dir/phase" approval_required
+          initialize_targets "$batch_dir"
+          log_message "approval required for $tool in $batch"
+          return 0
+        fi
         update_failed=1
         log_message "update failed for $tool in $batch"
         break

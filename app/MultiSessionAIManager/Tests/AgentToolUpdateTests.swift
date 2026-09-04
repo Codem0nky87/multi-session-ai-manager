@@ -30,6 +30,21 @@ import Testing
         #expect(AgentToolRegistry.definition(for: .antigravity).resumeArguments("chat-3")
             == ["--conversation", "chat-3"])
     }
+
+    @Test func macOSPublisherIdentitiesAreExactFixedArtifactValues() {
+        #expect(AgentToolRegistry.definition(for: .claude).macOSPublisher == .init(
+            teamIdentifier: "Q6L2SF6YDW",
+            signingIdentifier: "com.anthropic.claude-code"
+        ))
+        #expect(AgentToolRegistry.definition(for: .codex).macOSPublisher == .init(
+            teamIdentifier: "2DC432GLL2",
+            signingIdentifier: "codex"
+        ))
+        #expect(AgentToolRegistry.definition(for: .antigravity).macOSPublisher == .init(
+            teamIdentifier: "EQHXZ8M8AV",
+            signingIdentifier: "cli"
+        ))
+    }
 }
 
 @Suite struct AgentVersionTests {

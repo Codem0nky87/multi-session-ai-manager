@@ -43,12 +43,18 @@ struct AgentToolVersion: Equatable, Codable, Sendable {
     }
 }
 
+struct MacOSPublisherIdentity: Equatable, Sendable {
+    let teamIdentifier: String
+    let signingIdentifier: String
+}
+
 struct AgentToolDefinition: Equatable, Sendable {
     let id: AgentToolID
     let displayName: String
     let executable: String
     let herdrKinds: Set<String>
     let exitCommand: String
+    let macOSPublisher: MacOSPublisherIdentity?
     let resumeArguments: @Sendable (String) -> [String]
 
     static func == (lhs: Self, rhs: Self) -> Bool {
@@ -57,6 +63,7 @@ struct AgentToolDefinition: Equatable, Sendable {
             && lhs.executable == rhs.executable
             && lhs.herdrKinds == rhs.herdrKinds
             && lhs.exitCommand == rhs.exitCommand
+            && lhs.macOSPublisher == rhs.macOSPublisher
     }
 }
 
@@ -68,6 +75,10 @@ enum AgentToolRegistry {
             executable: "claude",
             herdrKinds: ["claude"],
             exitCommand: "/exit",
+            macOSPublisher: .init(
+                teamIdentifier: "Q6L2SF6YDW",
+                signingIdentifier: "com.anthropic.claude-code"
+            ),
             resumeArguments: { ["--resume", $0] }
         ),
         AgentToolDefinition(
@@ -76,6 +87,10 @@ enum AgentToolRegistry {
             executable: "codex",
             herdrKinds: ["codex"],
             exitCommand: "/exit",
+            macOSPublisher: .init(
+                teamIdentifier: "2DC432GLL2",
+                signingIdentifier: "codex"
+            ),
             resumeArguments: { ["resume", $0] }
         ),
         AgentToolDefinition(
@@ -84,6 +99,10 @@ enum AgentToolRegistry {
             executable: "agy",
             herdrKinds: ["agy", "antigravity-cli"],
             exitCommand: "/exit",
+            macOSPublisher: .init(
+                teamIdentifier: "EQHXZ8M8AV",
+                signingIdentifier: "cli"
+            ),
             resumeArguments: { ["--conversation", $0] }
         )
     ]
