@@ -61,14 +61,14 @@ enum AgentUpdatePresentation {
                 state: .updateAvailable,
                 action: .update,
                 status: "\(installed) → \(latest)",
-                detail: version.channel.map { "Channel: \($0) · \(version.method.rawValue)" }
+                detail: version.channel.map { "Channel: \($0) · \(version.method.displayName)" }
             )
         }
         return .init(
             state: .current,
             action: .none,
             status: "Current · \(installed)",
-            detail: version.channel.map { "Channel: \($0) · \(version.method.rawValue)" }
+            detail: version.channel.map { "Channel: \($0) · \(version.method.displayName)" }
         )
     }
 

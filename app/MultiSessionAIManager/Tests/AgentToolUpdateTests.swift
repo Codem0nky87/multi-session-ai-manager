@@ -87,6 +87,7 @@ import Testing
 
     @Test(arguments: [
         ("homebrew", AgentInstallMethod.homebrew),
+        ("homebrew-cask", AgentInstallMethod.homebrewCask),
         ("npm", AgentInstallMethod.npm),
         ("pnpm", AgentInstallMethod.pnpm),
         ("bun", AgentInstallMethod.bun),
@@ -125,7 +126,10 @@ import Testing
     @Test func ownerSpecificLookupsDoNotSilentlySwitchChannels() {
         let codex = AgentToolVersionProbe.command(for: .codex)
 
-        #expect(codex.contains("brew info --json=v2 codex"))
+        #expect(codex.contains("brew list --formula --versions codex"))
+        #expect(codex.contains("brew list --cask --versions codex"))
+        #expect(codex.contains("brew info --formula --json=v2 codex"))
+        #expect(codex.contains("brew info --cask --json=v2 codex"))
         #expect(codex.contains("npm view @openai/codex version"))
         #expect(codex.contains("pnpm view @openai/codex version"))
         #expect(codex.contains("bun pm view @openai/codex version"))

@@ -11,6 +11,12 @@ import Testing
         #expect(AgentUpdatePresentation.row(for: version("1.0.0", "2.0.0", .ambiguous)).action == .administratorAction)
     }
 
+    @Test func homebrewCaskOwnershipHasAHumanReadableLabel() {
+        let row = AgentUpdatePresentation.row(for: version("1.0.0", "1.0.0", .homebrewCask))
+
+        #expect(row.detail == "Channel: latest · Homebrew cask")
+    }
+
     @Test func serviceStatesChooseSetupRepairApprovalOrAdministratorAction() {
         #expect(AgentUpdatePresentation.serviceAction(setup: .unchecked, installer: .idle) == .completeSetup)
         #expect(AgentUpdatePresentation.serviceAction(

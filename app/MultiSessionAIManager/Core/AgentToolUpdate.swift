@@ -8,6 +8,7 @@ enum AgentToolID: String, CaseIterable, Codable, Sendable {
 
 enum AgentInstallMethod: String, Codable, Sendable {
     case homebrew
+    case homebrewCask = "homebrew-cask"
     case npm
     case pnpm
     case bun
@@ -18,12 +19,26 @@ enum AgentInstallMethod: String, Codable, Sendable {
     static func parse(_ value: String) -> Self {
         switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         case "brew", "homebrew": .homebrew
+        case "cask", "homebrew-cask": .homebrewCask
         case "npm": .npm
         case "pnpm": .pnpm
         case "bun": .bun
         case "native", "standalone": .native
         case "ambiguous": .ambiguous
         default: .unknown
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .homebrew: "Homebrew"
+        case .homebrewCask: "Homebrew cask"
+        case .npm: "npm"
+        case .pnpm: "pnpm"
+        case .bun: "Bun"
+        case .native: "Native"
+        case .unknown: "Unknown"
+        case .ambiguous: "Ambiguous"
         }
     }
 }
@@ -278,8 +293,12 @@ enum AgentToolVersionProbe {
           if \#(nativeOwnershipCheck); then
             owner_count=$((owner_count + 1)); owner=native; owner_path="$native_path"
           fi
-          if [ -n '\#(packages.brew)' ] && command -v brew >/dev/null 2>&1 && brew list --versions \#(packages.brew) >/dev/null 2>&1; then
+          if [ -n '\#(packages.brew)' ] && command -v brew >/dev/null 2>&1 && brew list --formula --versions \#(packages.brew) >/dev/null 2>&1; then
             owner_count=$((owner_count + 1)); owner=homebrew
+            owner_path="$(brew --prefix 2>/dev/null)/bin/\#(definition.executable)"
+          fi
+          if [ -n '\#(packages.brew)' ] && command -v brew >/dev/null 2>&1 && brew list --cask --versions \#(packages.brew) >/dev/null 2>&1; then
+            owner_count=$((owner_count + 1)); owner=homebrew-cask
             owner_path="$(brew --prefix 2>/dev/null)/bin/\#(definition.executable)"
           fi
           if [ -n '\#(packages.node)' ] && command -v npm >/dev/null 2>&1 && npm list -g --depth=0 \#(packages.node) >/dev/null 2>&1; then
@@ -309,7 +328,8 @@ enum AgentToolVersionProbe {
           fi
 
           case "$method" in
-            homebrew) latest_raw=$(brew info --json=v2 \#(packages.brew) 2>/dev/null | sed -nE 's/.*"(stable|version)"[[:space:]]*:[[:space:]]*"([^"]+)".*/\2/p' | head -n 1) ;;
+            homebrew) latest_raw=$(brew info --formula --json=v2 \#(packages.brew) 2>/dev/null | sed -nE 's/.*"(stable|version)"[[:space:]]*:[[:space:]]*"([^"]+)".*/\2/p' | head -n 1) ;;
+            homebrew-cask) latest_raw=$(brew info --cask --json=v2 \#(packages.brew) 2>/dev/null | sed -nE 's/.*"(stable|version)"[[:space:]]*:[[:space:]]*"([^"]+)".*/\2/p' | head -n 1) ;;
             npm) latest_raw=$(npm view \#(packages.node) version 2>/dev/null | head -n 1) ;;
             pnpm) latest_raw=$(pnpm view \#(packages.node) version 2>/dev/null | head -n 1) ;;
             bun) latest_raw=$(bun pm view \#(packages.node) version 2>/dev/null | head -n 1) ;;
