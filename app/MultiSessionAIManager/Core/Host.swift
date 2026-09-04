@@ -1,6 +1,20 @@
 import Foundation
 import Observation
 
+enum HostAgentUpdaterSetup: String, Codable, Sendable {
+    case unchecked
+    case ready
+    case skipped
+    case failed
+
+    var needsWarning: Bool { self != .ready }
+}
+
+enum HostGatekeeperPolicy: String, Codable, Sendable {
+    case manualApproval
+    case verifiedVendorArtifacts
+}
+
 struct Host: Identifiable, Codable, Equatable, Sendable {
     enum ValidationError: Error, Equatable, LocalizedError, Sendable {
         case missingName
@@ -32,6 +46,8 @@ struct Host: Identifiable, Codable, Equatable, Sendable {
     var username: String
     var keyID: String          // reference into KeyStore/Keychain
     var defaultWorkdir: String
+    var agentUpdaterSetup: HostAgentUpdaterSetup
+    var gatekeeperPolicy: HostGatekeeperPolicy
 
     init(
         id: UUID = UUID(),
@@ -40,7 +56,9 @@ struct Host: Identifiable, Codable, Equatable, Sendable {
         port: Int = 22,
         username: String,
         keyID: String,
-        defaultWorkdir: String
+        defaultWorkdir: String,
+        agentUpdaterSetup: HostAgentUpdaterSetup = .unchecked,
+        gatekeeperPolicy: HostGatekeeperPolicy = .manualApproval
     ) {
         self.id = id
         self.name = name
@@ -49,6 +67,8 @@ struct Host: Identifiable, Codable, Equatable, Sendable {
         self.username = username
         self.keyID = keyID
         self.defaultWorkdir = defaultWorkdir
+        self.agentUpdaterSetup = agentUpdaterSetup
+        self.gatekeeperPolicy = gatekeeperPolicy
     }
 
     /// Key used in `KnownHostsStore`. Keep port 22 on the legacy address-only key
@@ -89,6 +109,8 @@ struct Host: Identifiable, Codable, Equatable, Sendable {
         case username
         case keyID
         case defaultWorkdir
+        case agentUpdaterSetup
+        case gatekeeperPolicy
     }
 
     init(from decoder: Decoder) throws {
@@ -100,6 +122,14 @@ struct Host: Identifiable, Codable, Equatable, Sendable {
         username = try container.decode(String.self, forKey: .username)
         keyID = try container.decode(String.self, forKey: .keyID)
         defaultWorkdir = try container.decode(String.self, forKey: .defaultWorkdir)
+        agentUpdaterSetup = try container.decodeIfPresent(
+            HostAgentUpdaterSetup.self,
+            forKey: .agentUpdaterSetup
+        ) ?? .unchecked
+        gatekeeperPolicy = try container.decodeIfPresent(
+            HostGatekeeperPolicy.self,
+            forKey: .gatekeeperPolicy
+        ) ?? .manualApproval
         // A `herdr` blob persisted by an older build is simply ignored: the
         // Cloudflare Access / WARP metadata it held has no reader left.
     }
@@ -113,6 +143,8 @@ struct Host: Identifiable, Codable, Equatable, Sendable {
         try container.encode(username, forKey: .username)
         try container.encode(keyID, forKey: .keyID)
         try container.encode(defaultWorkdir, forKey: .defaultWorkdir)
+        try container.encode(agentUpdaterSetup, forKey: .agentUpdaterSetup)
+        try container.encode(gatekeeperPolicy, forKey: .gatekeeperPolicy)
     }
 }
 

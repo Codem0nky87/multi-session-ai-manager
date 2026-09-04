@@ -58,6 +58,38 @@ import Foundation
     #expect(host.defaultWorkdir == "/home/alice")
 }
 
+@Test func aLegacyHostDefaultsToUncheckedAgentUpdaterAutomation() throws {
+    let id = UUID()
+    let json = """
+    {
+      "id": "\(id.uuidString)",
+      "name": "server-24",
+      "address": "192.0.2.24",
+      "port": 22,
+      "username": "alice",
+      "keyID": "key-legacy",
+      "defaultWorkdir": "/home/alice"
+    }
+    """
+
+    let host = try JSONDecoder().decode(Host.self, from: Data(json.utf8))
+
+    #expect(host.agentUpdaterSetup == .unchecked)
+    #expect(host.gatekeeperPolicy == .manualApproval)
+}
+
+@Test func agentUpdaterChoicesRoundTripWithoutSecrets() throws {
+    var host = configuredHost()
+    host.agentUpdaterSetup = .skipped
+    host.gatekeeperPolicy = .verifiedVendorArtifacts
+
+    let data = try JSONEncoder().encode(host)
+    let decoded = try JSONDecoder().decode(Host.self, from: data)
+
+    #expect(decoded.agentUpdaterSetup == .skipped)
+    #expect(decoded.gatekeeperPolicy == .verifiedVendorArtifacts)
+}
+
 @Test func hostValidationRequiresSSHIdentityAndBoundedPort() {
     let valid = configuredHost()
 
@@ -112,7 +144,8 @@ import Foundation
     // reach UserDefaults.
     #expect(object["keyID"] as? String == host.keyID)
     #expect(Set(object.keys) == [
-        "id", "name", "address", "port", "username", "keyID", "defaultWorkdir"
+        "id", "name", "address", "port", "username", "keyID", "defaultWorkdir",
+        "agentUpdaterSetup", "gatekeeperPolicy"
     ])
 }
 
