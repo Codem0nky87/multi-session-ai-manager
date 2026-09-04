@@ -206,7 +206,9 @@ is asked to exit.
 After confirmation, the selected tool update is persisted on the host. Once
 the executable is ready, the batch covers every eligible Claude Code, Codex,
 and Antigravity conversation in every discovered Herdr session—even when only
-one of the three tools was updated:
+one of the three tools was updated. When executables are already current, a
+rolling re-launch request bypasses package-manager updates and immediately rolls
+and recovers active conversations on the existing binary using this same contract:
 
 - `idle` and `done`: cleanly exit, then resume from the same native conversation
   reference;

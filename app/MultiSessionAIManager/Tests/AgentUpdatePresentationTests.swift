@@ -58,6 +58,37 @@ import Testing
         #expect(copy.contains("working conversations wait"))
     }
 
+    @Test func confirmationForRollingRelaunchUsesRelaunchCopy() {
+        let preview = AgentUpdatePreview(
+            requestedTools: [],
+            request: nil,
+            existingBatch: nil,
+            totalConversations: 5,
+            workingConversations: 1,
+            attentionConversations: 0,
+            relaunchTool: nil
+        )
+        let copy = AgentUpdatePresentation.confirmation(for: preview)
+        #expect(copy.contains("All 5 Claude Code, Codex, and Antigravity conversations on this host will roll to restart on the current executables"))
+        #expect(copy.contains("ordinary panes remain running"))
+        #expect(copy.contains("1 working conversations wait"))
+    }
+
+    @Test func confirmationForSingleToolRelaunchNamesSpecificTool() {
+        let preview = AgentUpdatePreview(
+            requestedTools: [],
+            request: nil,
+            existingBatch: nil,
+            totalConversations: 2,
+            workingConversations: 0,
+            attentionConversations: 0,
+            relaunchTool: .claude
+        )
+        let copy = AgentUpdatePresentation.confirmation(for: preview)
+        #expect(copy.contains("All 2 Claude Code conversations on this host will roll to restart on the current executable"))
+        #expect(copy.contains("ordinary panes remain running"))
+    }
+
     @Test func activeProgressIncludesEveryOperationalCount() {
         let status = AgentUpdateBatchStatus(
             id: UUID(), phase: .rolling, approvalTool: nil, total: 12, restored: 4, working: 2,

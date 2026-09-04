@@ -188,6 +188,7 @@ validate_request() {
       if (!safe($7, 2048)) exit 19
       key = $3 SUBSEP $4
       if (targets[key]++) exit 20
+      target_count++
       next
     }
     $1 == "END" {
@@ -198,7 +199,7 @@ validate_request() {
     }
     { exit 22 }
     END {
-      if (update_count < 1 || !seen_end || end_line != NR) exit 23
+      if ((update_count < 1 && target_count < 1) || !seen_end || end_line != NR) exit 23
     }
   ' "$request"
 }
@@ -783,32 +784,36 @@ run_once() {
     policy=$(request_policy "$batch_dir/request")
     touch "$batch_dir/updated-tools"
     update_failed=0
-    while IFS= read -r tool; do
-      if grep -Fx "$tool" "$batch_dir/updated-tools" >/dev/null 2>&1; then
-        continue
-      fi
-      if update_tool "$tool" "$policy"; then
-        printf '%s\n' "$tool" >> "$batch_dir/updated-tools"
-      else
-        result=$?
-        if [ "$result" -eq 2 ]; then
-          write_value "$batch_dir/approval-tool" "$tool"
-          write_value "$batch_dir/phase" approval_required
-          initialize_targets "$batch_dir"
-          log_message "approval required for $tool in $batch"
-          return 0
+    tools_to_update=$(awk -F '\t' '$1 == "UPDATE" { print $2 }' "$batch_dir/request")
+    if [ -n "$tools_to_update" ]; then
+      while IFS= read -r tool; do
+        [ -n "$tool" ] || continue
+        if grep -Fx "$tool" "$batch_dir/updated-tools" >/dev/null 2>&1; then
+          continue
         fi
-        update_failed=1
-        log_message "update failed for $tool in $batch"
-        break
-      fi
-    done <<EOF
-$(awk -F '\t' '$1 == "UPDATE" { print $2 }' "$batch_dir/request")
+        if update_tool "$tool" "$policy"; then
+          printf '%s\n' "$tool" >> "$batch_dir/updated-tools"
+        else
+          result=$?
+          if [ "$result" -eq 2 ]; then
+            write_value "$batch_dir/approval-tool" "$tool"
+            write_value "$batch_dir/phase" approval_required
+            initialize_targets "$batch_dir"
+            log_message "approval required for $tool in $batch"
+            return 0
+          fi
+          update_failed=1
+          log_message "update failed for $tool in $batch"
+          break
+        fi
+      done <<EOF
+$tools_to_update
 EOF
-    if [ "$update_failed" -ne 0 ]; then
-      write_value "$batch_dir/phase" failed_update
-      rm -f "$CURRENT_FILE"
-      return 0
+      if [ "$update_failed" -ne 0 ]; then
+        write_value "$batch_dir/phase" failed_update
+        rm -f "$CURRENT_FILE"
+        return 0
+      fi
     fi
     # Durable boundary: no conversation is asked to exit before this phase is
     # safely on disk.

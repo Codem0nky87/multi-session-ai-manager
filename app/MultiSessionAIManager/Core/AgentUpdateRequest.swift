@@ -20,7 +20,7 @@ struct AgentUpdateRequest: Equatable, Codable, Sendable {
         guard protocolVersion == 1 else {
             throw AgentUpdateRequestValidationError.unsupportedProtocol(protocolVersion)
         }
-        guard !requestedTools.isEmpty else {
+        guard !requestedTools.isEmpty || !targets.isEmpty else {
             throw AgentUpdateRequestValidationError.noRequestedTools
         }
 

@@ -64,9 +64,22 @@ import Testing
 
         request = validRequest()
         request.requestedTools = []
+        request.targets = []
         #expect(throws: AgentUpdateRequestValidationError.noRequestedTools) {
             try request.validate()
         }
+    }
+
+    @Test func pureRollingRelaunchRequestValidatesAndSerializesWithoutUpdateLine() throws {
+        var request = validRequest()
+        request.requestedTools = []
+        #expect(throws: Never.self) {
+            try request.validate()
+        }
+        let serialized = try request.serialized()
+        let lines = serialized.split(whereSeparator: \.isNewline).map(String.init)
+        #expect(!lines.contains { $0.hasPrefix("UPDATE\t") })
+        #expect(lines.contains { $0.hasPrefix("TARGET\t") })
     }
 
     @Test func duplicatePaneTargetsAreRejected() {

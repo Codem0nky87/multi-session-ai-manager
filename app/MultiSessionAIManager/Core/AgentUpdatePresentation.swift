@@ -93,7 +93,17 @@ enum AgentUpdatePresentation {
 
     static func confirmation(for preview: AgentUpdatePreview) -> String {
         let count = preview.totalConversations
-        var detail = "The selected tools will update first, then all \(count) Claude Code, Codex, and Antigravity conversations on this host will roll onto the new executables; ordinary panes remain running."
+        var detail: String
+        if preview.requestedTools.isEmpty {
+            if let tool = preview.relaunchTool {
+                let name = AgentToolRegistry.definition(for: tool).displayName
+                detail = "All \(count) \(name) conversations on this host will roll to restart on the current executable; ordinary panes remain running."
+            } else {
+                detail = "All \(count) Claude Code, Codex, and Antigravity conversations on this host will roll to restart on the current executables; ordinary panes remain running."
+            }
+        } else {
+            detail = "The selected tools will update first, then all \(count) Claude Code, Codex, and Antigravity conversations on this host will roll onto the new executables; ordinary panes remain running."
+        }
         if preview.workingConversations > 0 {
             detail += " \(preview.workingConversations) working conversations wait until their current work finishes."
         }

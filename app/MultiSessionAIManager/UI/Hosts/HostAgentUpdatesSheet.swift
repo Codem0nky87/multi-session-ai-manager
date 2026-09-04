@@ -70,11 +70,13 @@ struct HostAgentUpdatesSheet: View {
         .preferredColorScheme(.dark)
         .interactiveDismissDisabled(manager.state == .submitting)
         .confirmationDialog(
-            "Update AI agents on this host?",
+            preview?.requestedTools.isEmpty == true
+                ? "Re-launch AI agents on this host?"
+                : "Update AI agents on this host?",
             isPresented: $showingConfirmation,
             titleVisibility: .visible
         ) {
-            Button("Queue Rolling Update") {
+            Button(preview?.requestedTools.isEmpty == true ? "Queue Rolling Re-launch" : "Queue Rolling Update") {
                 guard let preview else { return }
                 operations.start { await manager.submit(preview) }
             }
@@ -263,8 +265,19 @@ struct HostAgentUpdatesSheet: View {
     private var toolsCard: some View {
         GlassCard {
             VStack(alignment: .leading, spacing: Theme.Space.md) {
-                SectionLabel(text: "Installed agents")
-                    .accessibilityIdentifier("host.agent-updates.tools")
+                HStack(alignment: .center) {
+                    SectionLabel(text: "Installed agents")
+                        .accessibilityIdentifier("host.agent-updates.tools")
+                    Spacer()
+                    if manager.tools.contains(where: { $0.installed != nil }) {
+                        Button("Re-launch All Sessions") {
+                            relaunch(nil)
+                        }
+                        .font(Theme.body(12))
+                        .foregroundStyle(Theme.accent)
+                        .accessibilityIdentifier("host.agent-updates.relaunch-all")
+                    }
+                }
                 if manager.tools.isEmpty {
                     HStack(spacing: Theme.Space.sm) {
                         ProgressView().tint(Theme.accent)
@@ -302,6 +315,11 @@ struct HostAgentUpdatesSheet: View {
                         .buttonStyle(.borderedProminent)
                         .tint(Theme.accent)
                         .accessibilityIdentifier("host.agent-updates.update.\(version.tool.rawValue)")
+                } else if presentation.state == .current {
+                    Button("Re-launch") { relaunch(version.tool) }
+                        .buttonStyle(.bordered)
+                        .tint(Theme.accent)
+                        .accessibilityIdentifier("host.agent-updates.relaunch.\(version.tool.rawValue)")
                 } else if presentation.action == .administratorAction {
                     Text("Administrator Action Required")
                         .font(Theme.body(11))
@@ -377,6 +395,20 @@ struct HostAgentUpdatesSheet: View {
         operations.start {
             do {
                 let value = try await manager.prepareUpdate([tool])
+                preview = value
+                if value.existingBatch == nil {
+                    showingConfirmation = true
+                }
+            } catch {
+                // The observable manager publishes the bounded actionable error.
+            }
+        }
+    }
+
+    private func relaunch(_ tool: AgentToolID?) {
+        operations.start {
+            do {
+                let value = try await manager.prepareRelaunch(for: tool)
                 preview = value
                 if value.existingBatch == nil {
                     showingConfirmation = true

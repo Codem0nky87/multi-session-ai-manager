@@ -96,7 +96,9 @@ write_request() {
     printf 'MSAM_AGENT_UPDATE_REQUEST\t1\n'
     printf 'BATCH\t%s\n' "$batch"
     printf 'POLICY\t%s\n' "$policy"
-    printf 'UPDATE\t%s\n' "$update_tool"
+    if [ "$update_tool" != "-" ]; then
+      printf 'UPDATE\t%s\n' "$update_tool"
+    fi
     printf 'TARGET\tdefault\t/tmp/herdr.sock\t%%1\t%s\tclaude\tclaude-1\n' "$first_pid"
     printf 'TARGET\tdefault\t/tmp/herdr.sock\t%%2\t102\tcodex\tcodex-2\n'
     printf 'TARGET\tdefault\t/tmp/herdr.sock\t%%3\t103\tantigravity\tagy-3\n'
@@ -134,12 +136,23 @@ assert_file_contains "$DEVELOPMENT_DOC" '~/.local/libexec/msam-agent-updater ver
 assert_file_contains "$ARCHITECTURE_DOC" 'Core/AgentUpdateManager.swift'
 assert_file_contains "$ARCHITECTURE_DOC" 'Resources/msam-agent-updater.sh'
 
-# Invalid tools are rejected before any vendor or Herdr command can run.
+# Invalid tools and completely empty requests are rejected.
 new_host
 bad=10000000-0000-4000-8000-000000000001
 write_request "$bad" arbitrary-tool
 if "$UPDATER" submit "$bad" >/dev/null 2>&1; then
   fail "invalid tool was accepted"
+fi
+bad_empty=10000000-0000-4000-8000-000000000099
+empty_req="$MSAM_AGENT_UPDATER_STATE_DIR/incoming/$bad_empty.request"
+{
+  printf 'MSAM_AGENT_UPDATE_REQUEST\t1\n'
+  printf 'BATCH\t%s\n' "$bad_empty"
+  printf 'POLICY\tmanualApproval\n'
+  printf 'END\n'
+} > "$empty_req"
+if "$UPDATER" submit "$bad_empty" >/dev/null 2>&1; then
+  fail "empty request was accepted"
 fi
 assert_eq "$(wc -c < "$MSAM_UPDATER_TEST_DATA/commands.log" | tr -d ' ')" "0"
 
@@ -164,6 +177,28 @@ assert_contains "$log" "agent prompt %3 /exit"
 assert_contains "$log" "--kind claude"
 assert_contains "$log" "--kind codex"
 assert_contains "$log" "--kind agy"
+
+# A rolling re-launch request with no tool updates rolls and restores every
+# eligible agent conversation without running any package-manager commands.
+new_host
+seed_agent %1 idle claude claude-1 101
+seed_agent %2 "done" codex codex-2 102
+seed_agent %3 idle agy agy-3 103
+batch=10000000-0000-4000-8000-000000000013
+write_request "$batch" "-"
+submit_and_run "$batch"
+log=$(cat "$MSAM_UPDATER_TEST_DATA/commands.log")
+assert_not_contains "$log" "brew upgrade"
+assert_not_contains "$log" "npm install"
+assert_contains "$log" "agent prompt %1 /exit"
+assert_contains "$log" "agent prompt %2 /exit"
+assert_contains "$log" "agent prompt %3 /exit"
+assert_contains "$log" "--kind claude"
+assert_contains "$log" "--kind codex"
+assert_contains "$log" "--kind agy"
+status=$("$UPDATER" status)
+assert_contains "$status" "complete"
+assert_contains "$status" "COUNTS	3	3	0	0	0	0"
 
 # A failed executable update must leave every agent process untouched.
 new_host

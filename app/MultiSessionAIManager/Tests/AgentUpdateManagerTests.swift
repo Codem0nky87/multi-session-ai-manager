@@ -230,6 +230,80 @@ import Testing
         )
     }
 
+    @Test func prepareRelaunchCapturesAllAgentsWhenVersionsAreAlreadyCurrent() async throws {
+        let (connection, transport) = try await makeConnection()
+        let snapshots = [
+            snapshot(.claude, pane: "w1:p1", conversation: "claude-1", lifecycle: .idle),
+            snapshot(.codex, pane: "w1:p2", conversation: "codex-2", lifecycle: .working),
+            snapshot(.antigravity, pane: "w1:p3", conversation: "agy-3", lifecycle: .blocked)
+        ]
+        let manager = AgentUpdateManager(connection: connection, dependencies: dependencies(
+            versions: AgentToolID.allCases.map { version($0, "2.0.0", "2.0.0") },
+            inventory: snapshots,
+            batch: .idle
+        ))
+        await manager.refresh()
+
+        let preview = try await manager.prepareRelaunch(for: nil)
+
+        #expect(preview.request?.requestedTools.isEmpty == true)
+        #expect(preview.request?.targets.map(\.tool) == [.claude, .codex, .antigravity])
+        #expect(preview.totalConversations == 3)
+        #expect(preview.workingConversations == 1)
+        #expect(preview.attentionConversations == 1)
+        #expect(preview.relaunchTool == nil)
+
+        let request = try #require(preview.request)
+        transport.defaultCommandResponse =
+            "MSAM_AGENT_UPDATE_ACCEPTED\t1\t\(request.batchID.uuidString)\tqueued\n"
+
+        await manager.submit(preview)
+
+        let expectedPath = "/home/alice/.local/state/msam-agent-updater/incoming/\(request.batchID.uuidString).request"
+        let written = try #require(transport.writtenFiles[expectedPath])
+        let writtenContent = String(decoding: written, as: UTF8.self)
+        let lines = writtenContent.split(whereSeparator: \.isNewline).map(String.init)
+        #expect(!lines.contains { $0.hasPrefix("UPDATE\t") })
+        #expect(lines.contains { $0.hasPrefix("TARGET\t") })
+        #expect(manager.state == .ready)
+    }
+
+    @Test func prepareRelaunchFiltersToSingleToolWhenSpecified() async throws {
+        let (connection, _) = try await makeConnection()
+        let snapshots = [
+            snapshot(.claude, pane: "w1:p1", conversation: "claude-1", lifecycle: .idle),
+            snapshot(.codex, pane: "w1:p2", conversation: "codex-2", lifecycle: .working),
+            snapshot(.antigravity, pane: "w1:p3", conversation: "agy-3", lifecycle: .blocked)
+        ]
+        let manager = AgentUpdateManager(connection: connection, dependencies: dependencies(
+            versions: AgentToolID.allCases.map { version($0, "2.0.0", "2.0.0") },
+            inventory: snapshots,
+            batch: .idle
+        ))
+        await manager.refresh()
+
+        let preview = try await manager.prepareRelaunch(for: .claude)
+
+        #expect(preview.request?.requestedTools.isEmpty == true)
+        #expect(preview.request?.targets.map(\.tool) == [.claude])
+        #expect(preview.totalConversations == 1)
+        #expect(preview.relaunchTool == .claude)
+    }
+
+    @Test func prepareRelaunchThrowsWhenNoActiveConversationsExist() async throws {
+        let (connection, _) = try await makeConnection()
+        let manager = AgentUpdateManager(connection: connection, dependencies: dependencies(
+            versions: AgentToolID.allCases.map { version($0, "2.0.0", "2.0.0") },
+            inventory: [],
+            batch: .idle
+        ))
+        await manager.refresh()
+
+        await #expect(throws: AgentUpdateManagerError.self) {
+            try await manager.prepareRelaunch(for: nil)
+        }
+    }
+
     private func version(
         _ tool: AgentToolID,
         _ installed: String,

@@ -64,6 +64,25 @@ struct AgentUpdatePreview: Equatable, Sendable {
     let totalConversations: Int
     let workingConversations: Int
     let attentionConversations: Int
+    let relaunchTool: AgentToolID?
+
+    init(
+        requestedTools: Set<AgentToolID>,
+        request: AgentUpdateRequest?,
+        existingBatch: AgentUpdateBatchStatus?,
+        totalConversations: Int,
+        workingConversations: Int,
+        attentionConversations: Int,
+        relaunchTool: AgentToolID? = nil
+    ) {
+        self.requestedTools = requestedTools
+        self.request = request
+        self.existingBatch = existingBatch
+        self.totalConversations = totalConversations
+        self.workingConversations = workingConversations
+        self.attentionConversations = attentionConversations
+        self.relaunchTool = relaunchTool
+    }
 }
 
 enum AgentUpdateManagerError: Error, Equatable, Sendable {
@@ -72,6 +91,7 @@ enum AgentUpdateManagerError: Error, Equatable, Sendable {
     case noUpdatesSelected
     case toolNotUpdateable(AgentToolID)
     case serviceUnavailable(String)
+    case noConversationsToRelaunch(String)
     case unrestorableAgents([String])
     case invalidStatus
     case invalidAcceptance
@@ -278,6 +298,106 @@ final class AgentUpdateManager {
                 attentionConversations: snapshots.count {
                     $0.lifecycle == .blocked || $0.lifecycle == .unknown || $0.lifecycle == .error
                 }
+            )
+        } catch {
+            if operationGeneration == generation, !(error is CancellationError) {
+                state = .failed(Self.message(for: error))
+            }
+            throw error
+        }
+    }
+
+    func prepareRelaunch(for tool: AgentToolID? = nil) async throws -> AgentUpdatePreview {
+        operationGeneration &+= 1
+        let generation = operationGeneration
+        state = .preparing
+        do {
+            let service = try requireService()
+            let context = try await dependencies.fetchContext(service)
+            let status = try await dependencies.fetchServiceStatus(context, service)
+            guard status.isReady, status.lingerEnabled != false else {
+                throw AgentUpdateManagerError.serviceUnavailable(
+                    "Complete host updater setup before queueing a re-launch."
+                )
+            }
+
+            let currentBatch = try await dependencies.fetchBatchStatus(context, service)
+            if currentBatch.isActive {
+                guard !Task.isCancelled, operationGeneration == generation else {
+                    throw CancellationError()
+                }
+                batch = currentBatch
+                state = .ready
+                return AgentUpdatePreview(
+                    requestedTools: [],
+                    request: nil,
+                    existingBatch: currentBatch,
+                    totalConversations: currentBatch.total,
+                    workingConversations: currentBatch.working,
+                    attentionConversations: currentBatch.attention,
+                    relaunchTool: tool
+                )
+            }
+
+            let snapshots = try await dependencies.fetchInventory(service)
+            let filteredSnapshots: [HerdrAgentSnapshot]
+            if let tool {
+                filteredSnapshots = snapshots.filter { $0.tool == tool }
+            } else {
+                filteredSnapshots = snapshots
+            }
+
+            guard !filteredSnapshots.isEmpty else {
+                if let tool {
+                    throw AgentUpdateManagerError.noConversationsToRelaunch(
+                        "No active \(AgentToolRegistry.definition(for: tool).displayName) conversations found on this host."
+                    )
+                } else {
+                    throw AgentUpdateManagerError.noConversationsToRelaunch(
+                        "No active AI agent conversations found on this host to re-launch."
+                    )
+                }
+            }
+
+            let unsafe = filteredSnapshots.filter { !$0.isRestorable }
+            guard unsafe.isEmpty else {
+                let panes = unsafe.map { "\($0.herdrSession)/\($0.paneID)" }
+                throw AgentUpdateManagerError.unrestorableAgents(panes)
+            }
+
+            let targets = filteredSnapshots.map { snapshot in
+                AgentRollTarget(
+                    herdrSession: snapshot.herdrSession,
+                    socketPath: snapshot.socketPath,
+                    paneID: snapshot.paneID,
+                    foregroundPID: snapshot.foregroundPID,
+                    tool: snapshot.tool,
+                    conversationID: snapshot.conversationID!
+                )
+            }
+            let request = AgentUpdateRequest(
+                protocolVersion: 1,
+                batchID: UUID(),
+                requestedTools: [],
+                targets: targets,
+                gatekeeperPolicy: gatekeeperPolicy
+            )
+            try request.validate()
+
+            guard !Task.isCancelled, operationGeneration == generation else {
+                throw CancellationError()
+            }
+            state = .ready
+            return AgentUpdatePreview(
+                requestedTools: [],
+                request: request,
+                existingBatch: nil,
+                totalConversations: filteredSnapshots.count,
+                workingConversations: filteredSnapshots.count { $0.lifecycle == .working },
+                attentionConversations: filteredSnapshots.count {
+                    $0.lifecycle == .blocked || $0.lifecycle == .unknown || $0.lifecycle == .error
+                },
+                relaunchTool: tool
             )
         } catch {
             if operationGeneration == generation, !(error is CancellationError) {
@@ -515,6 +635,8 @@ final class AgentUpdateManager {
         case AgentUpdateManagerError.toolNotUpdateable(let tool):
             "\(AgentToolRegistry.definition(for: tool).displayName) does not have a confirmed compatible update."
         case AgentUpdateManagerError.serviceUnavailable(let detail):
+            bounded(detail)
+        case AgentUpdateManagerError.noConversationsToRelaunch(let detail):
             bounded(detail)
         case AgentUpdateManagerError.unrestorableAgents(let panes):
             bounded("Every AI conversation must have a current Herdr integration and native restore reference. Check: \(panes.joined(separator: ", ")).")

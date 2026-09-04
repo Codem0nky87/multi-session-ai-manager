@@ -178,8 +178,10 @@ queued → updating → [approval_required] → rolling
 
 No target receives `/exit` until every requested executable update has crossed
 the durable update boundary. The inventory includes Claude Code, Codex, and
-Antigravity targets even when only one tool changed. Each target is re-fetched
-from Herdr and compared with its original native conversation reference, kind,
+Antigravity targets even when only one tool changed, and pure rolling re-launch
+requests (with no executable updates requested) roll and recover active
+conversations on current binaries without running package managers. Each target
+is re-fetched from Herdr and compared with its original native conversation reference, kind,
 pane, and required foreground process before exit. Idle/done agents roll immediately;
 working agents stay pending; blocked/unknown/error states receive no input.
 Restore calls use only the registry-owned arguments and stop after three failed
