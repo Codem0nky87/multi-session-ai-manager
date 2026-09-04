@@ -400,16 +400,22 @@ final class HostFlowUITests: XCTestCase {
             "host settings row must not advertise removed session navigation")
 
         // (c) Tap the row and prove it opens the host editor directly.
-        let target: XCUIElement = nameText.isHittable ? nameText : cell
-        target.tap()
         let editNavigation = app.navigationBars["Edit Host"]
+        // On iPadOS, the global tap used to dismiss the context menu can also
+        // reach the underlying row and open the editor. Do not tap the now
+        // covered stale cell a second time when that transition already won.
+        if !editNavigation.waitForExistence(timeout: 1) {
+            let target: XCUIElement = nameText.isHittable ? nameText : cell
+            target.tap()
+        }
         XCTAssertTrue(editNavigation.waitForExistence(timeout: 12),
                       "tapping a saved host did not open Edit Host")
         XCTAssertTrue(app.scrollViews["host.editor.form"].exists,
                       "host editor form is missing")
+        let agentUpdatesAction = app.buttons["host.agent-updates.open"]
         XCTAssertTrue(app.descendants(matching: .any)["host.agent-updates.section"].exists,
                       "per-host AI Agent Updates section is missing")
-        XCTAssertTrue(app.buttons["host.agent-updates.open"].exists,
+        XCTAssertTrue(agentUpdatesAction.exists,
                       "AI Agent Updates action is missing")
         XCTAssertFalse(app.buttons["Sessions"].exists)
         XCTAssertFalse(app.buttons["Files"].exists)

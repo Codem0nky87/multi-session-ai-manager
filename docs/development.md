@@ -194,6 +194,11 @@ Expected results:
   `agent_session.value`; and
 - any failing restore is attempted no more than three times.
 
+Also confirm that a deliberately stalled disposable package-manager command is
+terminated at the configured host-side deadline, reports `failed_update`, and
+does not send `/exit`. A successful command that leaves the same version—or
+installs an older one—must produce the same fail-closed result.
+
 While the batch is active, perform exactly one service restart. This is
 **destructive to the updater process** (but must not terminate an agent itself):
 

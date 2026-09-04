@@ -32,6 +32,7 @@ struct AgentUpdateTargetStatus: Equatable, Sendable {
 struct AgentUpdateBatchStatus: Equatable, Sendable {
     let id: UUID?
     let phase: AgentUpdateBatchPhase
+    let approvalTool: AgentToolID?
     let total: Int
     let restored: Int
     let working: Int
@@ -43,6 +44,7 @@ struct AgentUpdateBatchStatus: Equatable, Sendable {
     static let idle = AgentUpdateBatchStatus(
         id: nil,
         phase: .idle,
+        approvalTool: nil,
         total: 0,
         restored: 0,
         working: 0,
@@ -333,7 +335,10 @@ final class AgentUpdateManager {
             }
 
             let durable = try await dependencies.fetchBatchStatus(context, service)
-            guard accepted || durable.id == request.batchID || durable.isActive else {
+            // An unrelated active batch is never proof that this request was
+            // accepted. Only the matching durable batch can resolve an
+            // indeterminate SSH submission.
+            guard accepted || durable.id == request.batchID else {
                 throw submitError ?? AgentUpdateManagerError.invalidAcceptance
             }
             guard !Task.isCancelled, operationGeneration == generation else { return }
@@ -357,6 +362,7 @@ final class AgentUpdateManager {
 
         var id: UUID?
         var phase: AgentUpdateBatchPhase?
+        var approvalTool: AgentToolID?
         var counts: [Int]?
         var targets: [AgentUpdateTargetStatus] = []
         for line in lines[(header + 1)..<end] {
@@ -382,6 +388,12 @@ final class AgentUpdateManager {
                     attempts: attempts,
                     message: bounded(fields[4])
                 ))
+            case "APPROVAL" where fields.count == 2:
+                guard approvalTool == nil,
+                      let tool = AgentToolID(rawValue: fields[1]) else {
+                    throw AgentUpdateManagerError.invalidStatus
+                }
+                approvalTool = tool
             case "COUNTS" where fields.count == 7:
                 let parsed = fields.dropFirst().compactMap(Int.init)
                 guard parsed.count == 6, parsed.allSatisfy({ $0 >= 0 }) else {
@@ -398,6 +410,7 @@ final class AgentUpdateManager {
         return AgentUpdateBatchStatus(
             id: id,
             phase: phase,
+            approvalTool: approvalTool,
             total: counts[0],
             restored: counts[1],
             working: counts[2],

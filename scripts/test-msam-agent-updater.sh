@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 UPDATER="$ROOT/app/MultiSessionAIManager/Resources/msam-agent-updater.sh"
 TEST_ROOT=
 
@@ -49,6 +49,10 @@ new_host() {
   printf 'no\n' > "$MSAM_UPDATER_TEST_DATA/quarantine"
   printf '0\n' > "$MSAM_UPDATER_TEST_DATA/realpath-count"
   export MSAM_FAKE_OS=Linux
+  export MSAM_FAKE_CODEX_OWNER=npm
+  export MSAM_FAKE_EXIT_MODE=shell
+  export MSAM_FAKE_UPDATE_HANG=no
+  export MSAM_FAKE_CODEX_AFTER_VERSION=0.153.2
   export MSAM_FAKE_SIGNING_VALID=yes
   export MSAM_FAKE_TEAM=2DC432GLL2
   export MSAM_FAKE_IDENTIFIER=codex
@@ -86,13 +90,14 @@ write_request() {
   batch=$1
   update_tool=${2:-codex}
   policy=${3:-manualApproval}
+  first_pid=${4:-101}
   request="$MSAM_AGENT_UPDATER_STATE_DIR/incoming/$batch.request"
   {
     printf 'MSAM_AGENT_UPDATE_REQUEST\t1\n'
     printf 'BATCH\t%s\n' "$batch"
     printf 'POLICY\t%s\n' "$policy"
     printf 'UPDATE\t%s\n' "$update_tool"
-    printf 'TARGET\tdefault\t/tmp/herdr.sock\t%%1\t101\tclaude\tclaude-1\n'
+    printf 'TARGET\tdefault\t/tmp/herdr.sock\t%%1\t%s\tclaude\tclaude-1\n' "$first_pid"
     printf 'TARGET\tdefault\t/tmp/herdr.sock\t%%2\t102\tcodex\tcodex-2\n'
     printf 'TARGET\tdefault\t/tmp/herdr.sock\t%%3\t103\tantigravity\tagy-3\n'
     printf 'END\n'
@@ -118,9 +123,13 @@ for document in "$HOST_SETUP_DOC" "$DEVELOPMENT_DOC" "$ARCHITECTURE_DOC"; do
 done
 assert_file_contains "$HOST_SETUP_DOC" 'com.codem0nky87.msam-agent-updater'
 assert_file_contains "$HOST_SETUP_DOC" 'msam-agent-updater.service'
+# These are literal copy/paste contracts in documentation, not shell expansion.
+# shellcheck disable=SC2088
 assert_file_contains "$HOST_SETUP_DOC" '~/.local/libexec/msam-agent-updater status'
+# shellcheck disable=SC2016
 assert_file_contains "$DEVELOPMENT_DOC" 'launchctl print gui/$(id -u)/com.codem0nky87.msam-agent-updater'
 assert_file_contains "$DEVELOPMENT_DOC" 'systemctl --user is-active msam-agent-updater.service'
+# shellcheck disable=SC2088
 assert_file_contains "$DEVELOPMENT_DOC" '~/.local/libexec/msam-agent-updater verify-service'
 assert_file_contains "$ARCHITECTURE_DOC" 'Core/AgentUpdateManager.swift'
 assert_file_contains "$ARCHITECTURE_DOC" 'Resources/msam-agent-updater.sh'
@@ -137,7 +146,7 @@ assert_eq "$(wc -c < "$MSAM_UPDATER_TEST_DATA/commands.log" | tr -d ' ')" "0"
 # A failed executable update must leave every agent process untouched.
 new_host
 seed_agent %1 idle claude claude-1 101
-seed_agent %2 done codex codex-2 102
+seed_agent %2 "done" codex codex-2 102
 seed_agent %3 idle agy agy-3 103
 printf '1\n' > "$MSAM_UPDATER_TEST_DATA/update-fails"
 batch=10000000-0000-4000-8000-000000000002
@@ -150,10 +159,74 @@ assert_not_contains "$log" "spctl"
 assert_not_contains "$log" "xattr"
 assert_contains "$("$UPDATER" status)" "failed_update"
 
+# Even with standalone files present, an unrelated PATH winner cannot be run
+# as the native updater.
+new_host
+export MSAM_FAKE_CODEX_OWNER=none
+mkdir -p "$HOME/.local/bin" "$HOME/.codex/packages/standalone"
+ln -s "$TEST_ROOT/bin/codex" "$HOME/.local/bin/codex"
+seed_agent %1 idle claude claude-1 101
+seed_agent %2 "done" codex codex-2 102
+seed_agent %3 idle agy agy-3 103
+batch=10000000-0000-4000-8000-000000000011
+write_request "$batch"
+submit_and_run "$batch"
+log=$(cat "$MSAM_UPDATER_TEST_DATA/commands.log")
+assert_not_contains "$log" "curl"
+assert_not_contains "$log" "agent prompt"
+assert_contains "$("$UPDATER" status)" "failed_update"
+
+# A hidden standalone install and a visible package-manager install are still
+# ambiguous. PATH precedence must not silently choose which copy to update.
+new_host
+mkdir -p "$HOME/.local/bin" "$HOME/.codex/packages/standalone"
+ln -s "$TEST_ROOT/bin/codex" "$HOME/.local/bin/codex"
+seed_agent %1 idle claude claude-1 101
+seed_agent %2 "done" codex codex-2 102
+seed_agent %3 idle agy agy-3 103
+batch=10000000-0000-4000-8000-000000000010
+write_request "$batch"
+submit_and_run "$batch"
+log=$(cat "$MSAM_UPDATER_TEST_DATA/commands.log")
+assert_not_contains "$log" "npm install"
+assert_not_contains "$log" "agent prompt"
+assert_contains "$("$UPDATER" status)" "failed_update"
+
+# A vendor channel that tries to move backwards is rejected before rolling any
+# session, even when the installer itself exits successfully.
+new_host
+printf '0.153.2\n' > "$MSAM_UPDATER_TEST_DATA/codex.version"
+export MSAM_FAKE_CODEX_AFTER_VERSION=0.153.1
+seed_agent %1 idle claude claude-1 101
+seed_agent %2 "done" codex codex-2 102
+seed_agent %3 idle agy agy-3 103
+batch=10000000-0000-4000-8000-00000000000f
+write_request "$batch"
+submit_and_run "$batch"
+log=$(cat "$MSAM_UPDATER_TEST_DATA/commands.log")
+assert_not_contains "$log" "agent prompt"
+assert_contains "$("$UPDATER" status)" "failed_update"
+
+# Vendor and Herdr commands have host-side wall-clock limits, so an abandoned
+# package manager cannot wedge the persistent service forever.
+new_host
+export MSAM_AGENT_UPDATER_COMMAND_TIMEOUT=1
+export MSAM_FAKE_UPDATE_HANG=yes
+seed_agent %1 idle claude claude-1 101
+seed_agent %2 "done" codex codex-2 102
+seed_agent %3 idle agy agy-3 103
+batch=10000000-0000-4000-8000-00000000000e
+write_request "$batch"
+submit_and_run "$batch"
+log=$(cat "$MSAM_UPDATER_TEST_DATA/commands.log")
+assert_not_contains "$log" "agent prompt"
+assert_contains "$("$UPDATER" status)" "failed_update"
+unset MSAM_AGENT_UPDATER_COMMAND_TIMEOUT
+
 # Idle and done conversations roll now; working waits until a later pass.
 new_host
 seed_agent %1 idle claude claude-1 101
-seed_agent %2 done codex codex-2 102
+seed_agent %2 "done" codex codex-2 102
 seed_agent %3 working agy agy-3 103
 batch=10000000-0000-4000-8000-000000000003
 write_request "$batch"
@@ -203,6 +276,62 @@ assert_not_contains "$(cat "$MSAM_UPDATER_TEST_DATA/commands.log")" "agent promp
 assert_eq "$(cat "$MSAM_UPDATER_TEST_DATA/ordinary.pid")" "777"
 assert_contains "$("$UPDATER" status)" "identity_changed"
 
+# A missing foreground PID is not enough identity to safely exit a pane.
+new_host
+seed_agent %1 idle claude claude-1 101
+seed_agent %2 working codex codex-2 102
+seed_agent %3 working agy agy-3 103
+batch=10000000-0000-4000-8000-00000000000a
+write_request "$batch" codex manualApproval -
+submit_and_run "$batch"
+log=$(cat "$MSAM_UPDATER_TEST_DATA/commands.log")
+assert_not_contains "$log" "agent prompt %1"
+assert_contains "$("$UPDATER" status)" "process_unavailable"
+
+# If the pane identity changes while an exit is being processed, fail closed
+# and never start over the new occupant.
+new_host
+export MSAM_FAKE_EXIT_MODE=identity-change
+seed_agent %1 idle claude claude-1 101
+seed_agent %2 working codex codex-2 102
+seed_agent %3 working agy agy-3 103
+batch=10000000-0000-4000-8000-00000000000b
+write_request "$batch"
+submit_and_run "$batch"
+log=$(cat "$MSAM_UPDATER_TEST_DATA/commands.log")
+assert_contains "$log" "agent prompt %1 /exit"
+assert_not_contains "$log" "agent start"
+assert_contains "$("$UPDATER" status)" "identity_changed"
+
+# A successful package-manager command that leaves the same executable version
+# is not a completed update and must not disturb any conversation.
+new_host
+printf '0.153.2\n' > "$MSAM_UPDATER_TEST_DATA/codex.version"
+seed_agent %1 idle claude claude-1 101
+seed_agent %2 "done" codex codex-2 102
+seed_agent %3 idle agy agy-3 103
+batch=10000000-0000-4000-8000-00000000000c
+write_request "$batch"
+submit_and_run "$batch"
+log=$(cat "$MSAM_UPDATER_TEST_DATA/commands.log")
+assert_not_contains "$log" "agent prompt"
+assert_contains "$("$UPDATER" status)" "failed_update"
+
+# An executable merely found on PATH is not assumed to be a vendor-managed
+# native install. Unknown ownership requires administrator action.
+new_host
+export MSAM_FAKE_CODEX_OWNER=none
+seed_agent %1 idle claude claude-1 101
+seed_agent %2 "done" codex codex-2 102
+seed_agent %3 idle agy agy-3 103
+batch=10000000-0000-4000-8000-00000000000d
+write_request "$batch"
+submit_and_run "$batch"
+log=$(cat "$MSAM_UPDATER_TEST_DATA/commands.log")
+assert_not_contains "$log" "curl"
+assert_not_contains "$log" "agent prompt"
+assert_contains "$("$UPDATER" status)" "failed_update"
+
 # Failed restores are attempted exactly three times, then permanently stop.
 new_host
 seed_agent %1 idle claude claude-1 101
@@ -225,7 +354,7 @@ new_host
 export MSAM_FAKE_OS=Darwin
 printf 'yes\n' > "$MSAM_UPDATER_TEST_DATA/quarantine"
 seed_agent %1 idle claude claude-1 101
-seed_agent %2 done codex codex-2 102
+seed_agent %2 "done" codex codex-2 102
 seed_agent %3 idle agy agy-3 103
 batch=10000000-0000-4000-8000-000000000007
 write_request "$batch" codex manualApproval
@@ -244,7 +373,7 @@ new_host
 export MSAM_FAKE_OS=Darwin
 printf 'yes\n' > "$MSAM_UPDATER_TEST_DATA/quarantine"
 seed_agent %1 idle claude claude-1 101
-seed_agent %2 done codex codex-2 102
+seed_agent %2 "done" codex codex-2 102
 seed_agent %3 idle agy agy-3 103
 batch=10000000-0000-4000-8000-000000000008
 write_request "$batch" codex verifiedVendorArtifacts
@@ -271,7 +400,7 @@ for failure in signature publisher notarization path-swap directory parent glob 
       ;;
   esac
   seed_agent %1 idle claude claude-1 101
-  seed_agent %2 done codex codex-2 102
+  seed_agent %2 "done" codex codex-2 102
   seed_agent %3 idle agy agy-3 103
   batch=10000000-0000-4000-8000-000000000009
   write_request "$batch" codex verifiedVendorArtifacts

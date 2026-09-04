@@ -11,6 +11,7 @@ INCOMING_DIR="$STATE_DIR/incoming"
 QUEUE_DIR="$STATE_DIR/queue"
 BATCHES_DIR="$STATE_DIR/batches"
 CURRENT_FILE="$STATE_DIR/current"
+LAST_FILE="$STATE_DIR/last"
 LOG_FILE="$STATE_DIR/worker.log"
 LOCK_DIR="$STATE_DIR/lock"
 TAB=$(printf '\t')
@@ -20,6 +21,76 @@ XATTR_COMMAND=${MSAM_AGENT_UPDATER_XATTR:-/usr/bin/xattr}
 REALPATH_COMMAND=${MSAM_AGENT_UPDATER_REALPATH:-/usr/bin/realpath}
 STAT_COMMAND=${MSAM_AGENT_UPDATER_STAT:-/usr/bin/stat}
 UNAME_COMMAND=${MSAM_AGENT_UPDATER_UNAME:-/usr/bin/uname}
+
+bounded_seconds() {
+  candidate=$1 fallback=$2
+  case "$candidate" in ''|*[!0-9]*) printf '%s\n' "$fallback"; return ;; esac
+  if [ "$candidate" -ge 1 ] && [ "$candidate" -le 900 ]; then
+    printf '%s\n' "$candidate"
+  else
+    printf '%s\n' "$fallback"
+  fi
+}
+
+COMMAND_TIMEOUT_SECONDS=$(bounded_seconds "${MSAM_AGENT_UPDATER_COMMAND_TIMEOUT:-}" 600)
+INSPECT_TIMEOUT_SECONDS=$(bounded_seconds "${MSAM_AGENT_UPDATER_INSPECT_TIMEOUT:-}" 30)
+START_TIMEOUT_SECONDS=$(bounded_seconds "${MSAM_AGENT_UPDATER_START_TIMEOUT:-}" 330)
+
+# Run external work in its own process group and terminate the whole group at
+# the deadline. macOS supplies Perl; Linux normally supplies setsid. The final
+# fallback still bounds the direct child on unusually minimal hosts.
+run_bounded() {
+  limit=$1
+  shift
+  marker="$STATE_DIR/.command-timeout.$$"
+  rm -f "$marker"
+  grouped=no
+  if command -v setsid >/dev/null 2>&1; then
+    setsid "$@" &
+    child=$!
+    grouped=yes
+  elif [ -x /usr/bin/perl ]; then
+    /usr/bin/perl -MPOSIX -e 'POSIX::setsid() or die "setsid: $!"; exec @ARGV or die "exec: $!"' -- "$@" &
+    child=$!
+    grouped=yes
+  else
+    "$@" &
+    child=$!
+  fi
+  (
+    sleeper=
+    trap '[ -z "$sleeper" ] || kill -TERM "$sleeper" 2>/dev/null || :; exit 0' HUP INT TERM
+    sleep "$limit" &
+    sleeper=$!
+    wait "$sleeper" || exit 0
+    sleeper=
+    if kill -0 "$child" 2>/dev/null; then
+      : > "$marker"
+      if [ "$grouped" = yes ]; then
+        kill -TERM -- "-$child" 2>/dev/null || :
+      else
+        kill -TERM "$child" 2>/dev/null || :
+      fi
+      sleep 2
+      if [ "$grouped" = yes ]; then
+        kill -KILL -- "-$child" 2>/dev/null || :
+      else
+        kill -KILL "$child" 2>/dev/null || :
+      fi
+    fi
+  ) </dev/null >/dev/null 2>&1 &
+  watchdog=$!
+  if wait "$child"; then command_result=0; else command_result=$?; fi
+  if [ -f "$marker" ]; then
+    # Let the watchdog finish its TERM/KILL sequence for every descendant.
+    wait "$watchdog" 2>/dev/null || :
+    rm -f "$marker"
+    return 124
+  fi
+  kill -TERM "$watchdog" 2>/dev/null || :
+  wait "$watchdog" 2>/dev/null || :
+  return "$command_result"
+}
 
 ensure_state() {
   mkdir -p "$INCOMING_DIR" "$QUEUE_DIR" "$BATCHES_DIR"
@@ -52,7 +123,8 @@ acquire_lock() {
   ensure_state
   if mkdir "$LOCK_DIR" 2>/dev/null; then
     printf '%s\n' "$$" > "$LOCK_DIR/pid"
-    trap release_lock EXIT HUP INT TERM
+    trap release_lock EXIT
+    trap 'release_lock; exit 143' HUP INT TERM
     return 0
   fi
   lock_pid=$(cat "$LOCK_DIR/pid" 2>/dev/null || :)
@@ -63,7 +135,8 @@ acquire_lock() {
   rmdir "$LOCK_DIR" 2>/dev/null || return 1
   mkdir "$LOCK_DIR"
   printf '%s\n' "$$" > "$LOCK_DIR/pid"
-  trap release_lock EXIT HUP INT TERM
+  trap release_lock EXIT
+  trap 'release_lock; exit 143' HUP INT TERM
 }
 
 valid_batch_id() {
@@ -152,11 +225,72 @@ extract_version() {
   printf '%s\n' "$1" | grep -Eo 'v?[0-9]+(\.[0-9]+){1,3}(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?' | head -n 1 | sed 's/^v//' || :
 }
 
+version_is_newer() {
+  candidate=$1 installed=$2
+  LC_ALL=C awk -v candidate="$candidate" -v installed="$installed" '
+    function split_version(value, core, pre, position) {
+      sub(/^v/, "", value)
+      sub(/\+.*/, "", value)
+      position = index(value, "-")
+      if (position > 0) {
+        parsed_pre = substr(value, position + 1)
+        value = substr(value, 1, position - 1)
+      } else {
+        parsed_pre = ""
+      }
+      parsed_core = value
+    }
+    BEGIN {
+      split_version(candidate)
+      candidate_core = parsed_core
+      candidate_pre = parsed_pre
+      split_version(installed)
+      installed_core = parsed_core
+      installed_pre = parsed_pre
+      candidate_count = split(candidate_core, candidate_parts, ".")
+      installed_count = split(installed_core, installed_parts, ".")
+      count = candidate_count > installed_count ? candidate_count : installed_count
+      for (part_index = 1; part_index <= count; part_index++) {
+        left = part_index <= candidate_count ? candidate_parts[part_index] + 0 : 0
+        right = part_index <= installed_count ? installed_parts[part_index] + 0 : 0
+        if (left != right) exit(left > right ? 0 : 1)
+      }
+      if (candidate_pre == "" && installed_pre != "") exit 0
+      if (candidate_pre != "" && installed_pre == "") exit 1
+      if (candidate_pre == installed_pre) exit 1
+      candidate_pre_count = split(candidate_pre, candidate_pre_parts, ".")
+      installed_pre_count = split(installed_pre, installed_pre_parts, ".")
+      pre_count = candidate_pre_count < installed_pre_count ? candidate_pre_count : installed_pre_count
+      for (part_index = 1; part_index <= pre_count; part_index++) {
+        left = candidate_pre_parts[part_index]
+        right = installed_pre_parts[part_index]
+        if (left == right) continue
+        left_numeric = left ~ /^[0-9]+$/
+        right_numeric = right ~ /^[0-9]+$/
+        if (left_numeric && right_numeric) exit((left + 0) > (right + 0) ? 0 : 1)
+        if (left_numeric != right_numeric) exit(left_numeric ? 1 : 0)
+        exit(left > right ? 0 : 1)
+      }
+      exit(candidate_pre_count > installed_pre_count ? 0 : 1)
+    }
+  '
+}
+
 tool_values() {
   case "$1" in
     claude) printf '%s\t%s\t%s\n' claude claude-code @anthropic-ai/claude-code ;;
     codex) printf '%s\t%s\t%s\n' codex codex @openai/codex ;;
     antigravity) printf '%s\t%s\t%s\n' agy - - ;;
+    *) return 1 ;;
+  esac
+}
+
+native_install_present() {
+  tool=$1 native_path=$2
+  case "$tool" in
+    claude) [ -x "$native_path" ] && [ -d "$HOME/.local/share/claude/versions" ] ;;
+    codex) [ -x "$native_path" ] && [ -d "$HOME/.codex/packages/standalone" ] ;;
+    antigravity) [ -x "$native_path" ] ;;
     *) return 1 ;;
   esac
 }
@@ -192,19 +326,24 @@ gatekeeper_ready() {
   [ "$policy" = verifiedVendorArtifacts ] || return 2
 
   values=$(publisher_values "$tool") || return 2
-  old_ifs=$IFS; IFS=$TAB; set -- $values; IFS=$old_ifs
+  old_ifs=$IFS
+  IFS=$TAB
+  # Intentional tab-only field split from a fixed registry value.
+  # shellcheck disable=SC2086
+  set -- $values
+  IFS=$old_ifs
   expected_team=$1 expected_identifier=$2
   inode_before=$(artifact_inode "$artifact")
   [ -n "$inode_before" ] || return 2
 
-  "$CODESIGN_COMMAND" --verify --strict --verbose=2 -- "$artifact" >/dev/null 2>&1 || return 2
-  signature=$("$CODESIGN_COMMAND" -dvvv -- "$artifact" 2>&1 || :)
+  run_bounded "$INSPECT_TIMEOUT_SECONDS" "$CODESIGN_COMMAND" --verify --strict --verbose=2 -- "$artifact" >/dev/null 2>&1 || return 2
+  signature=$(run_bounded "$INSPECT_TIMEOUT_SECONDS" "$CODESIGN_COMMAND" -dvvv -- "$artifact" 2>&1 || :)
   team=$(printf '%s\n' "$signature" | sed -n 's/^TeamIdentifier=//p' | head -n 1)
   identifier=$(printf '%s\n' "$signature" | sed -n 's/^Identifier=//p' | head -n 1)
   [ "$team" = "$expected_team" ] && [ "$identifier" = "$expected_identifier" ] || return 2
-  requirement=$("$CODESIGN_COMMAND" -dr - -- "$artifact" 2>&1 || :)
+  requirement=$(run_bounded "$INSPECT_TIMEOUT_SECONDS" "$CODESIGN_COMMAND" -dr - -- "$artifact" 2>&1 || :)
   case "$requirement" in *"$expected_team"*"$expected_identifier"*|*"$expected_identifier"*"$expected_team"*) : ;; *) return 2 ;; esac
-  "$SPCTL_COMMAND" --assess --type execute --verbose=4 -- "$artifact" >/dev/null 2>&1 || return 2
+  run_bounded "$INSPECT_TIMEOUT_SECONDS" "$SPCTL_COMMAND" --assess --type execute --verbose=4 -- "$artifact" >/dev/null 2>&1 || return 2
 
   # Re-resolve and re-stat immediately before the only mutation. A symlink swap,
   # directory, parent path, or inode change falls back to manual approval.
@@ -260,11 +399,11 @@ install_antigravity_native() {
 install_native() {
   tool=$1 executable=$2 policy=$3
   case "$tool" in
-    claude) "$executable" update ;;
+    claude) run_bounded "$COMMAND_TIMEOUT_SECONDS" "$executable" update ;;
     codex)
       installer="$STATE_DIR/codex-install.$$.sh"
       curl --connect-timeout 8 --max-time 30 -fsSL https://chatgpt.com/codex/install.sh -o "$installer" || return 1
-      /bin/sh "$installer"
+      run_bounded "$COMMAND_TIMEOUT_SECONDS" /bin/sh "$installer"
       result=$?
       rm -f "$installer"
       return "$result"
@@ -277,41 +416,65 @@ install_native() {
 update_tool() {
   tool=$1 policy=$2
   values=$(tool_values "$tool") || return 1
-  old_ifs=$IFS; IFS=$TAB; set -- $values; IFS=$old_ifs
+  old_ifs=$IFS
+  IFS=$TAB
+  # Intentional tab-only field split from a fixed registry value.
+  # shellcheck disable=SC2086
+  set -- $values
+  IFS=$old_ifs
   executable_name=$1 brew_package=$2 node_package=$3
   executable=$(command -v "$executable_name" 2>/dev/null || :)
   [ -n "$executable" ] || return 1
-  before=$(extract_version "$("$executable" --version 2>/dev/null | head -n 1)")
+  before=$(extract_version "$(run_bounded "$INSPECT_TIMEOUT_SECONDS" "$executable" --version 2>/dev/null | head -n 1)")
   [ -n "$before" ] || return 1
 
   owners=0
-  method=native
-  if [ "$brew_package" != - ] && command -v brew >/dev/null 2>&1 && brew list --versions "$brew_package" >/dev/null 2>&1; then
+  method=unknown
+  owner_path=
+  native_path="$HOME/.local/bin/$executable_name"
+  if native_install_present "$tool" "$native_path"; then
+    owners=$((owners + 1)); method=native; owner_path=$native_path
+  fi
+  if [ "$brew_package" != - ] && command -v brew >/dev/null 2>&1 && run_bounded "$INSPECT_TIMEOUT_SECONDS" brew list --versions "$brew_package" >/dev/null 2>&1; then
     owners=$((owners + 1)); method=homebrew
+    owner_prefix=$(run_bounded "$INSPECT_TIMEOUT_SECONDS" brew --prefix 2>/dev/null || :)
+    owner_path="$owner_prefix/bin/$executable_name"
   fi
-  if [ "$node_package" != - ] && command -v npm >/dev/null 2>&1 && npm list -g --depth=0 "$node_package" >/dev/null 2>&1; then
+  if [ "$node_package" != - ] && command -v npm >/dev/null 2>&1 && run_bounded "$INSPECT_TIMEOUT_SECONDS" npm list -g --depth=0 "$node_package" >/dev/null 2>&1; then
     owners=$((owners + 1)); method=npm
+    owner_prefix=$(run_bounded "$INSPECT_TIMEOUT_SECONDS" npm prefix -g 2>/dev/null || :)
+    owner_path="$owner_prefix/bin/$executable_name"
   fi
-  if [ "$node_package" != - ] && command -v pnpm >/dev/null 2>&1 && pnpm list -g --depth=0 "$node_package" >/dev/null 2>&1; then
+  if [ "$node_package" != - ] && command -v pnpm >/dev/null 2>&1 && run_bounded "$INSPECT_TIMEOUT_SECONDS" pnpm list -g --depth=0 "$node_package" >/dev/null 2>&1; then
     owners=$((owners + 1)); method=pnpm
+    owner_prefix=$(run_bounded "$INSPECT_TIMEOUT_SECONDS" pnpm bin -g 2>/dev/null || :)
+    owner_path="$owner_prefix/$executable_name"
   fi
-  if [ "$node_package" != - ] && command -v bun >/dev/null 2>&1 && bun pm ls -g 2>/dev/null | grep -F "$node_package" >/dev/null 2>&1; then
-    owners=$((owners + 1)); method=bun
+  if [ "$node_package" != - ] && command -v bun >/dev/null 2>&1; then
+    bun_packages=$(run_bounded "$INSPECT_TIMEOUT_SECONDS" bun pm ls -g 2>/dev/null || :)
+    if printf '%s\n' "$bun_packages" | grep -F "$node_package" >/dev/null 2>&1; then
+      owners=$((owners + 1)); method=bun
+      owner_prefix=$(run_bounded "$INSPECT_TIMEOUT_SECONDS" bun pm bin -g 2>/dev/null || :)
+      owner_path="$owner_prefix/$executable_name"
+    fi
   fi
   [ "$owners" -le 1 ] || return 1
+  [ "$owners" -eq 1 ] && [ -n "$owner_path" ] && [ "$executable" = "$owner_path" ] || return 1
 
   case "$method" in
-    homebrew) brew upgrade "$brew_package" || return 1 ;;
-    npm) npm install -g "$node_package@latest" || return 1 ;;
-    pnpm) pnpm add -g "$node_package@latest" || return 1 ;;
-    bun) bun add -g "$node_package@latest" || return 1 ;;
+    homebrew) run_bounded "$COMMAND_TIMEOUT_SECONDS" brew upgrade "$brew_package" || return 1 ;;
+    npm) run_bounded "$COMMAND_TIMEOUT_SECONDS" npm install -g "$node_package@latest" || return 1 ;;
+    pnpm) run_bounded "$COMMAND_TIMEOUT_SECONDS" pnpm add -g "$node_package@latest" || return 1 ;;
+    bun) run_bounded "$COMMAND_TIMEOUT_SECONDS" bun add -g "$node_package@latest" || return 1 ;;
     native) install_native "$tool" "$executable" "$policy" || return 1 ;;
     *) return 1 ;;
   esac
   executable_after=$(command -v "$executable_name" 2>/dev/null || :)
   [ -n "$executable_after" ] || return 1
-  after=$(extract_version "$("$executable_after" --version 2>/dev/null | head -n 1)")
+  [ "$executable_after" = "$executable" ] || return 1
+  after=$(extract_version "$(run_bounded "$INSPECT_TIMEOUT_SECONDS" "$executable_after" --version 2>/dev/null | head -n 1)")
   [ -n "$after" ] || return 1
+  version_is_newer "$after" "$before" || return 1
   log_message "updated $tool using $method from $before to $after"
   gatekeeper_ready "$tool" "$executable_after" "$policy"
 }
@@ -329,6 +492,8 @@ activate_next_batch() {
     printf '%s\n' updating > "$BATCHES_DIR/$batch/phase"
     printf '%s\n' "$batch" > "$CURRENT_FILE.tmp"
     mv -f "$CURRENT_FILE.tmp" "$CURRENT_FILE"
+    printf '%s\n' "$batch" > "$LAST_FILE.tmp"
+    mv -f "$LAST_FILE.tmp" "$LAST_FILE"
     cat "$CURRENT_FILE"
     return 0
   done
@@ -372,7 +537,7 @@ json_value() {
 
 agent_snapshot() {
   socket=$1 pane=$2
-  HERDR_SOCKET_PATH="$socket" herdr agent get "$pane" 2>/dev/null || return 1
+  run_bounded "$INSPECT_TIMEOUT_SECONDS" env HERDR_SOCKET_PATH="$socket" herdr agent get "$pane" 2>/dev/null || return 1
 }
 
 agent_state() {
@@ -395,7 +560,7 @@ agent_conversation() {
 
 foreground_pid() {
   socket=$1 pane=$2
-  info=$(HERDR_SOCKET_PATH="$socket" herdr pane process-info --pane "$pane" 2>/dev/null || :)
+  info=$(run_bounded "$INSPECT_TIMEOUT_SECONDS" env HERDR_SOCKET_PATH="$socket" herdr pane process-info --pane "$pane" 2>/dev/null || :)
   value=$(printf '%s\n' "$info" | tr -d '\n' | sed -nE 's/.*"foreground_pid"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p' | head -n 1)
   [ -n "$value" ] || value=$(printf '%s\n' "$info" | tr -d '\n' | sed -nE 's/.*"foreground_processes"[^]]*"pid"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p' | head -n 1)
   [ -n "$value" ] || value=$(printf '%s\n' "$info" | tr -d '\n' | sed -nE 's/.*"foreground_pgid"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p' | head -n 1)
@@ -426,13 +591,13 @@ start_agent() {
   socket=$1 pane=$2 tool=$3 conversation=$4 name=$5
   case "$tool" in
     claude)
-      HERDR_SOCKET_PATH="$socket" herdr agent start "$name" --kind claude --pane "$pane" --timeout 300000 -- --resume "$conversation"
+      run_bounded "$START_TIMEOUT_SECONDS" env HERDR_SOCKET_PATH="$socket" herdr agent start "$name" --kind claude --pane "$pane" --timeout 300000 -- --resume "$conversation"
       ;;
     codex)
-      HERDR_SOCKET_PATH="$socket" herdr agent start "$name" --kind codex --pane "$pane" --timeout 300000 -- resume "$conversation"
+      run_bounded "$START_TIMEOUT_SECONDS" env HERDR_SOCKET_PATH="$socket" herdr agent start "$name" --kind codex --pane "$pane" --timeout 300000 -- resume "$conversation"
       ;;
     antigravity)
-      HERDR_SOCKET_PATH="$socket" herdr agent start "$name" --kind agy --pane "$pane" --timeout 300000 -- --conversation "$conversation"
+      run_bounded "$START_TIMEOUT_SECONDS" env HERDR_SOCKET_PATH="$socket" herdr agent start "$name" --kind agy --pane "$pane" --timeout 300000 -- --conversation "$conversation"
       ;;
     *) return 1 ;;
   esac
@@ -440,15 +605,15 @@ start_agent() {
 
 process_target() {
   batch=$1 batch_dir=$2 index=$3
-  old_ifs=$IFS; IFS=$TAB; read -r tag session socket pane original_pid tool conversation < "$batch_dir/target.$index"; IFS=$old_ifs
+  old_ifs=$IFS; IFS=$TAB; read -r _tag _session socket pane original_pid tool conversation < "$batch_dir/target.$index"; IFS=$old_ifs
   phase=$(cat "$batch_dir/target.$index.phase")
   attempts=$(cat "$batch_dir/target.$index.attempts")
 
-  if [ "$phase" != pending ]; then
+  if [ "$phase" = exited ]; then
     snapshot=$(agent_snapshot "$socket" "$pane" 2>/dev/null || :)
     current_pid=$(foreground_pid "$socket" "$pane")
     if [ -n "$snapshot" ] && snapshot_is_expected "$snapshot" "$tool" "$conversation" \
-       && { [ "$original_pid" = - ] || [ -z "$current_pid" ] || [ "$current_pid" != "$original_pid" ]; }; then
+       && [ -n "$current_pid" ] && [ "$current_pid" != "$original_pid" ]; then
       mark_target "$batch_dir" "$index" restored restored
       return 0
     fi
@@ -457,6 +622,10 @@ process_target() {
   case "$phase" in
     restored|failed) return 0 ;;
     pending)
+      if [ "$original_pid" = - ]; then
+        mark_target "$batch_dir" "$index" failed process_unavailable
+        return 0
+      fi
       snapshot=$(agent_snapshot "$socket" "$pane" 2>/dev/null || :)
       if [ -z "$snapshot" ]; then
         mark_target "$batch_dir" "$index" pending attention_unknown
@@ -474,7 +643,7 @@ process_target() {
         return 0
       fi
       current_pid=$(foreground_pid "$socket" "$pane")
-      if [ "$original_pid" != - ] && { [ -z "$current_pid" ] || [ "$current_pid" != "$original_pid" ]; }; then
+      if [ -z "$current_pid" ] || [ "$current_pid" != "$original_pid" ]; then
         mark_target "$batch_dir" "$index" failed process_changed
         return 0
       fi
@@ -486,8 +655,19 @@ process_target() {
   if [ "$phase" = exiting ]; then
     snapshot=$(agent_snapshot "$socket" "$pane" 2>/dev/null || :)
     current_pid=$(foreground_pid "$socket" "$pane")
-    if [ -n "$snapshot" ] && snapshot_is_expected "$snapshot" "$tool" "$conversation" \
-       && { [ "$original_pid" = - ] || [ "$current_pid" = "$original_pid" ]; }; then
+    if [ -n "$snapshot" ] && ! snapshot_is_expected "$snapshot" "$tool" "$conversation"; then
+      mark_target "$batch_dir" "$index" failed identity_changed
+      return 0
+    fi
+    if [ -n "$snapshot" ] && [ -z "$current_pid" ]; then
+      mark_target "$batch_dir" "$index" failed process_unavailable
+      return 0
+    fi
+    if [ -n "$snapshot" ] && [ "$current_pid" != "$original_pid" ]; then
+      mark_target "$batch_dir" "$index" restored restored
+      return 0
+    fi
+    if [ -n "$snapshot" ] && [ "$current_pid" = "$original_pid" ]; then
       exit_attempts=$(cat "$batch_dir/target.$index.exit-attempts")
       if [ "$exit_attempts" -ge 3 ]; then
         mark_target "$batch_dir" "$index" failed exit_attempts_exhausted
@@ -495,10 +675,21 @@ process_target() {
       fi
       exit_attempts=$((exit_attempts + 1))
       write_value "$batch_dir/target.$index.exit-attempts" "$exit_attempts"
-      HERDR_SOCKET_PATH="$socket" herdr agent prompt "$pane" /exit >/dev/null 2>&1 || return 0
+      run_bounded "$INSPECT_TIMEOUT_SECONDS" env HERDR_SOCKET_PATH="$socket" herdr agent prompt "$pane" /exit --timeout 30000 >/dev/null 2>&1 || return 0
+      snapshot=$(agent_snapshot "$socket" "$pane" 2>/dev/null || :)
       current_pid=$(foreground_pid "$socket" "$pane")
     fi
-    if [ "$original_pid" != - ] && [ -n "$current_pid" ] && [ "$current_pid" = "$original_pid" ]; then
+    if [ -n "$snapshot" ]; then
+      if ! snapshot_is_expected "$snapshot" "$tool" "$conversation"; then
+        mark_target "$batch_dir" "$index" failed identity_changed
+      elif [ -n "$current_pid" ] && [ "$current_pid" != "$original_pid" ]; then
+        mark_target "$batch_dir" "$index" restored restored
+      else
+        mark_target "$batch_dir" "$index" exiting waiting_for_exit
+      fi
+      return 0
+    fi
+    if [ -z "$current_pid" ] || [ "$current_pid" = "$original_pid" ]; then
       mark_target "$batch_dir" "$index" exiting waiting_for_exit
       return 0
     fi
@@ -517,7 +708,9 @@ process_target() {
     short_batch=$(printf '%s' "$batch" | cut -c 1-8 | tr '[:upper:]' '[:lower:]')
     if start_agent "$socket" "$pane" "$tool" "$conversation" "msam_${short_batch}_$index" >/dev/null 2>&1; then
       snapshot=$(agent_snapshot "$socket" "$pane" 2>/dev/null || :)
-      if [ -n "$snapshot" ] && snapshot_is_expected "$snapshot" "$tool" "$conversation"; then
+      current_pid=$(foreground_pid "$socket" "$pane")
+      if [ -n "$snapshot" ] && snapshot_is_expected "$snapshot" "$tool" "$conversation" \
+         && [ -n "$current_pid" ] && [ "$current_pid" != "$original_pid" ]; then
         mark_target "$batch_dir" "$index" restored restored
         return 0
       fi
@@ -562,7 +755,12 @@ run_once() {
     policy=$(request_policy "$batch_dir/request")
     approval_tool=$(cat "$batch_dir/approval-tool" 2>/dev/null || :)
     values=$(tool_values "$approval_tool" 2>/dev/null || :)
-    old_ifs=$IFS; IFS=$TAB; set -- $values; IFS=$old_ifs
+    old_ifs=$IFS
+    IFS=$TAB
+    # Intentional tab-only field split from a fixed registry value.
+    # shellcheck disable=SC2086
+    set -- $values
+    IFS=$old_ifs
     executable_name=${1:-}
     executable=$(command -v "$executable_name" 2>/dev/null || :)
     if [ -z "$executable" ] || ! gatekeeper_ready "$approval_tool" "$executable" "$policy"; then
@@ -627,19 +825,26 @@ status_output() {
   ensure_state
   printf 'MSAM_AGENT_UPDATE_STATUS\t1\n'
   if [ ! -f "$CURRENT_FILE" ]; then
-    latest=
-    for candidate in "$BATCHES_DIR"/*; do [ -d "$candidate" ] && latest=$candidate; done
-    if [ -z "$latest" ]; then
+    if [ ! -f "$LAST_FILE" ]; then
       printf 'BATCH\t-\tidle\nCOUNTS\t0\t0\t0\t0\t0\t0\nEND\n'
       return 0
     fi
-    batch=${latest##*/}
+    batch=$(cat "$LAST_FILE" 2>/dev/null || :)
   else
     batch=$(cat "$CURRENT_FILE")
+  fi
+  if ! valid_batch_id "$batch" || [ ! -d "$BATCHES_DIR/$batch" ]; then
+    printf 'BATCH\t-\tunknown\nCOUNTS\t0\t0\t0\t0\t0\t0\nEND\n'
+    return 0
   fi
   batch_dir="$BATCHES_DIR/$batch"
   phase=$(cat "$batch_dir/phase" 2>/dev/null || printf unknown)
   printf 'BATCH\t%s\t%s\n' "$batch" "$phase"
+  if [ "$phase" = approval_required ]; then
+    approval_tool=$(cat "$batch_dir/approval-tool" 2>/dev/null || :)
+    tool_values "$approval_tool" >/dev/null 2>&1 || approval_tool=
+    [ -z "$approval_tool" ] || printf 'APPROVAL\t%s\n' "$approval_tool"
+  fi
   count=$(cat "$batch_dir/target-count" 2>/dev/null || printf 0)
   restored=0 working=0 attention=0 retrying=0 failed=0 index=1
   while [ "$index" -le "$count" ]; do

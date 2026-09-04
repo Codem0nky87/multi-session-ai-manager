@@ -190,7 +190,16 @@ An update uses only the detected owner; it never silently migrates a Homebrew
 install to npm, for example. Multiple detected owners, an unsupported owner, or
 an unparseable version requires administrator attention. A tool that is absent
 is reported as **Not installed** rather than installed automatically from this
-screen.
+screen. An otherwise unowned executable is considered native only at the fixed
+per-user launcher (`~/.local/bin/claude`, `~/.local/bin/codex`, or
+`~/.local/bin/agy`); another executable merely found on `PATH` is not guessed to
+be vendor-managed.
+
+Vendor, package-manager, signature, and Herdr commands also have host-side
+wall-clock limits. After installation, the helper re-reads the executable that
+is still selected by `PATH` and requires a strictly newer version. A no-op,
+downgrade, missing launcher, or unreadable version fails before any conversation
+is asked to exit.
 
 #### Rolling conversation contract
 
@@ -205,8 +214,8 @@ one of the three tools was updated:
   Herdr reports that work finished;
 - `blocked`, `unknown`, and `error`: receive no input and remain marked for
   attention;
-- stale, duplicate, changed, or missing native identity: fail closed and remain
-  untouched;
+- stale, duplicate, changed, or missing native identity or foreground PID: fail
+  closed and remain untouched;
 - failed restore: retry at most three times, then stop for that conversation.
 
 Every target is revalidated immediately before `/exit`. Ordinary shell panes,
@@ -220,8 +229,9 @@ update.
 **Manual approval** is the recommended default. If macOS blocks a newly updated
 executable, the batch pauses before any conversation exits. Sign in to the Mac,
 launch the exact updated executable, approve **Open** in macOS, then refresh the
-sheet. AI Manager never clicks the dialog, requests Accessibility control, or
-disables Gatekeeper.
+sheet. The durable status names the tool awaiting approval, and the sheet shows
+its exact executable path plus **Test Again**. AI Manager never clicks the
+dialog, requests Accessibility control, or disables Gatekeeper.
 
 The opt-in **Verified artifacts** policy may remove only
 `com.apple.quarantine` from the exact resolved executable after all of these

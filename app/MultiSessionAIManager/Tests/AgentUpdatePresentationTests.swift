@@ -54,7 +54,7 @@ import Testing
 
     @Test func activeProgressIncludesEveryOperationalCount() {
         let status = AgentUpdateBatchStatus(
-            id: UUID(), phase: .rolling, total: 12, restored: 4, working: 2,
+            id: UUID(), phase: .rolling, approvalTool: nil, total: 12, restored: 4, working: 2,
             attention: 1, retrying: 3, failed: 2, targets: []
         )
         let summary = AgentUpdatePresentation.batchSummary(status)
@@ -65,7 +65,8 @@ import Testing
 
     @Test func gatekeeperApprovalPhaseIsNotReportedAsFailureOrCompletion() {
         let status = AgentUpdateBatchStatus(
-            id: UUID(), phase: .approvalRequired, total: 3, restored: 0, working: 0,
+            id: UUID(), phase: .approvalRequired, approvalTool: .codex,
+            total: 3, restored: 0, working: 0,
             attention: 3, retrying: 0, failed: 0, targets: []
         )
         #expect(status.isActive)

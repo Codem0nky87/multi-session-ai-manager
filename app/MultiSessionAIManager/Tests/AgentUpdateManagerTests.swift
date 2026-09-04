@@ -101,7 +101,7 @@ import Testing
     @Test func activeBatchIsReturnedWithoutCreatingAnotherRequest() async throws {
         let (connection, transport) = try await makeConnection()
         let active = AgentUpdateBatchStatus(
-            id: UUID(), phase: .rolling, total: 3, restored: 1, working: 1,
+            id: UUID(), phase: .rolling, approvalTool: nil, total: 3, restored: 1, working: 1,
             attention: 1, retrying: 0, failed: 0, targets: []
         )
         let manager = AgentUpdateManager(connection: connection, dependencies: dependencies(
@@ -120,6 +120,37 @@ import Testing
         #expect(manager.batch == active)
     }
 
+    @Test func unrelatedActiveBatchCannotConfirmAnIndeterminateSubmission() async throws {
+        let (connection, transport) = try await makeConnection()
+        let unrelated = AgentUpdateBatchStatus(
+            id: UUID(), phase: .rolling, approvalTool: nil, total: 1, restored: 0, working: 1,
+            attention: 0, retrying: 0, failed: 0, targets: []
+        )
+        let statuses = BatchStatusSequence([.idle, .idle, unrelated])
+        let stable = dependencies(
+            versions: AgentToolID.allCases.map { version($0, "1.0.0", "2.0.0") },
+            inventory: [snapshot(.codex, pane: "w1:p2", conversation: "thread", lifecycle: .done)],
+            batch: .idle
+        )
+        let manager = AgentUpdateManager(connection: connection, dependencies: .init(
+            fetchVersion: stable.fetchVersion,
+            fetchInventory: stable.fetchInventory,
+            fetchContext: stable.fetchContext,
+            fetchServiceStatus: stable.fetchServiceStatus,
+            fetchBatchStatus: { _, _ in await statuses.next() }
+        ))
+        await manager.refresh()
+        let preview = try await manager.prepareUpdate([.codex])
+        transport.defaultCommandResponse = "not an acceptance"
+
+        await manager.submit(preview)
+
+        #expect(manager.state == .failed(
+            "The host did not confirm the durable update request. Refresh before retrying."
+        ))
+        #expect(manager.batch != unrelated)
+    }
+
     @Test func statusParserKeepsBlockedUnknownAsAttentionAndBoundsMessages() throws {
         let batchID = UUID()
         let long = String(repeating: "x", count: 2_000)
@@ -136,6 +167,20 @@ import Testing
         #expect(status.restored == 0)
         #expect(status.targets.count == 2)
         #expect(status.targets[1].message.count <= AgentUpdateManager.maximumMessageLength)
+    }
+
+    @Test func statusParserReportsTheExactToolAwaitingGatekeeperApproval() throws {
+        let batchID = UUID()
+        let status = try AgentUpdateManager.parseStatus("""
+        MSAM_AGENT_UPDATE_STATUS\t1
+        BATCH\t\(batchID.uuidString)\tapproval_required
+        APPROVAL\tcodex
+        COUNTS\t0\t0\t0\t0\t0\t0
+        END
+        """)
+
+        #expect(status.approvalTool == .codex)
+        #expect(status.phase == .approvalRequired)
     }
 
     @Test func overlappingRefreshesNeverPublishTheOlderGeneration() async throws {
@@ -218,6 +263,18 @@ import Testing
         )
         await connection.connect()
         return (connection, transport)
+    }
+}
+
+private actor BatchStatusSequence {
+    private var values: [AgentUpdateBatchStatus]
+
+    init(_ values: [AgentUpdateBatchStatus]) {
+        self.values = values
+    }
+
+    func next() -> AgentUpdateBatchStatus {
+        values.isEmpty ? .idle : values.removeFirst()
     }
 }
 

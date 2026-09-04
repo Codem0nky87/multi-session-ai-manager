@@ -78,6 +78,7 @@ struct HostAgentUpdatesSheet: View {
                 guard let preview else { return }
                 operations.start { await manager.submit(preview) }
             }
+            .accessibilityIdentifier("host.agent-updates.confirm")
             Button("Cancel", role: .cancel) { preview = nil }
         } message: {
             Text(preview.map(AgentUpdatePresentation.confirmation(for:)) ?? "")
@@ -168,6 +169,7 @@ struct HostAgentUpdatesSheet: View {
         GlassCard {
             VStack(alignment: .leading, spacing: Theme.Space.md) {
                 SectionLabel(text: "Host-owned service")
+                    .accessibilityIdentifier("host.agent-updates.service")
                 if manager.serviceStatus?.isReady == true {
                     Label("Service and helper verified", systemImage: "checkmark.seal.fill")
                         .foregroundStyle(Theme.success)
@@ -200,7 +202,6 @@ struct HostAgentUpdatesSheet: View {
                 }
             }
         }
-        .accessibilityIdentifier("host.agent-updates.service")
     }
 
     @ViewBuilder
@@ -263,6 +264,7 @@ struct HostAgentUpdatesSheet: View {
         GlassCard {
             VStack(alignment: .leading, spacing: Theme.Space.md) {
                 SectionLabel(text: "Installed agents")
+                    .accessibilityIdentifier("host.agent-updates.tools")
                 if manager.tools.isEmpty {
                     HStack(spacing: Theme.Space.sm) {
                         ProgressView().tint(Theme.accent)
@@ -278,7 +280,6 @@ struct HostAgentUpdatesSheet: View {
                 }
             }
         }
-        .accessibilityIdentifier("host.agent-updates.tools")
     }
 
     private func toolRow(_ version: AgentToolVersion) -> some View {
@@ -290,6 +291,7 @@ struct HostAgentUpdatesSheet: View {
                     Text(definition.displayName)
                         .font(Theme.title(16))
                         .foregroundStyle(Theme.textPrimary)
+                        .accessibilityIdentifier("host.agent-updates.row.\(version.tool.rawValue)")
                     Text(presentation.status)
                         .font(Theme.mono(12))
                         .foregroundStyle(rowTint(presentation.state))
@@ -313,21 +315,42 @@ struct HostAgentUpdatesSheet: View {
                     .foregroundStyle(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            if let executablePath = version.executablePath {
+                Text(executablePath)
+                    .font(Theme.mono(10))
+                    .foregroundStyle(Theme.textMuted)
+                    .textSelection(.enabled)
+            }
         }
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("host.agent-updates.row.\(version.tool.rawValue)")
     }
 
     private func batchCard(_ status: AgentUpdateBatchStatus) -> some View {
         GlassCard {
             VStack(alignment: .leading, spacing: Theme.Space.md) {
                 SectionLabel(text: "Rolling update")
+                    .accessibilityIdentifier("host.agent-updates.batch")
                 Text(AgentUpdatePresentation.batchTitle(status))
                     .font(Theme.title(17))
                     .foregroundStyle(status.attention > 0 || status.failed > 0 ? Theme.warning : Theme.textPrimary)
                 Text(AgentUpdatePresentation.batchSummary(status))
                     .font(Theme.mono(12))
                     .foregroundStyle(Theme.textSecondary)
+                if status.phase == .approvalRequired {
+                    let name = status.approvalTool.map {
+                        AgentToolRegistry.definition(for: $0).displayName
+                    } ?? "the updated agent"
+                    Label("Open \(name) once on the host", systemImage: "person.badge.key.fill")
+                        .font(Theme.body(13))
+                        .foregroundStyle(Theme.warning)
+                    Text("Sign in to the host, launch the exact executable path shown above, and choose Open in the macOS prompt. All conversations stay running until approval succeeds.")
+                        .font(Theme.body(12))
+                        .foregroundStyle(Theme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button("Test Again") { refresh() }
+                        .foregroundStyle(Theme.accent)
+                        .frame(minHeight: 44)
+                        .accessibilityIdentifier("host.agent-updates.approval-test")
+                }
                 if !status.targets.isEmpty {
                     ForEach(status.targets, id: \.index) { target in
                         HStack(alignment: .top) {
@@ -348,7 +371,6 @@ struct HostAgentUpdatesSheet: View {
                 }
             }
         }
-        .accessibilityIdentifier("host.agent-updates.batch")
     }
 
     private func prepare(_ tool: AgentToolID) {

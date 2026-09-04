@@ -247,6 +247,14 @@ enum AgentToolVersionProbe {
         case .antigravity:
             #"platform=$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]'); arch=$(uname -m 2>/dev/null); case "$arch" in aarch64) arch=arm64 ;; amd64) arch=x86_64 ;; esac; curl --connect-timeout 8 --max-time 20 -fsSL "\#(AgentToolReleaseSources.antigravityManifestBase)/${platform}_${arch}.json" | sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -n 1"#
         }
+        let nativeOwnershipCheck = switch tool {
+        case .claude:
+            #"[ -x "$native_path" ] && [ -d "$HOME/.local/share/claude/versions" ]"#
+        case .codex:
+            #"[ -x "$native_path" ] && [ -d "$HOME/.codex/packages/standalone" ]"#
+        case .antigravity:
+            #"[ -x "$native_path" ]"#
+        }
 
         return #"""
         set +e
@@ -259,31 +267,45 @@ enum AgentToolVersionProbe {
         method=unknown
         channel=
         error=
+        native_path="$HOME/.local/bin/\#(definition.executable)"
         if [ -z "$tool_path" ]; then
           error='not installed'
         else
           installed=$(extract_version "$("$tool_path" --version 2>/dev/null | head -n 1)")
           owner_count=0
           owner=
+          owner_path=
+          if \#(nativeOwnershipCheck); then
+            owner_count=$((owner_count + 1)); owner=native; owner_path="$native_path"
+          fi
           if [ -n '\#(packages.brew)' ] && command -v brew >/dev/null 2>&1 && brew list --versions \#(packages.brew) >/dev/null 2>&1; then
             owner_count=$((owner_count + 1)); owner=homebrew
+            owner_path="$(brew --prefix 2>/dev/null)/bin/\#(definition.executable)"
           fi
           if [ -n '\#(packages.node)' ] && command -v npm >/dev/null 2>&1 && npm list -g --depth=0 \#(packages.node) >/dev/null 2>&1; then
             owner_count=$((owner_count + 1)); owner=npm
+            owner_path="$(npm prefix -g 2>/dev/null)/bin/\#(definition.executable)"
           fi
           if [ -n '\#(packages.node)' ] && command -v pnpm >/dev/null 2>&1 && pnpm list -g --depth=0 \#(packages.node) >/dev/null 2>&1; then
             owner_count=$((owner_count + 1)); owner=pnpm
+            owner_path="$(pnpm bin -g 2>/dev/null)/\#(definition.executable)"
           fi
           if [ -n '\#(packages.node)' ] && command -v bun >/dev/null 2>&1 && bun pm ls -g 2>/dev/null | grep -F '\#(packages.node)' >/dev/null 2>&1; then
             owner_count=$((owner_count + 1)); owner=bun
+            owner_path="$(bun pm bin -g 2>/dev/null)/\#(definition.executable)"
           fi
           if [ "$owner_count" -gt 1 ]; then
             method=ambiguous
             error='installation owner is ambiguous'
           elif [ "$owner_count" -eq 1 ]; then
             method=$owner
+            if [ -z "$owner_path" ] || [ "$tool_path" != "$owner_path" ]; then
+              method=ambiguous
+              error='detected owner does not own the selected executable'
+            fi
           else
-            method=native
+            method=unknown
+            error='installation owner is unknown'
           fi
 
           case "$method" in

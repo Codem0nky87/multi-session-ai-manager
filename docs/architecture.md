@@ -162,6 +162,12 @@ filesystem lock, and writes phases/attempt counts atomically under
 `~/.local/state/msam-agent-updater/`. Logs and status output are bounded and do
 not contain SSH keys, passwords, or arbitrary terminal transcripts.
 
+Installation ownership is fail-closed. An unowned launcher is native only at
+the fixed `~/.local/bin` path for that tool; multiple owners and other `PATH`
+locations require administrator attention. External update, inspection,
+signature, and Herdr operations have worker-side wall-clock limits. The worker
+must observe a strictly newer version before it reaches the rolling boundary.
+
 The host phase progression is:
 
 ```text
@@ -174,7 +180,7 @@ No target receives `/exit` until every requested executable update has crossed
 the durable update boundary. The inventory includes Claude Code, Codex, and
 Antigravity targets even when only one tool changed. Each target is re-fetched
 from Herdr and compared with its original native conversation reference, kind,
-pane, and foreground process before exit. Idle/done agents roll immediately;
+pane, and required foreground process before exit. Idle/done agents roll immediately;
 working agents stay pending; blocked/unknown/error states receive no input.
 Restore calls use only the registry-owned arguments and stop after three failed
 attempts. An ordinary pane can never become a target because it has no valid,

@@ -129,7 +129,25 @@ import Testing
         #expect(codex.contains("npm view @openai/codex version"))
         #expect(codex.contains("pnpm view @openai/codex version"))
         #expect(codex.contains("bun pm view @openai/codex version"))
+        #expect(codex.contains("npm prefix -g"))
+        #expect(codex.contains("detected owner does not own the selected executable"))
         #expect(codex.contains(AgentToolReleaseSources.codexNativeLatest))
+    }
+
+    @Test func unownedExecutablesAreNativeOnlyAtTheFixedPerUserLauncherPath() {
+        for tool in AgentToolID.allCases {
+            let command = AgentToolVersionProbe.command(for: tool)
+            let executable = AgentToolRegistry.definition(for: tool).executable
+
+            #expect(command.contains("native_path=\"$HOME/.local/bin/\(executable)\""))
+            #expect(command.contains("error='installation owner is unknown'"))
+        }
+        #expect(AgentToolVersionProbe.command(for: .claude)
+            .contains("$HOME/.local/share/claude/versions"))
+        #expect(AgentToolVersionProbe.command(for: .codex)
+            .contains("$HOME/.codex/packages/standalone"))
+        #expect(AgentToolVersionProbe.command(for: .antigravity)
+            .contains("[ -x \"$native_path\" ]"))
     }
 
     @Test func markerParserIgnoresShellNoiseAndPreservesSpacesInPaths() throws {

@@ -26,10 +26,12 @@ case "$name" in
     ;;
   npm)
     case " $* " in
-      *" list -g --depth=0 @openai/codex "*) exit 0 ;;
+      *" list -g --depth=0 @openai/codex "*) [ "${MSAM_FAKE_CODEX_OWNER:-npm}" = npm ] ;;
+      *" prefix -g "*) printf '%s\n' "${data%/fake}" ;;
       *" install -g @openai/codex@latest "*)
         [ "$(cat "$data/update-fails")" = "0" ] || exit 1
-        printf '0.153.2\n' > "$data/codex.version"
+        [ "${MSAM_FAKE_UPDATE_HANG:-no}" != yes ] || sleep 10
+        printf '%s\n' "${MSAM_FAKE_CODEX_AFTER_VERSION:-0.153.2}" > "$data/codex.version"
         ;;
       *" view @openai/codex version "*) printf '0.153.2\n' ;;
       *) exit 1 ;;
@@ -119,14 +121,26 @@ case "$name" in
       "agent prompt")
         pane=${3:?}; key=$(agent_key "$pane")
         [ "${4:-}" = /exit ] || exit 1
-        printf 'shell\n' > "$data/$key.status"
-        pid=$(cat "$data/$key.pid")
-        printf '%s\n' "$((pid + 1000))" > "$data/$key.pid"
+        case "${MSAM_FAKE_EXIT_MODE:-shell}" in
+          shell)
+            printf 'shell\n' > "$data/$key.status"
+            pid=$(cat "$data/$key.pid")
+            printf '%s\n' "$((pid + 1000))" > "$data/$key.pid"
+            ;;
+          identity-change)
+            printf 'idle\n' > "$data/$key.status"
+            printf 'different-conversation\n' > "$data/$key.conversation"
+            pid=$(cat "$data/$key.pid")
+            printf '%s\n' "$((pid + 1000))" > "$data/$key.pid"
+            ;;
+          stale) : ;;
+          *) exit 1 ;;
+        esac
         ;;
       "agent start")
         name_arg=${3:?}
         shift 3
-        kind= pane= conversation=
+        kind='' pane='' conversation=''
         while [ "$#" -gt 0 ]; do
           case "$1" in
             --kind) kind=$2; shift 2 ;;

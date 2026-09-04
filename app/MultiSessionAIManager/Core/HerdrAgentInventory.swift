@@ -25,7 +25,7 @@ struct HerdrAgentSnapshot: Equatable, Sendable {
     let integrationCurrent: Bool
 
     var isRestorable: Bool {
-        integrationCurrent && conversationID != nil
+        integrationCurrent && conversationID != nil && foregroundPID != nil
     }
 }
 

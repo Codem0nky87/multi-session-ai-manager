@@ -310,7 +310,9 @@ private actor RestoreOperationStartGate {
         #expect(
             source.contains(
                 "@State private var restoreOperations = HostSetupRestoreOperationCoordinator()"))
-        #expect(source.components(separatedBy: "restoreOperations.start").count - 1 == 3)
+        // Three integration actions and three background-updater actions share
+        // one coordinator so setup cannot run overlapping host mutations.
+        #expect(source.components(separatedBy: "restoreOperations.start").count - 1 == 6)
         #expect(!source.contains("Task { await manager.installOrRepairAll() }"))
         #expect(source.components(separatedBy: "sessionRestoreProbeButton(").count - 1 == 2)
 

@@ -103,9 +103,36 @@ import Testing
             "antigravity-cli": .current(version: "v3")
         ]
 
-        let classified = HerdrAgentInventory.applyIntegrationStatuses(statuses, to: snapshots)
+        let liveSnapshots = snapshots.enumerated().map { index, snapshot in
+            HerdrAgentSnapshot(
+                herdrSession: snapshot.herdrSession,
+                socketPath: snapshot.socketPath,
+                paneID: snapshot.paneID,
+                tool: snapshot.tool,
+                lifecycle: snapshot.lifecycle,
+                conversationID: snapshot.conversationID,
+                foregroundPID: Int32(100 + index),
+                integrationCurrent: snapshot.integrationCurrent
+            )
+        }
+        let classified = HerdrAgentInventory.applyIntegrationStatuses(statuses, to: liveSnapshots)
         #expect(classified.map(\.integrationCurrent) == [true, false, true])
         #expect(classified.map(\.isRestorable) == [true, false, true])
+    }
+
+    @Test func aNativeReferenceWithoutLiveProcessIdentityIsNotRestorable() {
+        let snapshot = HerdrAgentSnapshot(
+            herdrSession: "default",
+            socketPath: "/tmp/herdr.sock",
+            paneID: "%1",
+            tool: .claude,
+            lifecycle: .idle,
+            conversationID: "conversation-1",
+            foregroundPID: nil,
+            integrationCurrent: true
+        )
+
+        #expect(!snapshot.isRestorable)
     }
 
     @Test @MainActor func fetchUsesBoundedCommandsAndFailsClosedOnNamedSessionError() async throws {

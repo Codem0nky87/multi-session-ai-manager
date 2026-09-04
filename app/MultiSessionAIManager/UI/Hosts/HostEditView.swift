@@ -407,6 +407,7 @@ struct HostEditView: View {
         GlassCard {
             VStack(alignment: .leading, spacing: Theme.Space.md) {
                 SectionLabel(text: "AI Agent Updates")
+                    .accessibilityIdentifier("host.agent-updates.section")
                 Text(agentUpdatesHost == nil
                      ? "Save this host and install a key first."
                      : "Check installed Claude Code, Codex, and Antigravity versions and queue a host-owned rolling update.")
@@ -437,7 +438,6 @@ struct HostEditView: View {
                 .accessibilityIdentifier("host.agent-updates.open")
             }
         }
-        .accessibilityIdentifier("host.agent-updates.section")
     }
 
     private var agentUpdatesHost: Host? {
