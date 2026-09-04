@@ -193,3 +193,170 @@ private struct ParsedAgentVersion: Comparable {
         }
     }
 }
+
+enum AgentToolReleaseSources {
+    static let claudeNativeLatest =
+        "https://downloads.claude.ai/claude-code-releases/latest"
+    static let codexNativeLatest =
+        "https://releases.openai.com/codex/channels/latest"
+    static let antigravityManifestBase =
+        "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests"
+}
+
+enum AgentToolVersionProbeError: Error, Equatable, Sendable {
+    case missingMarkers(AgentToolID)
+    case malformedField(String)
+    case commandFailed(Int32)
+}
+
+enum AgentToolVersionProbe {
+    static let timeout = Duration.seconds(45)
+    static let outputLimit = 256 * 1024
+
+    static func command(for tool: AgentToolID) -> String {
+        let definition = AgentToolRegistry.definition(for: tool)
+        let packages: (brew: String, node: String) = switch tool {
+        case .claude: ("claude-code", "@anthropic-ai/claude-code")
+        case .codex: ("codex", "@openai/codex")
+        case .antigravity: ("", "")
+        }
+        let nativeLookup = switch tool {
+        case .claude:
+            #"curl --connect-timeout 8 --max-time 20 -fsSL "\#(AgentToolReleaseSources.claudeNativeLatest)""#
+        case .codex:
+            #"curl --connect-timeout 8 --max-time 20 -fsSL "\#(AgentToolReleaseSources.codexNativeLatest)" | sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -n 1"#
+        case .antigravity:
+            #"platform=$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]'); arch=$(uname -m 2>/dev/null); case "$arch" in aarch64) arch=arm64 ;; amd64) arch=x86_64 ;; esac; curl --connect-timeout 8 --max-time 20 -fsSL "\#(AgentToolReleaseSources.antigravityManifestBase)/${platform}_${arch}.json" | sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -n 1"#
+        }
+
+        return #"""
+        set +e
+        extract_version() {
+          printf '%s\n' "$1" | grep -Eo 'v?[0-9]+(\.[0-9]+){1,3}(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?' | head -n 1 | sed 's/^v//'
+        }
+        tool_path=$(command -v \#(definition.executable) 2>/dev/null || :)
+        installed=
+        latest=
+        method=unknown
+        channel=
+        error=
+        if [ -z "$tool_path" ]; then
+          error='not installed'
+        else
+          installed=$(extract_version "$("$tool_path" --version 2>/dev/null | head -n 1)")
+          owner_count=0
+          owner=
+          if [ -n '\#(packages.brew)' ] && command -v brew >/dev/null 2>&1 && brew list --versions \#(packages.brew) >/dev/null 2>&1; then
+            owner_count=$((owner_count + 1)); owner=homebrew
+          fi
+          if [ -n '\#(packages.node)' ] && command -v npm >/dev/null 2>&1 && npm list -g --depth=0 \#(packages.node) >/dev/null 2>&1; then
+            owner_count=$((owner_count + 1)); owner=npm
+          fi
+          if [ -n '\#(packages.node)' ] && command -v pnpm >/dev/null 2>&1 && pnpm list -g --depth=0 \#(packages.node) >/dev/null 2>&1; then
+            owner_count=$((owner_count + 1)); owner=pnpm
+          fi
+          if [ -n '\#(packages.node)' ] && command -v bun >/dev/null 2>&1 && bun pm ls -g 2>/dev/null | grep -F '\#(packages.node)' >/dev/null 2>&1; then
+            owner_count=$((owner_count + 1)); owner=bun
+          fi
+          if [ "$owner_count" -gt 1 ]; then
+            method=ambiguous
+            error='installation owner is ambiguous'
+          elif [ "$owner_count" -eq 1 ]; then
+            method=$owner
+          else
+            method=native
+          fi
+
+          case "$method" in
+            homebrew) latest_raw=$(brew info --json=v2 \#(packages.brew) 2>/dev/null | sed -nE 's/.*"(stable|version)"[[:space:]]*:[[:space:]]*"([^"]+)".*/\2/p' | head -n 1) ;;
+            npm) latest_raw=$(npm view \#(packages.node) version 2>/dev/null | head -n 1) ;;
+            pnpm) latest_raw=$(pnpm view \#(packages.node) version 2>/dev/null | head -n 1) ;;
+            bun) latest_raw=$(bun pm view \#(packages.node) version 2>/dev/null | head -n 1) ;;
+            native) latest_raw=$(\#(nativeLookup)) ;;
+            *) latest_raw= ;;
+          esac
+          latest=$(extract_version "${latest_raw:-}")
+          if [ -n "$latest" ]; then
+            channel=latest
+          elif [ -z "$error" ]; then
+            error='latest lookup failed'
+          fi
+          if [ -z "$installed" ] && [ -z "$error" ]; then
+            error='installed version unreadable'
+          fi
+        fi
+        printf '%s\n' 'MSAM_TOOL_BEGIN:\#(tool.rawValue)'
+        printf 'installed=%s\n' "$installed"
+        printf 'latest=%s\n' "$latest"
+        printf 'method=%s\n' "$method"
+        printf 'channel=%s\n' "$channel"
+        printf 'path=%s\n' "$tool_path"
+        printf 'error=%s\n' "$error"
+        printf '%s\n' 'MSAM_TOOL_END:\#(tool.rawValue)'
+        """#
+    }
+
+    static func parse(_ output: String, tool: AgentToolID) throws -> AgentToolVersion {
+        let begin = "MSAM_TOOL_BEGIN:\(tool.rawValue)"
+        let end = "MSAM_TOOL_END:\(tool.rawValue)"
+        let lines = output.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { String($0).trimmingCharacters(in: CharacterSet(charactersIn: "\r")) }
+        guard let beginIndex = lines.firstIndex(of: begin),
+              let endIndex = lines[(beginIndex + 1)...].firstIndex(of: end),
+              beginIndex < endIndex else {
+            throw AgentToolVersionProbeError.missingMarkers(tool)
+        }
+
+        let allowed = Set(["installed", "latest", "method", "channel", "path", "error"])
+        var fields: [String: String] = [:]
+        for line in lines[(beginIndex + 1)..<endIndex] {
+            let parts = line.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard parts.count == 2 else { throw AgentToolVersionProbeError.malformedField(line) }
+            let key = String(parts[0])
+            guard allowed.contains(key), fields[key] == nil else {
+                throw AgentToolVersionProbeError.malformedField(key)
+            }
+            fields[key] = String(parts[1])
+        }
+
+        guard let methodValue = fields["method"] else {
+            throw AgentToolVersionProbeError.malformedField("method")
+        }
+        let installed = try parsedVersion(fields["installed"], field: "installed")
+        let latest = try parsedVersion(fields["latest"], field: "latest")
+        return AgentToolVersion(
+            tool: tool,
+            installed: installed,
+            latest: latest,
+            channel: nonEmpty(fields["channel"]),
+            method: AgentInstallMethod.parse(methodValue),
+            executablePath: nonEmpty(fields["path"]),
+            error: nonEmpty(fields["error"])
+        )
+    }
+
+    static func fetch(_ tool: AgentToolID, using service: SSHService) async throws -> AgentToolVersion {
+        let result = try await service.run(
+            command(for: tool),
+            timeout: timeout,
+            outputLimit: outputLimit
+        )
+        guard result.exitStatus == 0 else {
+            throw AgentToolVersionProbeError.commandFailed(result.exitStatus)
+        }
+        return try parse(result.stdoutString, tool: tool)
+    }
+
+    private static func nonEmpty(_ value: String?) -> String? {
+        guard let value, !value.isEmpty else { return nil }
+        return value
+    }
+
+    private static func parsedVersion(_ value: String?, field: String) throws -> String? {
+        guard let value = nonEmpty(value) else { return nil }
+        guard AgentVersionParser.version(in: value) == value else {
+            throw AgentToolVersionProbeError.malformedField(field)
+        }
+        return value
+    }
+}
