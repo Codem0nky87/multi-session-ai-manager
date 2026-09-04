@@ -130,6 +130,73 @@ terminal contents, which may include secrets, tokens, prompts, and command
 output. AI Manager never enables `[experimental] pane_history` and never
 captures a transcript as part of recovery.
 
+### Host-owned agent updates
+
+Agent updating has a deliberately different lifetime from a tab connection.
+The app discovers and confirms work, but a per-user host service owns execution
+so the iPad can disconnect immediately after enqueueing:
+
+```text
+visible AI Agent Updates sheet
+  ├─ AgentToolVersionProbe        installed/latest, same owner/channel
+  ├─ HerdrAgentInventory         all named/default sessions + native identity
+  └─ AgentUpdateManager
+       └─ SFTP atomic request → host incoming directory
+            └─ helper submit → durable queue
+                 └─ Resources/msam-agent-updater.sh service
+                      ├─ update selected executable(s)
+                      └─ roll every eligible supported-agent conversation
+```
+
+Opening the sheet creates one host connection and refreshes lazily. Dismissing
+it cancels app-side refresh/status work and closes that connection; it does not
+cancel the host batch. The sheet does not poll or cache growing terminal
+history while hidden.
+
+The request protocol is versioned, tab-separated, size-bounded, and contains
+only fixed tool IDs plus prevalidated Herdr identity fields. The app writes it
+to a random incoming filename over SFTP and atomically renames it before asking
+the helper to `submit`. The helper independently validates the protocol and
+moves accepted work to its queue. It permits one current batch, takes a
+filesystem lock, and writes phases/attempt counts atomically under
+`~/.local/state/msam-agent-updater/`. Logs and status output are bounded and do
+not contain SSH keys, passwords, or arbitrary terminal transcripts.
+
+The host phase progression is:
+
+```text
+queued → updating → [approval_required] → rolling
+                                      └─ restored / attention / failed per target
+                                               └─ complete | completed_with_failures
+```
+
+No target receives `/exit` until every requested executable update has crossed
+the durable update boundary. The inventory includes Claude Code, Codex, and
+Antigravity targets even when only one tool changed. Each target is re-fetched
+from Herdr and compared with its original native conversation reference, kind,
+pane, and foreground process before exit. Idle/done agents roll immediately;
+working agents stay pending; blocked/unknown/error states receive no input.
+Restore calls use only the registry-owned arguments and stop after three failed
+attempts. An ordinary pane can never become a target because it has no valid,
+current supported-agent identity.
+
+`approval_required` is also a durable boundary. On macOS, manual policy leaves
+Gatekeeper to the signed-in user. The opt-in verified policy resolves the exact
+post-update executable, requires strict signature and fixed publisher identity,
+requires `spctl --assess --type execute`, re-resolves and compares the inode,
+then removes only that file's `com.apple.quarantine` attribute. Any uncertainty
+returns to approval without terminating a conversation. There is no AppleScript,
+Accessibility automation, root daemon, password storage, or global Gatekeeper
+mutation.
+
+`AgentUpdaterInstaller` provisions
+`com.codem0nky87.msam-agent-updater` as an Aqua per-user LaunchAgent on macOS,
+or `msam-agent-updater.service` as a systemd user unit on Linux. It verifies
+capabilities after install instead of trusting an exec-channel exit status.
+macOS requires the user's GUI login domain; Linux requires linger for work to
+survive logout. Missing approval produces explicit Test Again instructions and
+keeps the host's degraded-setup warning persistent when setup is skipped.
+
 Host Setup's `HerdrIntegrationManager` detects only the Herdr 0.8.2 targets in
 its compiled registry whose executables are present in the remote login PATH.
 It compares them with `herdr integration status`; one explicit action installs
@@ -175,6 +242,12 @@ under Swift 6 a `@MainActor` callback invoked off-main traps at runtime.
 | `Core/HerdrLaunchCommand.swift` | The remote command and the missing-Herdr sentinel |
 | `Core/HerdrInstaller.swift` | Probe / install / verify Herdr on a host (min 0.8.2) |
 | `Core/HerdrIntegrationManager.swift` | Detect supported agents and verify/provision native restore integrations |
+| `Core/AgentToolUpdate.swift` | Fixed three-tool registry, publisher identities, version parsing/probes |
+| `Core/HerdrAgentInventory.swift` | Fail-closed Herdr inventory and native conversation identity validation |
+| `Core/AgentUpdateRequest.swift` | Validated durable request/status line protocols |
+| `Core/AgentUpdateManager.swift` | Visible-sheet refresh, preview, generation fencing, and atomic host enqueue |
+| `Core/AgentUpdaterInstaller.swift` | Per-user LaunchAgent/systemd installation and capability verification |
+| `Resources/msam-agent-updater.sh` | Host-owned durable update/rolling-restore worker |
 | `Core/HostConnection.swift` | Auth, host-key policy, connection lifecycle |
 | `Core/NIOSSHTransport.swift` | SwiftNIO SSH + Citadel transport, PTY channels, forwarding |
 | `Core/SSHService.swift` | Bounded remote commands with a normalised PATH |

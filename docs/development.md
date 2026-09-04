@@ -129,6 +129,106 @@ herdr session delete msam-restore-test
 Finally remove the test host/key from AI Manager and decommission or reimage the
 disposable host according to the test environment's normal cleanup policy.
 
+### Disposable-host agent update diagnostic
+
+> **Destructive opt-in only.** This diagnostic updates real agent executables,
+> sends `/exit` to eligible test conversations, deliberately restarts the
+> updater service, and may exercise macOS quarantine. Use only an authorized,
+> disposable macOS or Linux host with console access. Do not run it on a
+> workstation, shared host, production session, or irreplaceable conversation.
+
+Provision the host through all five Host Setup cards. Install Claude Code,
+Codex, and Antigravity through one supported owner each, enable their current
+Herdr integrations, and confirm **Background agent updates · Ready**. The
+following checks are read-only:
+
+```sh
+~/.local/libexec/msam-agent-updater protocol
+~/.local/libexec/msam-agent-updater verify-service
+~/.local/libexec/msam-agent-updater status
+```
+
+On macOS, also verify the per-user LaunchAgent and logs:
+
+```sh
+launchctl print gui/$(id -u)/com.codem0nky87.msam-agent-updater
+tail -n 100 "$HOME/.local/state/msam-agent-updater/service.stderr.log"
+```
+
+On Linux, verify the user service, linger, and logs:
+
+```sh
+systemctl --user is-active msam-agent-updater.service
+loginctl show-user "$(id -u)" -p Linger --value
+journalctl --user -u msam-agent-updater.service -n 100 --no-pager
+```
+
+Create a dedicated named Herdr session containing:
+
+1. an idle supported-agent conversation;
+2. a supported agent performing a bounded, recognizable piece of work;
+3. a blocked supported-agent conversation that requires user input; and
+4. an ordinary shell pane running a harmless long-lived command, with its PID
+   recorded by `herdr pane process-info`.
+
+Record `herdr agent get PANE` and `herdr pane process-info --pane PANE` for each
+agent before the test. The native `agent_session.value`, agent kind, pane, and
+foreground PID are the identity baseline—not the text currently visible on
+screen.
+
+From the app, open **Manage Hosts → host → AI Agent Updates**, refresh, and queue
+an available update. Confirm that the preview includes all three agents'
+eligible conversations and says ordinary panes remain running. Then disconnect
+or background the iPad. From the host console, repeatedly use the read-only
+`status` command above; the batch must advance without an iPad connection.
+
+Expected results:
+
+- the idle conversation exits and restores with the same native conversation
+  reference;
+- the working conversation is not interrupted, then exits/restores promptly
+  after Herdr reports `done` or `idle`;
+- the blocked conversation remains untouched and appears as attention;
+- the ordinary pane's foreground PID is unchanged;
+- each restored conversation still reports the original
+  `agent_session.value`; and
+- any failing restore is attempted no more than three times.
+
+While the batch is active, perform exactly one service restart. This is
+**destructive to the updater process** (but must not terminate an agent itself):
+
+macOS:
+
+```sh
+launchctl kickstart -k gui/$(id -u)/com.codem0nky87.msam-agent-updater
+```
+
+Linux:
+
+```sh
+systemctl --user restart msam-agent-updater.service
+```
+
+The same batch ID and per-target attempts must remain in `status`, completed
+tool updates must not run again, and rolling must resume from the durable host
+state.
+
+For the macOS approval gate, use an update that naturally receives the
+`com.apple.quarantine` attribute; do not add quarantine to a real workstation
+binary just to create a test. Under **Manual approval**, status must pause at
+`approval_required` before any `/exit`, and only a person at the Mac may approve
+the exact executable. Under **Verified artifacts**, automatic removal is
+allowed only if strict signing, fixed publisher identity, designated
+requirement, Gatekeeper execution assessment, and the final path/inode check all
+pass. An intentionally mismatched/unsigned disposable fixture must remain at
+`approval_required`. Neither path may use UI scripting or a global Gatekeeper
+change.
+
+Capture the before/after identity and PID output plus the bounded helper status
+and service logs as release evidence. Cases not executed against both supported
+operating systems remain manual release gates; a passing hermetic shell harness
+does not claim otherwise.
+
 ### Live UI tests
 
 `UITests/` drives the real app against a **pre-configured, reachable SSH host**.

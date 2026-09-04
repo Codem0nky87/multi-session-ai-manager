@@ -29,6 +29,12 @@ assert_eq() {
   [ "$1" = "$2" ] || fail "expected [$2], got [$1]"
 }
 
+assert_file_contains() {
+  file=$1 expected=$2
+  grep -F -- "$expected" "$file" >/dev/null \
+    || fail "expected [$expected] in $file"
+}
+
 new_host() {
   cleanup
   TEST_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/msam-agent-updater-test.XXXXXX")
@@ -101,6 +107,23 @@ submit_and_run() {
 
 [ -f "$UPDATER" ] || fail "bundled updater script is missing"
 assert_eq "$("$UPDATER" protocol)" "1"
+
+# Keep the operator runbook aligned with the installed helper and per-user
+# service definitions. These are intentionally literal copy/paste contracts.
+HOST_SETUP_DOC="$ROOT/docs/host-setup.md"
+DEVELOPMENT_DOC="$ROOT/docs/development.md"
+ARCHITECTURE_DOC="$ROOT/docs/architecture.md"
+for document in "$HOST_SETUP_DOC" "$DEVELOPMENT_DOC" "$ARCHITECTURE_DOC"; do
+  [ -f "$document" ] || fail "missing updater documentation: $document"
+done
+assert_file_contains "$HOST_SETUP_DOC" 'com.codem0nky87.msam-agent-updater'
+assert_file_contains "$HOST_SETUP_DOC" 'msam-agent-updater.service'
+assert_file_contains "$HOST_SETUP_DOC" '~/.local/libexec/msam-agent-updater status'
+assert_file_contains "$DEVELOPMENT_DOC" 'launchctl print gui/$(id -u)/com.codem0nky87.msam-agent-updater'
+assert_file_contains "$DEVELOPMENT_DOC" 'systemctl --user is-active msam-agent-updater.service'
+assert_file_contains "$DEVELOPMENT_DOC" '~/.local/libexec/msam-agent-updater verify-service'
+assert_file_contains "$ARCHITECTURE_DOC" 'Core/AgentUpdateManager.swift'
+assert_file_contains "$ARCHITECTURE_DOC" 'Resources/msam-agent-updater.sh'
 
 # Invalid tools are rejected before any vendor or Herdr command can run.
 new_host

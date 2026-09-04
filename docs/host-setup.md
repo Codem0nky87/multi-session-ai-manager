@@ -62,7 +62,7 @@ connection looks like. Verify the fingerprint out of band before you take it.
 
 ## The guided Host Setup sheet
 
-**Manage Hosts → (host) → Host Setup** walks four steps. Host-changing actions
+**Manage Hosts → (host) → Host Setup** walks five steps. Host-changing actions
 require an explicit tap. Herdr install/update commands and integration targets
 come from fixed app-owned values. Plugin `owner/repo[/subdir]` and ref inputs,
 plus manifest action IDs, are validated and shell-quoted as appropriate before
@@ -148,6 +148,132 @@ layout after its server restarts. Pane screen history is separate and opt-in
 because terminal output can contain credentials, prompts, source, and other
 sensitive data. AI Manager does not enable `[experimental] pane_history` or
 automatically retain a terminal transcript.
+
+### 5 · Background agent updates
+
+Installs a host-owned, per-user helper for Claude Code, Codex, and Antigravity.
+This is what lets a queued update continue when the iPad disconnects or the app
+is backgrounded. It does not run as root, store a password, or depend on the
+iPad remaining connected.
+
+The card verifies the helper protocol, service state, writable state directory,
+and a helper self-test before reporting **Ready**. On macOS, the SSH user must
+have an active GUI login domain; sign in to that user's desktop, leave the user
+logged in, and tap **Test Again**. On Linux, an administrator must enable linger
+when prompted:
+
+```sh
+loginctl enable-linger USERNAME
+```
+
+Without linger, the user service stops when that SSH user logs out. If setup is
+skipped or fails, the host remains usable, but its host-list warning remains:
+background version checks, durable queueing, and rolling restore while the iPad
+is disconnected are unavailable.
+
+#### Versions and installation ownership
+
+Each host's **AI Agent Updates** sheet reads all three fixed tools lazily when
+the sheet is visible. It reports:
+
+- **Installed**: the version returned by the executable currently on the host's
+  login PATH.
+- **Latest**: the newest parseable version available from the same detected
+  installation owner and channel. It may be unknown when the vendor lookup is
+  unreachable, changes format, or cannot be proved; unknown never enables an
+  Update button.
+- **Current**: latest is known and is not numerically newer than installed.
+  Prerelease identifiers are compared deterministically.
+
+Supported owners are Homebrew, npm, pnpm, bun, and the tool's native installer.
+An update uses only the detected owner; it never silently migrates a Homebrew
+install to npm, for example. Multiple detected owners, an unsupported owner, or
+an unparseable version requires administrator attention. A tool that is absent
+is reported as **Not installed** rather than installed automatically from this
+screen.
+
+#### Rolling conversation contract
+
+After confirmation, the selected tool update is persisted on the host. Once
+the executable is ready, the batch covers every eligible Claude Code, Codex,
+and Antigravity conversation in every discovered Herdr session—even when only
+one of the three tools was updated:
+
+- `idle` and `done`: cleanly exit, then resume from the same native conversation
+  reference;
+- `working`: remain running and are acted on by the host service as soon as
+  Herdr reports that work finished;
+- `blocked`, `unknown`, and `error`: receive no input and remain marked for
+  attention;
+- stale, duplicate, changed, or missing native identity: fail closed and remain
+  untouched;
+- failed restore: retry at most three times, then stop for that conversation.
+
+Every target is revalidated immediately before `/exit`. Ordinary shell panes,
+servers, tests, and processes are neither targeted nor restarted. The queue,
+per-conversation phase, and retry count live on the host, so a service restart
+continues from its last durable boundary without repeating a completed tool
+update.
+
+#### macOS downloaded-app approval
+
+**Manual approval** is the recommended default. If macOS blocks a newly updated
+executable, the batch pauses before any conversation exits. Sign in to the Mac,
+launch the exact updated executable, approve **Open** in macOS, then refresh the
+sheet. AI Manager never clicks the dialog, requests Accessibility control, or
+disables Gatekeeper.
+
+The opt-in **Verified artifacts** policy may remove only
+`com.apple.quarantine` from the exact resolved executable after all of these
+checks pass: strict code-signature verification, the fixed tool-specific Team
+Identifier and signing identifier, the designated requirement, Gatekeeper's
+execute assessment, and a final path/inode recheck. A directory, glob, parent
+path, symlink/path swap, unsigned artifact, publisher mismatch, or failed
+assessment falls back to manual approval. Current standalone CLI distributions
+may not satisfy Gatekeeper's app assessment even when code-signed; that safe
+fallback is expected.
+
+#### Service locations and operator commands
+
+The app owns only these per-user updater files:
+
+| Purpose | macOS | Linux |
+|---|---|---|
+| Helper | `~/.local/libexec/msam-agent-updater` | same |
+| Durable queue/status/logs | `~/.local/state/msam-agent-updater/` | same |
+| Service | `~/Library/LaunchAgents/com.codem0nky87.msam-agent-updater.plist` | `~/.config/systemd/user/msam-agent-updater.service` |
+
+Read-only status is safe on either platform:
+
+```sh
+~/.local/libexec/msam-agent-updater status
+~/.local/libexec/msam-agent-updater verify-service
+```
+
+Use **Repair Service** in the app to replace the helper/service definitions and
+verify them. To uninstall manually while preserving the durable updater state
+and every Herdr/agent conversation, stop the service and remove only the helper
+and service definition:
+
+macOS:
+
+```sh
+launchctl bootout gui/$(id -u)/com.codem0nky87.msam-agent-updater
+rm "$HOME/Library/LaunchAgents/com.codem0nky87.msam-agent-updater.plist"
+rm "$HOME/.local/libexec/msam-agent-updater"
+```
+
+Linux:
+
+```sh
+systemctl --user disable --now msam-agent-updater.service
+rm "$HOME/.config/systemd/user/msam-agent-updater.service"
+rm "$HOME/.local/libexec/msam-agent-updater"
+systemctl --user daemon-reload
+```
+
+These commands intentionally do not delete
+`~/.local/state/msam-agent-updater/`, any Herdr state, or native agent state.
 
 ## Managing plugins
 
