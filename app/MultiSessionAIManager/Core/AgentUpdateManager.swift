@@ -6,6 +6,7 @@ enum AgentUpdateBatchPhase: String, Codable, Sendable {
     case queued
     case updating
     case rolling
+    case approvalRequired = "approval_required"
     case complete
     case completedWithFailures = "completed_with_failures"
     case failedUpdate = "failed_update"
@@ -13,7 +14,7 @@ enum AgentUpdateBatchPhase: String, Codable, Sendable {
 
     var isActive: Bool {
         switch self {
-        case .queued, .updating, .rolling, .unknown:
+        case .queued, .updating, .rolling, .approvalRequired, .unknown:
             true
         case .idle, .complete, .completedWithFailures, .failedUpdate:
             false
@@ -128,11 +129,17 @@ final class AgentUpdateManager {
     private(set) var serviceMessage: String?
     private(set) var batch: AgentUpdateBatchStatus?
     private(set) var lastChecked: Date?
+    private(set) var gatekeeperPolicy: HostGatekeeperPolicy
     private var operationGeneration: UInt64 = 0
 
     init(connection: HostConnection, dependencies: Dependencies = .live) {
         self.connection = connection
         self.dependencies = dependencies
+        gatekeeperPolicy = connection.host.gatekeeperPolicy
+    }
+
+    func setGatekeeperPolicy(_ policy: HostGatekeeperPolicy) {
+        gatekeeperPolicy = policy
     }
 
     func refresh() async {
@@ -252,7 +259,7 @@ final class AgentUpdateManager {
                 batchID: UUID(),
                 requestedTools: selectedTools,
                 targets: targets,
-                gatekeeperPolicy: connection.host.gatekeeperPolicy
+                gatekeeperPolicy: gatekeeperPolicy
             )
             try request.validate()
 

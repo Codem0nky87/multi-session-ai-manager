@@ -407,6 +407,10 @@ final class HostFlowUITests: XCTestCase {
                       "tapping a saved host did not open Edit Host")
         XCTAssertTrue(app.scrollViews["host.editor.form"].exists,
                       "host editor form is missing")
+        XCTAssertTrue(app.descendants(matching: .any)["host.agent-updates.section"].exists,
+                      "per-host AI Agent Updates section is missing")
+        XCTAssertTrue(app.buttons["host.agent-updates.open"].exists,
+                      "AI Agent Updates action is missing")
         XCTAssertFalse(app.buttons["Sessions"].exists)
         XCTAssertFalse(app.buttons["Files"].exists)
         shot("c_host_editor")

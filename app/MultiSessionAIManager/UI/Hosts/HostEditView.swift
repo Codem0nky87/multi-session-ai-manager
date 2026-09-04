@@ -44,6 +44,7 @@ struct HostEditView: View {
     @State private var errorMessage: String?
     @State private var showHostSetup = false
     @State private var showPortForwarding = false
+    @State private var showAgentUpdates = false
     /// Set while a key deletion is awaiting confirmation.
     @State private var pendingKeyDeletion: String?
 
@@ -107,6 +108,7 @@ struct HostEditView: View {
                     authSection
                     workdirSection
                     portForwardingSection
+                    agentUpdatesSection
                     validationFeedback
                 }
                 .padding(.horizontal, Theme.Space.md)
@@ -207,6 +209,18 @@ struct HostEditView: View {
             }
         )
         .background(
+            Color.clear.sheet(isPresented: $showAgentUpdates) {
+                if let host = agentUpdatesHost {
+                    HostAgentUpdatesSheet(
+                        host: host,
+                        keyStore: keyStore,
+                        knownHosts: knownHosts,
+                        onSetupChanged: persistUpdaterSetup
+                    )
+                }
+            }
+        )
+        .background(
             Color.clear.alert(
                 SSHKeyDeletion.confirmationTitle,
                 isPresented: Binding(
@@ -222,12 +236,19 @@ struct HostEditView: View {
         )
         .alert(
             "Host Setup Error",
-            isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })
+            isPresented: errorIsPresented
         ) {
             Button("OK", role: .cancel) { errorMessage = nil }
         } message: {
             Text(errorMessage ?? "")
         }
+    }
+
+    private var errorIsPresented: Binding<Bool> {
+        Binding(
+            get: { errorMessage != nil },
+            set: { if !$0 { errorMessage = nil } }
+        )
     }
 
     // MARK: - Sections
@@ -380,6 +401,48 @@ struct HostEditView: View {
             host: candidate, isSaved: existingID != nil
         ) else { return nil }
         return try? candidate.validated()
+    }
+
+    private var agentUpdatesSection: some View {
+        GlassCard {
+            VStack(alignment: .leading, spacing: Theme.Space.md) {
+                SectionLabel(text: "AI Agent Updates")
+                Text(agentUpdatesHost == nil
+                     ? "Save this host and install a key first."
+                     : "Check installed Claude Code, Codex, and Antigravity versions and queue a host-owned rolling update.")
+                    .font(Theme.body(13))
+                    .foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if let warning = HostAgentUpdaterPresentation.warning(for: agentUpdaterSetup) {
+                    Label(warning, systemImage: "exclamationmark.triangle.fill")
+                        .font(Theme.body(12))
+                        .foregroundStyle(Theme.warning)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("host.agent-updates.degraded")
+                }
+
+                Button {
+                    showAgentUpdates = true
+                } label: {
+                    Label("Manage AI agent updates", systemImage: "arrow.triangle.2.circlepath")
+                        .font(.system(.body, design: .rounded, weight: .medium))
+                        .foregroundStyle(agentUpdatesHost == nil ? Theme.textMuted : Theme.accent)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(minHeight: 44, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(agentUpdatesHost == nil)
+                .accessibilityIdentifier("host.agent-updates.open")
+            }
+        }
+        .accessibilityIdentifier("host.agent-updates.section")
+    }
+
+    private var agentUpdatesHost: Host? {
+        guard existingID != nil else { return nil }
+        return try? candidateHost.validated()
     }
 
     private var workdirSection: some View {
