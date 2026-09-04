@@ -11,6 +11,7 @@ struct HostEditView: View {
     let store: HostStore
     let keyStore: KeyStore
     let knownHosts: KnownHostsStore
+    let onSaved: (Host, Bool) -> Void
 
     /// nil ⇒ creating a new host; non-nil ⇒ editing the host with this id.
     private let existingID: UUID?
@@ -21,6 +22,8 @@ struct HostEditView: View {
     @State private var username: String
     @State private var defaultWorkdir: String
     @State private var keyID: String
+    @State private var agentUpdaterSetup: HostAgentUpdaterSetup
+    @State private var gatekeeperPolicy: HostGatekeeperPolicy
 
     @State private var keyIDs: [String] = []
 
@@ -52,11 +55,13 @@ struct HostEditView: View {
         store: HostStore,
         keyStore: KeyStore,
         knownHosts: KnownHostsStore,
-        host: Host? = nil
+        host: Host? = nil,
+        onSaved: @escaping (Host, Bool) -> Void = { _, _ in }
     ) {
         self.store = store
         self.keyStore = keyStore
         self.knownHosts = knownHosts
+        self.onSaved = onSaved
         self.existingID = host?.id
         _name = State(initialValue: host?.name ?? "")
         _address = State(initialValue: host?.address ?? "")
@@ -64,6 +69,8 @@ struct HostEditView: View {
         _username = State(initialValue: host?.username ?? "")
         _defaultWorkdir = State(initialValue: host?.defaultWorkdir ?? "")
         _keyID = State(initialValue: host?.keyID ?? "")
+        _agentUpdaterSetup = State(initialValue: host?.agentUpdaterSetup ?? .unchecked)
+        _gatekeeperPolicy = State(initialValue: host?.gatekeeperPolicy ?? .manualApproval)
     }
 
     private var isValid: Bool {
@@ -179,7 +186,12 @@ struct HostEditView: View {
         )
         .background(
             Color.clear.sheet(isPresented: $showHostSetup) {
-                HostSetupHelpSheet(host: setupHost, keyStore: keyStore, knownHosts: knownHosts)
+                HostSetupHelpSheet(
+                    host: setupHost,
+                    keyStore: keyStore,
+                    knownHosts: knownHosts,
+                    onUpdaterSetupChanged: persistUpdaterSetup
+                )
             }
         )
         .background(
@@ -558,7 +570,9 @@ struct HostEditView: View {
             port: port,
             username: username.trimmingCharacters(in: .whitespaces),
             keyID: keyID,
-            defaultWorkdir: defaultWorkdir
+            defaultWorkdir: defaultWorkdir,
+            agentUpdaterSetup: agentUpdaterSetup,
+            gatekeeperPolicy: gatekeeperPolicy
         )
     }
 
@@ -572,7 +586,9 @@ struct HostEditView: View {
             port: port,
             username: username,
             keyID: keyID,
-            defaultWorkdir: defaultWorkdir
+            defaultWorkdir: defaultWorkdir,
+            agentUpdaterSetup: agentUpdaterSetup,
+            gatekeeperPolicy: gatekeeperPolicy
         )
     }
 
@@ -617,16 +633,32 @@ struct HostEditView: View {
     private func save() {
         do {
             let host = try candidateHost.validated()
-            if existingID == nil {
+            let isNew = existingID == nil
+            if isNew {
                 store.add(host)
             } else {
                 store.update(host)
             }
+            onSaved(host, isNew)
             toasts.success("Host saved")
             dismiss()
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    private func persistUpdaterSetup(
+        _ setup: HostAgentUpdaterSetup,
+        _ policy: HostGatekeeperPolicy
+    ) {
+        agentUpdaterSetup = setup
+        gatekeeperPolicy = policy
+        guard existingID != nil else { return }
+        store.update(HostAgentUpdaterPresentation.applying(
+            setup: setup,
+            policy: policy,
+            to: candidateHost
+        ))
     }
 
     /// Friendly label for a key id (`ed25519-<label>-<uuid>`) — show label + short suffix.

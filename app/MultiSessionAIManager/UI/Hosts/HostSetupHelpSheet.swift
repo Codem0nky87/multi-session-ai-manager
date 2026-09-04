@@ -15,8 +15,13 @@ struct HostSetupHelpSheet: View {
     @State private var herdrStarted = false
     @State private var pluginManager: HerdrPluginManagerModel?
     @State private var integrationManager: HerdrIntegrationManager?
+    @State private var updaterInstaller: AgentUpdaterInstaller?
+    @State private var updaterSetup: HostAgentUpdaterSetup
+    @State private var gatekeeperPolicy: HostGatekeeperPolicy
     @State private var restoreOperations = HostSetupRestoreOperationCoordinator()
     @State private var showingPlugins = false
+    @State private var showingSkipUpdaterConfirmation = false
+    private let onUpdaterSetupChanged: (HostAgentUpdaterSetup, HostGatekeeperPolicy) -> Void
 
     /// Pass `keyStore`/`knownHosts` to enable the Herdr install card. Callers
     /// that only want the guidance cards can omit them.
@@ -25,9 +30,16 @@ struct HostSetupHelpSheet: View {
         keyStore: KeyStore? = nil,
         knownHosts: KnownHostsStore? = nil,
         transport: (any SSHTransport)? = nil,
-        reachability: any TCPReachabilityChecking = TCPReachability()
+        reachability: any TCPReachabilityChecking = TCPReachability(),
+        onUpdaterSetupChanged: @escaping (
+            HostAgentUpdaterSetup,
+            HostGatekeeperPolicy
+        ) -> Void = { _, _ in }
     ) {
+        self.onUpdaterSetupChanged = onUpdaterSetupChanged
         _model = State(initialValue: HostSetupModel(host: host, reachability: reachability))
+        _updaterSetup = State(initialValue: host.agentUpdaterSetup)
+        _gatekeeperPolicy = State(initialValue: host.gatekeeperPolicy)
         if let keyStore, let knownHosts {
             let connection = HostConnection(
                 host: host,
@@ -40,6 +52,7 @@ struct HostSetupHelpSheet: View {
             _pluginManager = State(initialValue: HerdrPluginManagerModel(connection: connection))
             _integrationManager = State(
                 initialValue: HerdrIntegrationManager(connection: connection))
+            _updaterInstaller = State(initialValue: AgentUpdaterInstaller(connection: connection))
             _lifecycle = State(
                 initialValue: HerdrSSHConnectionLifecycle(
                     connect: { await connection.connect() },
@@ -50,6 +63,7 @@ struct HostSetupHelpSheet: View {
             _lifecycle = State(initialValue: nil)
             _pluginManager = State(initialValue: nil)
             _integrationManager = State(initialValue: nil)
+            _updaterInstaller = State(initialValue: nil)
         }
     }
 
@@ -70,11 +84,15 @@ struct HostSetupHelpSheet: View {
                         if let integrationManager, isHerdrPresent {
                             sessionRestoreCard(integrationManager)
                         }
+                        if let updaterInstaller {
+                            agentUpdaterCard(updaterInstaller)
+                        }
                     }
                     .padding(Theme.Space.md)
                     .frame(maxWidth: 760)
                     .frame(maxWidth: .infinity)
                 }
+                .accessibilityIdentifier("host.setup.scroll")
             }
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("host.setup.sheet")
@@ -97,6 +115,18 @@ struct HostSetupHelpSheet: View {
                 HerdrPluginManagerSheet(model: pluginManager, hostName: model.host.name)
             }
         }
+        .confirmationDialog(
+            "Skip background agent updates?",
+            isPresented: $showingSkipUpdaterConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Skip for Now", role: .destructive) {
+                recordUpdaterSetup(.skipped)
+            }
+            Button("Continue Setup", role: .cancel) {}
+        } message: {
+            Text(HostAgentUpdaterPresentation.warning(for: .skipped) ?? "")
+        }
         .onDisappear {
             model.cancelRouteCheck()
             // Retire the SSH connection with the sheet — leaving it open would
@@ -108,6 +138,153 @@ struct HostSetupHelpSheet: View {
                 }
             }
         }
+    }
+
+    private func agentUpdaterCard(_ updater: AgentUpdaterInstaller) -> some View {
+        GlassCard {
+            VStack(alignment: .leading, spacing: Theme.Space.md) {
+                setupSectionLabel("5 · Background agent updates")
+                Text(
+                    "Install a host-owned per-user service so update checks and rolling conversation restores continue after this iPad disconnects. Every Claude Code, Codex, and Antigravity conversation is included; ordinary panes are left running."
+                )
+                .font(.system(.callout, design: .rounded, weight: .regular))
+                .foregroundStyle(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+                Picker("macOS approval", selection: $gatekeeperPolicy) {
+                    Text("Manual").tag(HostGatekeeperPolicy.manualApproval)
+                    Text("Verified artifacts").tag(HostGatekeeperPolicy.verifiedVendorArtifacts)
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("host.setup.agent-updater.gatekeeper")
+
+                Text(HostAgentUpdaterPresentation.gatekeeperDetail(for: gatekeeperPolicy))
+                    .font(.system(.footnote, design: .rounded, weight: .regular))
+                    .foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                agentUpdaterState(updater)
+
+                if updaterSetup != .ready {
+                    Button("Skip for Now") {
+                        showingSkipUpdaterConfirmation = true
+                    }
+                    .font(.system(.callout, design: .rounded, weight: .semibold))
+                    .foregroundStyle(Theme.warning)
+                    .frame(minHeight: Self.minimumHitTarget)
+                    .accessibilityIdentifier("host.setup.agent-updater.skip")
+                }
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("host.setup.agent-updater.card")
+        .task(id: updater.connection.state) {
+            if case .connected = updater.connection.state, case .idle = updater.state {
+                restoreOperations.start { await updater.probe() }
+            }
+        }
+        .onChange(of: updater.state) { _, state in
+            switch state {
+            case .ready:
+                recordUpdaterSetup(.ready)
+            case .failed, .approvalRequired:
+                recordUpdaterSetup(.failed)
+            case .idle, .probing, .absent, .installing:
+                break
+            }
+        }
+        .onChange(of: gatekeeperPolicy) { _, policy in
+            onUpdaterSetupChanged(updaterSetup, policy)
+        }
+    }
+
+    @ViewBuilder
+    private func agentUpdaterState(_ updater: AgentUpdaterInstaller) -> some View {
+        switch updater.connection.state {
+        case .idle, .connecting:
+            Label("Connecting to test the service…", systemImage: "arrow.triangle.2.circlepath")
+                .foregroundStyle(Theme.textSecondary)
+        case .hostKeyChanged(let fingerprint):
+            Label("The SSH host key changed (\(fingerprint)). Resolve it before installing the service.",
+                  systemImage: "exclamationmark.shield.fill")
+                .foregroundStyle(Theme.danger)
+        case .failed(let message):
+            Label(message, systemImage: "xmark.octagon.fill")
+                .foregroundStyle(Theme.danger)
+        case .connected:
+            connectedAgentUpdaterState(updater)
+        }
+    }
+
+    @ViewBuilder
+    private func connectedAgentUpdaterState(_ updater: AgentUpdaterInstaller) -> some View {
+        switch updater.state {
+        case .idle, .probing:
+            Label("Testing the background service…", systemImage: "arrow.triangle.2.circlepath")
+                .foregroundStyle(Theme.textSecondary)
+                .accessibilityIdentifier("host.setup.agent-updater.probing")
+        case .absent:
+            Label("The host-owned updater is not installed.", systemImage: "wrench.and.screwdriver.fill")
+                .foregroundStyle(Theme.warning)
+            updaterInstallButton(updater, title: "Install Service")
+        case .installing:
+            Label("Installing and verifying the service…", systemImage: "arrow.down.circle")
+                .foregroundStyle(Theme.textSecondary)
+        case .ready:
+            Label("The host-owned updater is ready.", systemImage: "checkmark.seal.fill")
+                .foregroundStyle(Theme.success)
+                .accessibilityIdentifier("host.setup.agent-updater.ready")
+            updaterTestButton(updater)
+        case .approvalRequired(let approval):
+            let presentation = HostAgentUpdaterPresentation.approval(approval)
+            VStack(alignment: .leading, spacing: Theme.Space.sm) {
+                Label(presentation.title, systemImage: "person.badge.key.fill")
+                    .foregroundStyle(Theme.warning)
+                ForEach(Array(presentation.instructions.enumerated()), id: \.offset) { _, item in
+                    Text(item)
+                        .font(.system(.footnote, design: .rounded))
+                        .foregroundStyle(Theme.textSecondary)
+                        .textSelection(.enabled)
+                }
+            }
+            .accessibilityIdentifier("host.setup.agent-updater.approval")
+            updaterTestButton(updater)
+        case .failed(let message):
+            Label(message, systemImage: "xmark.octagon.fill")
+                .font(.system(.subheadline, design: .rounded))
+                .foregroundStyle(Theme.danger)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("host.setup.agent-updater.failed")
+            updaterInstallButton(updater, title: "Install or Repair")
+            updaterTestButton(updater)
+        }
+    }
+
+    private func updaterInstallButton(
+        _ updater: AgentUpdaterInstaller,
+        title: String
+    ) -> some View {
+        primaryActionButton(title: title, systemImage: "gearshape.2", enabled: true) {
+            restoreOperations.start {
+                await updater.installOrRepair(policy: gatekeeperPolicy)
+            }
+        }
+        .accessibilityIdentifier("host.setup.agent-updater.install")
+    }
+
+    private func updaterTestButton(_ updater: AgentUpdaterInstaller) -> some View {
+        Button("Test Again") {
+            restoreOperations.start { await updater.probe() }
+        }
+        .font(.system(.callout, design: .rounded, weight: .semibold))
+        .foregroundStyle(Theme.accent)
+        .frame(minHeight: Self.minimumHitTarget)
+        .accessibilityIdentifier("host.setup.agent-updater.test")
+    }
+
+    private func recordUpdaterSetup(_ setup: HostAgentUpdaterSetup) {
+        updaterSetup = setup
+        onUpdaterSetupChanged(setup, gatekeeperPolicy)
     }
 
     private var routeCard: some View {

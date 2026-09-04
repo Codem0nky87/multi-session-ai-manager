@@ -83,6 +83,19 @@ final class AgentUpdaterInstaller {
             let context = try await discoverContext()
             self.context = context
             guard case .unsupported(let os) = context.platform else {
+                let service = try requireService()
+                let presence = try await service.run(
+                    Self.helperPresenceCommand(for: context),
+                    timeout: Self.commandTimeout,
+                    outputLimit: Self.outputLimit
+                )
+                guard presence.exitStatus == 0 else {
+                    state = .absent(context)
+                    return
+                }
+                guard try await requireMacLoginDomainIfNeeded(context, using: service) else {
+                    return
+                }
                 let status = try await verify(context)
                 publish(status, context: context)
                 return
@@ -106,10 +119,13 @@ final class AgentUpdaterInstaller {
                 ))
                 return
             }
+            let service = try requireService()
+            guard try await requireMacLoginDomainIfNeeded(context, using: service) else {
+                return
+            }
 
             let helper = try helperLoader()
             guard !helper.isEmpty else { throw AgentUpdaterInstallerError.missingResource }
-            let service = try requireService()
             _ = try await service.run(
                 Self.prepareCommand(for: context),
                 timeout: Self.commandTimeout,
@@ -252,6 +268,12 @@ final class AgentUpdaterInstaller {
         }
     }
 
+    nonisolated static func helperPresenceCommand(
+        for context: AgentUpdaterHostContext
+    ) -> String {
+        "test -x \(POSIXShell.quote(helperPath(for: context)))"
+    }
+
     nonisolated static func finaliseCommand(for context: AgentUpdaterHostContext) -> String {
         let helper = POSIXShell.quote(helperPath(for: context))
         let service = POSIXShell.quote(servicePath(for: context))
@@ -364,6 +386,26 @@ final class AgentUpdaterInstaller {
             outputLimit: Self.outputLimit
         )
         return try Self.parseVerification(result.stdoutString, platform: context.platform)
+    }
+
+    private func requireMacLoginDomainIfNeeded(
+        _ context: AgentUpdaterHostContext,
+        using service: SSHService
+    ) async throws -> Bool {
+        guard context.platform == .macOS else { return true }
+        let result = try await service.run(
+            "launchctl print gui/\(context.uid) >/dev/null 2>&1",
+            timeout: Self.commandTimeout,
+            outputLimit: Self.outputLimit
+        )
+        guard result.exitStatus == 0 else {
+            state = .approvalRequired(.macOSLoginDomain([
+                "Sign in to the Mac desktop as \(connection.host.username) and leave that user logged in.",
+                "Return to Host Setup and tap Test Again. A per-user LaunchAgent cannot start without that macOS login domain."
+            ]))
+            return false
+        }
+        return true
     }
 
     private func publish(_ status: AgentUpdaterServiceStatus, context: AgentUpdaterHostContext) {

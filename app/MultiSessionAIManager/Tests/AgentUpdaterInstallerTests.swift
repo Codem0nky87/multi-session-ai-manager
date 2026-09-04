@@ -49,6 +49,7 @@ import Testing
         let (installer, transport) = try await makeInstaller()
         stub(transport, [
             "MSAM_HOME=/Users/alice\nMSAM_OS=Darwin\nMSAM_UID=501",
+            "login domain ready",
             "prepared",
             "bootstrapped",
             readyVerification(platform: "Darwin", linger: "n/a")
@@ -111,6 +112,7 @@ import Testing
         let (installer, transport) = try await makeInstaller()
         stub(transport, [
             "MSAM_HOME=/Users/alice\nMSAM_OS=Darwin\nMSAM_UID=501",
+            "login domain ready",
             "prepared",
             "bootstrapped",
             "MSAM_VERIFY_BEGIN\nprotocol=1\nservice=active\nwritable=yes\nselftest=no\nplatform=Darwin\nlinger=n/a\nMSAM_VERIFY_END"
@@ -129,6 +131,7 @@ import Testing
         let (installer, transport) = try await makeInstaller()
         transport.structuredCommandResults = [
             result("MSAM_HOME=/Users/alice\nMSAM_OS=Darwin\nMSAM_UID=501"),
+            result("login domain ready"),
             result("prepared"),
             .failure(.ambiguousDisconnect),
             result(readyVerification(platform: "Darwin", linger: "n/a"))
@@ -140,7 +143,37 @@ import Testing
             Issue.record("final verification should be authoritative, got \(installer.state)")
             return
         }
-        #expect(transport.structuredCommandsRun.count == 4)
+        #expect(transport.structuredCommandsRun.count == 5)
+    }
+
+    @Test func macOSWithoutALoginDomainExplainsHowToApproveAndWritesNothing() async throws {
+        let (installer, transport) = try await makeInstaller()
+        transport.structuredCommandResults = [
+            result("MSAM_HOME=/Users/alice\nMSAM_OS=Darwin\nMSAM_UID=501"),
+            result("", exitStatus: 1)
+        ]
+
+        await installer.installOrRepair(policy: .manualApproval)
+
+        guard case .approvalRequired(.macOSLoginDomain(let instructions)) = installer.state else {
+            Issue.record("expected macOS login-domain approval, got \(installer.state)")
+            return
+        }
+        #expect(instructions.joined(separator: " ").contains("Sign in"))
+        #expect(instructions.joined(separator: " ").contains("Test Again"))
+        #expect(transport.writtenFiles.isEmpty)
+    }
+
+    @Test func probeReportsAnAbsentHelperAsInstallable() async throws {
+        let (installer, transport) = try await makeInstaller()
+        transport.structuredCommandResults = [
+            result("MSAM_HOME=/home/alice\nMSAM_OS=Linux\nMSAM_UID=1000"),
+            result("", exitStatus: 1)
+        ]
+
+        await installer.probe()
+
+        #expect(installer.state == .absent(.init(home: "/home/alice", platform: .linux, uid: 1000)))
     }
 
     private func makeInstaller() async throws -> (AgentUpdaterInstaller, FakeSSHTransport) {
@@ -162,11 +195,14 @@ import Testing
     }
 
     private func stub(_ transport: FakeSSHTransport, _ outputs: [String]) {
-        transport.structuredCommandResults = outputs.map(result)
+        transport.structuredCommandResults = outputs.map { result($0) }
     }
 
-    private func result(_ output: String) -> Result<SSHCommandResult, SSHCommandExecutionError> {
-        .success(.init(exitStatus: 0, stdout: Data(output.utf8), stderr: Data()))
+    private func result(
+        _ output: String,
+        exitStatus: Int32 = 0
+    ) -> Result<SSHCommandResult, SSHCommandExecutionError> {
+        .success(.init(exitStatus: exitStatus, stdout: Data(output.utf8), stderr: Data()))
     }
 
     private func readyVerification(platform: String, linger: String) -> String {

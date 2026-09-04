@@ -8,8 +8,10 @@ struct HostListView: View {
     private let keyStore: KeyStore
     private let knownHosts: KnownHostsStore
 
-    /// Drives the add/edit sheet. nil ⇒ closed.
-    @State private var editTarget: EditTarget?
+    /// One sheet route avoids SwiftUI dropping a second presentation while the
+    /// newly-created host editor is still dismissing.
+    @State private var sheetRoute: HostSheetRoute?
+    @State private var pendingNewHostSetup: Host?
 
     @Environment(\.dismiss) private var dismiss
     @Environment(ToastCenter.self) private var toasts
@@ -49,7 +51,7 @@ struct HostListView: View {
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Button {
-                        editTarget = .new
+                        sheetRoute = .new
                     } label: {
                         Image(systemName: "plus")
                             .font(.system(size: 17, weight: .semibold))
@@ -58,16 +60,36 @@ struct HostListView: View {
                     .accessibilityLabel("Add Host")
                 }
             }
-            .sheet(item: $editTarget) { target in
-                NavigationStack {
-                    HostEditView(
-                        store: store,
+            .sheet(item: $sheetRoute, onDismiss: continueNewHostOnboarding) { route in
+                switch route {
+                case .new, .edit:
+                    NavigationStack {
+                        HostEditView(
+                            store: store,
+                            keyStore: keyStore,
+                            knownHosts: knownHosts,
+                            host: route.host,
+                            onSaved: { host, isNew in
+                                if isNew { pendingNewHostSetup = host }
+                            }
+                        )
+                    }
+                    .preferredColorScheme(.dark)
+                case .setup(let host):
+                    HostSetupHelpSheet(
+                        host: host,
                         keyStore: keyStore,
                         knownHosts: knownHosts,
-                        host: target.host
+                        onUpdaterSetupChanged: { setup, policy in
+                            store.update(HostAgentUpdaterPresentation.applying(
+                                setup: setup,
+                                policy: policy,
+                                to: store.hosts.first(where: { $0.id == host.id }) ?? host
+                            ))
+                        }
                     )
+                    .preferredColorScheme(.dark)
                 }
-                .preferredColorScheme(.dark)
             }
         }
     }
@@ -112,7 +134,7 @@ struct HostListView: View {
         List {
             ForEach(store.hosts) { host in
                 Button {
-                    editTarget = .edit(host)
+                    sheetRoute = .edit(host)
                 } label: {
                     row(host)
                 }
@@ -122,7 +144,7 @@ struct HostListView: View {
                 .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
                 .swipeActions(edge: .leading) {
                     Button {
-                        editTarget = .edit(host)
+                        sheetRoute = .edit(host)
                     } label: {
                         Label("Edit", systemImage: "pencil")
                     }
@@ -137,7 +159,7 @@ struct HostListView: View {
                 }
                 .contextMenu {
                     Button {
-                        editTarget = .edit(host)
+                        sheetRoute = .edit(host)
                     } label: {
                         Label("Edit", systemImage: "pencil")
                     }
@@ -167,6 +189,12 @@ struct HostListView: View {
                         .foregroundStyle(Theme.textSecondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
+                    if host.agentUpdaterSetup.needsWarning {
+                        Label("Background updates need setup", systemImage: "exclamationmark.triangle.fill")
+                            .font(Theme.body(12))
+                            .foregroundStyle(Theme.warning)
+                            .accessibilityIdentifier("host.agent-updater.warning")
+                    }
                 }
                 Spacer(minLength: Theme.Space.sm)
             }
@@ -210,7 +238,7 @@ struct HostListView: View {
                 .multilineTextAlignment(.center)
 
             NeonButton(title: "Add a host", systemImage: "plus") {
-                editTarget = .new
+                sheetRoute = .new
             }
             .frame(maxWidth: 280)
             .padding(.top, Theme.Space.sm)
@@ -227,17 +255,27 @@ struct HostListView: View {
         }
         toasts.success("Host removed")
     }
+
+    private func continueNewHostOnboarding() {
+        guard let host = pendingNewHostSetup else { return }
+        pendingNewHostSetup = nil
+        Task { @MainActor in
+            await Task.yield()
+            sheetRoute = .setup(host)
+        }
+    }
 }
 
-/// Identifies the add/edit sheet target. `.new` ⇒ create; `.edit` ⇒ edit a host.
-private enum EditTarget: Identifiable {
+private enum HostSheetRoute: Identifiable {
     case new
     case edit(Host)
+    case setup(Host)
 
     var id: String {
         switch self {
         case .new: return "new"
         case .edit(let host): return host.id.uuidString
+        case .setup(let host): return "setup-\(host.id.uuidString)"
         }
     }
 
@@ -245,6 +283,7 @@ private enum EditTarget: Identifiable {
         switch self {
         case .new: return nil
         case .edit(let host): return host
+        case .setup(let host): return host
         }
     }
 }

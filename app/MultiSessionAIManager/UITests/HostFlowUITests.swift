@@ -553,6 +553,24 @@ final class HostFlowUITests: XCTestCase {
         save.tap()
 
         XCTAssertTrue(
+            app.navigationBars["Host Setup"].waitForExistence(timeout: 12),
+            "a newly saved host did not continue into Host Setup\n\(app.debugDescription)"
+        )
+        let updaterSkip = app.buttons["host.setup.agent-updater.skip"]
+        for _ in 0..<10 where !updaterSkip.isHittable {
+            app.swipeUp()
+        }
+        XCTAssertTrue(updaterSkip.isHittable, "background updater skip action was not reachable")
+        updaterSkip.tap()
+        let confirmSkip = app.sheets["Skip background agent updates?"]
+            .buttons["Skip for Now"]
+        XCTAssertTrue(confirmSkip.waitForExistence(timeout: 5), "skip impact confirmation missing")
+        confirmSkip.tap()
+        let closeSetup = app.buttons["host.setup.close"]
+        XCTAssertTrue(closeSetup.waitForExistence(timeout: 5), "post-save Host Setup close action missing")
+        closeSetup.tap()
+
+        XCTAssertTrue(
             app.navigationBars["Hosts"].waitForExistence(timeout: 10),
             "Hosts list did not return after Save\n\(app.debugDescription)"
         )
@@ -565,5 +583,7 @@ final class HostFlowUITests: XCTestCase {
         // so labelled every correctly-working host "Herdr not configured".
         XCTAssertFalse(savedCell.staticTexts["Herdr settings complete"].exists)
         XCTAssertFalse(savedCell.staticTexts["Herdr not configured"].exists)
+        XCTAssertTrue(savedCell.descendants(matching: .any)["host.agent-updater.warning"].exists,
+                      "skipped updater impact warning is missing from the host row")
     }
 }
