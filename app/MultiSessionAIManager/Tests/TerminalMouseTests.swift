@@ -93,19 +93,20 @@ import Foundation
         #expect(TerminalScroll.ticks(forDelta: 40, cellHeight: 0) == 0)
     }
 
-    // Pointer wheel: fixed 16pt per notch, and scrolling UP is a NEGATIVE pan
-    // translation, so the sign flips to match the wheel's "up" direction.
-    @Test func sixteenPointsOfWheelIsOneNotchUp() {
-        #expect(TerminalScroll.wheelTicks(forTranslation: -16) == 1)
+    // Pointer wheel / trackpad scroll: fixed 16pt per notch, matching touch scroll direction:
+    // positive translation (pulling down) produces wheel-up notches (older history),
+    // negative translation (swiping up) produces wheel-down notches (newer history).
+    @Test func sixteenPointsOfWheelDownTranslationIsOneNotchUp() {
+        #expect(TerminalScroll.wheelTicks(forTranslation: 16) == 1)
     }
 
-    @Test func wheelDownComesOutNegative() {
-        #expect(TerminalScroll.wheelTicks(forTranslation: 32) == -2)
+    @Test func wheelUpTranslationComesOutNegative() {
+        #expect(TerminalScroll.wheelTicks(forTranslation: -32) == -2)
     }
 
     @Test func aFractionOfANotchIsHeldBackNotRounded() {
-        #expect(TerminalScroll.wheelTicks(forTranslation: -15.9) == 0)
-        #expect(TerminalScroll.wheelTicks(forTranslation: -31) == 1)
+        #expect(TerminalScroll.wheelTicks(forTranslation: 15.9) == 0)
+        #expect(TerminalScroll.wheelTicks(forTranslation: 31) == 1)
     }
 
     // Shift+wheel zoom: one font step per 24pt, same sign convention.

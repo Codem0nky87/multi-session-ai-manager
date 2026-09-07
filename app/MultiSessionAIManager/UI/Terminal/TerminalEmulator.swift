@@ -601,14 +601,16 @@ enum TerminalScroll {
         return Int(delta / cellHeight)
     }
 
-    /// ~16pt of pointer scroll per remote wheel notch. Scroll UP is a NEGATIVE
-    /// pan translation, so the sign flips to the wheel's "up is positive".
+    /// ~16pt of pointer scroll per remote wheel notch. Matches touch-drag
+    /// direction: pulling down (positive translation) produces positive notches
+    /// (wheel up, older history); pushing up (negative translation) produces
+    /// negative notches (wheel down, newer history).
     static let pointsPerWheelNotch: CGFloat = 16
     /// ~24pt of Shift+scroll per ±1pt of font size.
     static let pointsPerZoomStep: CGFloat = 24
 
     static func wheelTicks(forTranslation translation: CGFloat) -> Int {
-        Int((-translation / pointsPerWheelNotch).rounded(.towardZero))
+        Int((translation / pointsPerWheelNotch).rounded(.towardZero))
     }
 
     static func zoomSteps(forTranslation translation: CGFloat) -> CGFloat {
