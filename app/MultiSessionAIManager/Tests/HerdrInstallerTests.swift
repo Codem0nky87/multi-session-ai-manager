@@ -201,10 +201,11 @@ struct HerdrInstallerTests {
         await installer.connection.connect()
         transport.structuredCommandResults = [ok("updated"), ok("herdr 0.9.0")]
 
+        #expect(HerdrInstaller.updateCommand == "herdr update --handoff")
         await installer.update()
 
         #expect(installer.state == .ready(version: "0.9.0"))
-        #expect(transport.structuredCommandsRun.map(\.command).contains { $0.contains("herdr update") })
+        #expect(transport.structuredCommandsRun.map(\.command).contains { $0.contains("herdr update --handoff") })
     }
 
     // MARK: - Command surface

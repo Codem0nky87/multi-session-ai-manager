@@ -36,7 +36,7 @@ final class HerdrInstaller {
     /// Shown in the UI *and* sent to the host — one constant so the promise and
     /// the action cannot drift apart.
     static let installCommand = "curl -fsSL https://herdr.dev/install.sh | sh"
-    static let updateCommand = "herdr update"
+    static let updateCommand = "herdr update --handoff"
 
     private static let probeTimeout = Duration.seconds(15)
     /// Exposed so the live diagnostic runs the same budget the app does.

@@ -87,7 +87,7 @@ a generic timeout.
 Probes for `herdr`, reports its version, and offers to install or update it.
 
 - Install runs Herdr's official installer: `curl -fsSL https://herdr.dev/install.sh | sh`
-- Update runs `herdr update`
+- Update runs `herdr update --handoff` (performing live handoff to transfer sessions to the new server binary)
 - The app requires **0.8.2 or newer**; anything older is reported as a failure,
   not a successful install
 
