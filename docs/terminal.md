@@ -81,3 +81,14 @@ rows = [["state_icon", "workspace", "tab"], ["state_text", "agent"]]
 
 `state_text` is a built-in row token; the default rows simply omit it. Then
 `herdr config check` and `herdr server reload-config` — no session restart.
+
+## Terminal themes
+
+MSAM ships with built-in color palettes (`dark`, `light`, `catppuccin`, `solarizedDark`,
+`solarizedLight`, `dracula`, `nord`, `highContrastDark`, `highContrastLight`, `midnight`,
+`amber`, `ice`, `colorBlindSafe`), matching Herdr's built-in themes:
+
+- **Global preference**: Set in MSAM Settings (`TerminalPreferencesSection`), persisted in `terminal.theme`.
+- **Per-tab theme control**: Each tab's theme can be overridden via the palette button (**🎨**) in the top action bar or through the tab's context menu in the tab strip. When set, that tab's `HerdrHostSession` isolates its `TerminalEmulator` to that palette; unset tabs inherit the global default.
+- **Per-view overrides**: Any view hosting `TerminalEmulatorView` can pass an explicit `theme` override.
+- **Pane behavior in Herdr**: Within a tab's PTY, Herdr multiplexes split panes into a single terminal grid. When Herdr is configured with its default `panel_bg = "reset"`, all split panes in that tab seamlessly inherit that tab's active terminal theme.

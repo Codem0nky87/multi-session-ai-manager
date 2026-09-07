@@ -172,6 +172,40 @@ struct RootView: View {
                     .accessibilityLabel("Send a file to host")
                     .accessibilityIdentifier("msam.send.file")
                     .background(HerdrTheme.panel, ignoresSafeAreaEdges: [])
+
+                    Menu {
+                        Section("Tab Theme") {
+                            Button("Default (Global)") {
+                                tabStore.setTheme(nil, for: selectedTab?.id ?? UUID())
+                            }
+                            Divider()
+                            ForEach(TerminalTheme.all) { theme in
+                                Button {
+                                    if let id = selectedTab?.id {
+                                        tabStore.setTheme(theme.id, for: id)
+                                    }
+                                } label: {
+                                    if selectedTab?.themeID == theme.id {
+                                        Label(theme.name, systemImage: "checkmark")
+                                    } else {
+                                        Text(theme.name)
+                                    }
+                                }
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "paintpalette")
+                            .foregroundStyle(selectedTab?.themeID != nil ? HerdrTheme.accent : HerdrTheme.subtext)
+                            .frame(
+                                width: HerdrChromeMetrics.hostTabBarHeight,
+                                height: HerdrChromeMetrics.hostTabBarHeight
+                            )
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Change tab theme")
+                    .accessibilityIdentifier("msam.tab.theme")
+                    .background(HerdrTheme.panel, ignoresSafeAreaEdges: [])
                 }
                 Button {
                     showingSettings = true
@@ -194,7 +228,8 @@ struct RootView: View {
             if let tab = selectedTab {
                 HostTerminalView(
                     session: tabs.session(for: tab),
-                    selection: selection
+                    selection: selection,
+                    theme: tab.themeID.map { TerminalTheme.byID($0) }
                 )
                 .padding(.horizontal, HerdrChromeMetrics.terminalEdgeInset)
                 // The home-indicator inset is dead space under a terminal --
@@ -336,6 +371,7 @@ struct RootView: View {
 struct HostTerminalView: View {
     @Bindable var session: HerdrHostSession
     var selection: TerminalSelectionModel? = nil
+    var theme: TerminalTheme? = nil
 
     var body: some View {
         ZStack {
@@ -352,7 +388,8 @@ struct HostTerminalView: View {
                 // session never covers its workspace with the software keyboard --
                 // and never fires the grid resize/SIGWINCH that raising it implies.
                 automaticallyFocusesInput: false,
-                selection: selection
+                selection: selection,
+                theme: theme
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 

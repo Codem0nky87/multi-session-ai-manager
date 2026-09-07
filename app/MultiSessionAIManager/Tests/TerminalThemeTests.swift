@@ -21,8 +21,11 @@ import UIKit
         let ids = TerminalTheme.all.map(\.id)
         #expect(ids.contains("dark"))
         #expect(ids.contains("light"))
+        #expect(ids.contains("catppuccin"))
         #expect(ids.contains("solarizedDark"))
         #expect(ids.contains("solarizedLight"))
+        #expect(ids.contains("dracula"))
+        #expect(ids.contains("nord"))
     }
 
     @Test func themeIDsAreUniqueAndPalettesAreComplete() {

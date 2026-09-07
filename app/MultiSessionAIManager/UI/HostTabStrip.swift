@@ -44,6 +44,18 @@ struct HostTabStrip: View {
                     .accessibilityIdentifier("host.tab.\(tab.id.uuidString)")
                     .accessibilityAddTraits(selected ? .isSelected : [])
                     .contextMenu {
+                        Menu("Theme") {
+                            Button("Default (Global)") {
+                                store.setTheme(nil, for: tab.id)
+                            }
+                            Divider()
+                            ForEach(TerminalTheme.all) { theme in
+                                Button(theme.name) {
+                                    store.setTheme(theme.id, for: tab.id)
+                                }
+                            }
+                        }
+                        Divider()
                         Button("Close", role: .destructive) { store.close(tab.id) }
                     }
                 }

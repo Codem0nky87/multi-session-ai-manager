@@ -39,10 +39,16 @@ struct TerminalEmulatorView: View {
     /// plain drag selects instead of scrolling, touches stop reaching the remote
     /// pane, and the keyboard is not raised -- see `TerminalTouchPolicy`.
     var selection: TerminalSelectionModel? = nil
+    /// Explicit theme override. When nil, inherits `settings.theme`.
+    var theme: TerminalTheme? = nil
 
     /// Shared terminal appearance — drives the live render font size.
     @Environment(TerminalSettings.self) private var settings
     @Environment(\.scenePhase) private var scenePhase
+
+    private var effectiveTheme: TerminalTheme {
+        theme ?? settings.theme
+    }
 
     @State private var localKeyInputController = KeyInputController()
     @State private var isMounted = false
@@ -134,7 +140,8 @@ struct TerminalEmulatorView: View {
             .onAppear {
                 isMounted = true
                 synchronizeVisibility()
-                // Font size FIRST so cols/rows are derived from the new cell metrics.
+                // Theme and font size FIRST so cols/rows and palette are derived from the new cell metrics.
+                emulator.setTheme(effectiveTheme)
                 emulator.setFontSize(settings.fontSize)
                 applySize(geometry.size)
                 requestAutomaticFocusIfEligible()
@@ -148,6 +155,12 @@ struct TerminalEmulatorView: View {
             .onChange(of: settings.fontSize) { _, newSize in
                 emulator.setFontSize(newSize)
                 applySize(lastSize)
+            }
+            .onChange(of: settings.themeID) { _, _ in
+                emulator.setTheme(effectiveTheme)
+            }
+            .onChange(of: theme) { _, newTheme in
+                emulator.setTheme(newTheme ?? settings.theme)
             }
             .onChange(of: scenePhase) { _, newPhase in
                 synchronizeVisibility()

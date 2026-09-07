@@ -214,6 +214,19 @@ struct TerminalTheme: Identifiable, Equatable {
             0x6272A4, 0xFF6E6E, 0x69FF94, 0xFFFFA5, 0xD6ACFF, 0xFF92DF, 0xA4FFFF, 0xFFFFFF
         ]))
 
+    /// Catppuccin Mocha (default theme of Herdr).
+    static let catppuccin = TerminalTheme(
+        id: "catppuccin", name: "Catppuccin Mocha",
+        background: rgb(0x1E1E2E),
+        foreground: rgb(0xCDD6F4),
+        foregroundBold: rgb(0xFFFFFF),
+        foregroundCursor: rgb(0x1E1E2E),
+        backgroundCursor: rgb(0xF5E0DC),
+        ansi: ansiPalette([
+            0x45475A, 0xF38BA8, 0xA6E3A1, 0xF9E2AF, 0x89B4FA, 0xF5C2E7, 0x94E2D5, 0xBAC2DE,
+            0x585B70, 0xF38BA8, 0xA6E3A1, 0xF9E2AF, 0x89B4FA, 0xF5C2E7, 0x94E2D5, 0xA6ADC8
+        ]))
+
     /// Nord (nordtheme.com).
     static let nord = TerminalTheme(
         id: "nord", name: "Nord",
@@ -231,6 +244,7 @@ struct TerminalTheme: Identifiable, Equatable {
     static let all: [TerminalTheme] = [
         dark,
         light,
+        catppuccin,
         solarizedDark,
         solarizedLight,
         dracula,

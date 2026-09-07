@@ -1,11 +1,12 @@
 import Foundation
 import Observation
 
-/// One open host tab: a host plus an optional named Herdr session.
+/// One open host tab: a host plus an optional named Herdr session and optional theme override.
 struct HostTab: Identifiable, Codable, Equatable, Sendable {
     var id = UUID()
     var hostID: UUID
     var sessionName: String?
+    var themeID: String? = nil
 }
 
 /// Persists the open host tabs and which one is selected, so a relaunch
@@ -60,6 +61,13 @@ final class HostTabStore {
     func select(_ id: UUID) {
         guard tabs.contains(where: { $0.id == id }) else { return }
         selectedTabID = id
+        save()
+    }
+
+    /// Set an explicit theme for a tab, or pass nil to inherit the global default.
+    func setTheme(_ themeID: String?, for id: UUID) {
+        guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
+        tabs[index].themeID = themeID
         save()
     }
 

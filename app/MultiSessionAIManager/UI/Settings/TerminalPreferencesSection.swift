@@ -5,6 +5,21 @@ struct TerminalPreferencesSection: View {
 
     var body: some View {
         Section("Terminal") {
+            Picker("Theme", selection: Binding(
+                get: { settings.themeID },
+                set: { settings.setThemeID($0) }
+            )) {
+                ForEach(TerminalTheme.all) { theme in
+                    HStack {
+                        Text(theme.name)
+                        Spacer()
+                        themeSwatches(for: theme)
+                    }
+                    .tag(theme.id)
+                }
+            }
+            .accessibilityIdentifier("settings.terminal.theme")
+
             HStack {
                 Text("Text size")
                 Spacer()
@@ -37,6 +52,16 @@ struct TerminalPreferencesSection: View {
 
             Button("Reset to \(Int(TerminalSettings.defaultSize)) pt") {
                 settings.setFontSize(TerminalSettings.defaultSize)
+            }
+        }
+    }
+
+    private func themeSwatches(for theme: TerminalTheme) -> some View {
+        HStack(spacing: 3) {
+            ForEach(Array(theme.previewColors.prefix(5).enumerated()), id: \.offset) { _, uiColor in
+                Circle()
+                    .fill(Color(uiColor))
+                    .frame(width: 8, height: 8)
             }
         }
     }

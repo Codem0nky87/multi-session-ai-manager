@@ -99,4 +99,37 @@ import Testing
         #expect(reloaded.tabs.map(\.hostID) == [kept])
         #expect(reloaded.selectedTabID == reloaded.tabs.first?.id)
     }
+
+    @Test func tabThemeIDRoundTripsAndDefaultsToNil() {
+        let defaults = makeDefaults()
+        let store = HostTabStore(defaults: defaults)
+        let tab = store.open(hostID: UUID(), sessionName: "dev")
+        #expect(tab.themeID == nil)
+
+        store.setTheme("dracula", for: tab.id)
+        #expect(store.tabs.first?.themeID == "dracula")
+
+        let reloaded = HostTabStore(defaults: defaults)
+        #expect(reloaded.tabs.first?.themeID == "dracula")
+
+        store.setTheme(nil, for: tab.id)
+        #expect(store.tabs.first?.themeID == nil)
+        let cleared = HostTabStore(defaults: defaults)
+        #expect(cleared.tabs.first?.themeID == nil)
+    }
+
+    @Test func legacyTabsWithoutThemeIDDecodeSafely() throws {
+        let hostID = UUID()
+        let id = UUID()
+        let json = """
+        [{"id":"\(id.uuidString)","hostID":"\(hostID.uuidString)","sessionName":"legacy"}]
+        """.data(using: .utf8)!
+
+        let tabs = try JSONDecoder().decode([HostTab].self, from: json)
+        #expect(tabs.count == 1)
+        #expect(tabs[0].id == id)
+        #expect(tabs[0].hostID == hostID)
+        #expect(tabs[0].sessionName == "legacy")
+        #expect(tabs[0].themeID == nil)
+    }
 }

@@ -81,4 +81,40 @@ import CoreGraphics
         #expect(b.fontSize == TerminalSettings.defaultSize + 2)  // persisted
     }
 
+    @Test func freshStoreUsesDefaultTheme() {
+        let s = TerminalSettings(defaults: freshDefaults(#function))
+        #expect(s.themeID == TerminalSettings.defaultThemeID)
+        #expect(s.themeID == "dark")
+        #expect(s.theme.id == "dark")
+    }
+
+    @Test func setThemeIDPersistTrueRoundTrips() {
+        let defaults = freshDefaults(#function)
+        let a = TerminalSettings(defaults: defaults)
+        a.setThemeID("dracula", persist: true)
+        #expect(a.themeID == "dracula")
+        #expect(a.theme.id == "dracula")
+
+        let b = TerminalSettings(defaults: defaults)
+        #expect(b.themeID == "dracula")
+        #expect(b.theme.id == "dracula")
+    }
+
+    @Test func setThemeIDPersistFalseDoesNotWrite() {
+        let defaults = freshDefaults(#function)
+        let a = TerminalSettings(defaults: defaults)
+        a.setThemeID("catppuccin", persist: false)
+        #expect(a.themeID == "catppuccin")
+
+        let b = TerminalSettings(defaults: defaults)
+        #expect(b.themeID == TerminalSettings.defaultThemeID)
+    }
+
+    @Test func setThemeIDResolvesUnknownFallback() {
+        let defaults = freshDefaults(#function)
+        let s = TerminalSettings(defaults: defaults)
+        s.setThemeID("non-existent-theme")
+        #expect(s.themeID == "dark")
+    }
+
 }
