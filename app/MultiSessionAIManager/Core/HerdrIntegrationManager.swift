@@ -121,7 +121,7 @@ final class HerdrIntegrationManager {
         ),
         .init(
             displayName: "Antigravity CLI", herdrTarget: "antigravity-cli",
-            executableAliases: ["agy"]),
+            executableAliases: ["agy", "antigravity", "antigravity-cli"]),
         .init(displayName: "Grok", herdrTarget: "grok", executableAliases: ["grok"]),
     ]
 

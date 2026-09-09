@@ -478,4 +478,11 @@ dd if=/dev/zero bs=1024 count=256 2>/dev/null | tr '\0' x > "$MSAM_AGENT_UPDATER
 status=$("$UPDATER" status)
 [ "${#status}" -le 65536 ] || fail "status output is unbounded"
 
+# Lock is released after run-once completes so subsequent submissions succeed.
+new_host
+"$UPDATER" run-once
+batch=10000000-0000-4000-8000-000000000010
+write_request "$batch" codex manualApproval
+"$UPDATER" submit "$batch" >/dev/null || fail "submit failed after run-once"
+
 printf 'PASS: msam-agent-updater\n'

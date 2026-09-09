@@ -462,7 +462,7 @@ final class AgentUpdaterInstaller {
         return escaped
     }
 
-    nonisolated private static func message(for error: Error) -> String {
+    nonisolated static func message(for error: Error) -> String {
         switch error {
         case AgentUpdaterInstallerError.notConnected:
             "Connect and authenticate SSH to this host first."

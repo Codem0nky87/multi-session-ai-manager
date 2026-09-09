@@ -2,6 +2,9 @@
 set -eu
 umask 077
 
+DEFAULT_PATH="$HOME/.local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:$HOME/.gemini/antigravity-cli/bin"
+export PATH="${PATH:+$PATH:}$DEFAULT_PATH"
+
 PROTOCOL_VERSION=1
 MAX_RESTORE_ATTEMPTS=3
 MAX_REQUEST_BYTES=1048576
@@ -204,10 +207,8 @@ validate_request() {
   ' "$request"
 }
 
-submit_request() {
-  batch=${1:-}
-  valid_batch_id "$batch" || return 2
-  acquire_lock || return 75
+submit_request_locked() {
+  batch=$1
   request="$INCOMING_DIR/$batch.request"
   validate_request "$request" "$batch" || {
     log_message "rejected request $batch"
@@ -220,6 +221,16 @@ submit_request() {
   mv "$request" "$QUEUE_DIR/$batch.request"
   printf 'MSAM_AGENT_UPDATE_ACCEPTED\t1\t%s\tqueued\n' "$batch"
   log_message "queued request $batch"
+}
+
+submit_request() {
+  batch=${1:-}
+  valid_batch_id "$batch" || return 2
+  acquire_lock || return 75
+  submit_request_locked "$batch"
+  status=$?
+  release_lock
+  return "$status"
 }
 
 extract_version() {
@@ -281,7 +292,7 @@ tool_values() {
   case "$1" in
     claude) printf '%s\t%s\t%s\n' claude claude-code @anthropic-ai/claude-code ;;
     codex) printf '%s\t%s\t%s\n' codex codex @openai/codex ;;
-    antigravity) printf '%s\t%s\t%s\n' agy - - ;;
+    antigravity) printf '%s\t%s\t%s\n' agy antigravity - ;;
     *) return 1 ;;
   esac
 }
@@ -290,8 +301,8 @@ native_install_present() {
   tool=$1 native_path=$2
   case "$tool" in
     claude) [ -x "$native_path" ] && [ -d "$HOME/.local/share/claude/versions" ] ;;
-    codex) [ -x "$native_path" ] && [ -d "$HOME/.codex/packages/standalone" ] ;;
-    antigravity) [ -x "$native_path" ] ;;
+    codex) [ -x "$native_path" ] ;;
+    antigravity) [ -x "$native_path" ] || [ -x "$HOME/.gemini/antigravity-cli/bin/agy" ] || [ -x "$HOME/.gemini/antigravity-cli/bin/antigravity" ] ;;
     *) return 1 ;;
   esac
 }
@@ -391,6 +402,21 @@ install_antigravity_native() {
     return 1
   }
   chmod 700 "$staged"
+  if [ "$url" != "${url%.tar.gz}" ] || [ "$url" != "${url%.tgz}" ]; then
+    tar_dir="$STATE_DIR/antigravity-extract.$$"
+    rm -rf "$tar_dir"
+    mkdir -p "$tar_dir"
+    tar -xzf "$staged" -C "$tar_dir" || { rm -rf "$tar_dir" "$staged"; return 1; }
+    binary_extracted=$(find "$tar_dir" -type f \( -name "antigravity" -o -name "agy" \) | head -n 1)
+    if [ -z "$binary_extracted" ]; then
+      rm -rf "$tar_dir" "$staged"
+      return 1
+    fi
+    mv -f "$binary_extracted" "$staged.bin"
+    rm -rf "$tar_dir" "$staged"
+    staged="$staged.bin"
+    chmod 700 "$staged"
+  fi
   # Gatekeeper handling is policy-gated separately. Manual approval is never
   # replaced by UI scripting or a global security change.
   case "$policy" in manualApproval|verifiedVendorArtifacts) : ;; *) rm -f "$staged"; return 1 ;; esac
@@ -425,6 +451,29 @@ update_tool() {
   IFS=$old_ifs
   executable_name=$1 brew_package=$2 node_package=$3
   executable=$(command -v "$executable_name" 2>/dev/null || :)
+  if [ -z "$executable" ]; then
+    case "$tool" in
+      antigravity)
+        for cand in antigravity antigravity-cli agy; do
+          if command -v "$cand" >/dev/null 2>&1; then
+            executable=$(command -v "$cand")
+            executable_name=$cand
+            break
+          fi
+          if [ -x "$HOME/.local/bin/$cand" ]; then
+            executable="$HOME/.local/bin/$cand"
+            executable_name=$cand
+            break
+          fi
+          if [ -x "$HOME/.gemini/antigravity-cli/bin/$cand" ]; then
+            executable="$HOME/.gemini/antigravity-cli/bin/$cand"
+            executable_name=$cand
+            break
+          fi
+        done
+        ;;
+    esac
+  fi
   [ -n "$executable" ] || return 1
   before=$(extract_version "$(run_bounded "$INSPECT_TIMEOUT_SECONDS" "$executable" --version 2>/dev/null | head -n 1)")
   [ -n "$before" ] || return 1
@@ -752,8 +801,7 @@ finish_if_settled() {
   rm -f "$CURRENT_FILE"
 }
 
-run_once() {
-  acquire_lock || return 75
+run_once_locked() {
   batch=$(activate_next_batch 2>/dev/null || :)
   [ -n "$batch" ] || return 0
   batch_dir="$BATCHES_DIR/$batch"
@@ -830,6 +878,14 @@ EOF
     done
     finish_if_settled "$batch_dir"
   fi
+}
+
+run_once() {
+  acquire_lock || return 75
+  run_once_locked
+  status=$?
+  release_lock
+  return "$status"
 }
 
 status_output() {

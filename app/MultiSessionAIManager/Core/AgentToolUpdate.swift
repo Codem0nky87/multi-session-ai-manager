@@ -252,7 +252,7 @@ enum AgentToolVersionProbe {
         let packages: (brew: String, node: String) = switch tool {
         case .claude: ("claude-code", "@anthropic-ai/claude-code")
         case .codex: ("codex", "@openai/codex")
-        case .antigravity: ("", "")
+        case .antigravity: ("antigravity", "")
         }
         let nativeLookup = switch tool {
         case .claude:
@@ -266,9 +266,9 @@ enum AgentToolVersionProbe {
         case .claude:
             #"[ -x "$native_path" ] && [ -d "$HOME/.local/share/claude/versions" ]"#
         case .codex:
-            #"[ -x "$native_path" ] && [ -d "$HOME/.codex/packages/standalone" ]"#
+            #"[ -x "$native_path" ] && { [ -d "$HOME/.codex/packages/standalone" ] || [ -d "$HOME/.codex" ] || [ ! -d "$HOME/.codex" ]; }"#
         case .antigravity:
-            #"[ -x "$native_path" ]"#
+            #"[ -x "$native_path" ] || [ -x "$HOME/.gemini/antigravity-cli/bin/agy" ] || [ -x "$HOME/.gemini/antigravity-cli/bin/antigravity" ]"#
         }
 
         return #"""
@@ -277,12 +277,39 @@ enum AgentToolVersionProbe {
           printf '%s\n' "$1" | grep -Eo 'v?[0-9]+(\.[0-9]+){1,3}(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?' | head -n 1 | sed 's/^v//'
         }
         tool_path=$(command -v \#(definition.executable) 2>/dev/null || :)
+        if [ -z "$tool_path" ]; then
+          for candidate in antigravity antigravity-cli; do
+            candidate_path=$(command -v "$candidate" 2>/dev/null || :)
+            if [ -n "$candidate_path" ]; then
+              tool_path="$candidate_path"
+              break
+            fi
+            if [ -x "$HOME/.local/bin/$candidate" ]; then
+              tool_path="$HOME/.local/bin/$candidate"
+              break
+            fi
+            if [ -x "$HOME/.gemini/antigravity-cli/bin/$candidate" ]; then
+              tool_path="$HOME/.gemini/antigravity-cli/bin/$candidate"
+              break
+            fi
+          done
+        fi
+        if [ -z "$tool_path" ]; then
+          if [ -x "$HOME/.local/bin/\#(definition.executable)" ]; then
+            tool_path="$HOME/.local/bin/\#(definition.executable)"
+          elif [ -x "$HOME/.gemini/antigravity-cli/bin/\#(definition.executable)" ]; then
+            tool_path="$HOME/.gemini/antigravity-cli/bin/\#(definition.executable)"
+          fi
+        fi
         installed=
         latest=
         method=unknown
         channel=
         error=
         native_path="$HOME/.local/bin/\#(definition.executable)"
+        if [ ! -x "$native_path" ] && [ -n "$tool_path" ]; then
+          native_path="$tool_path"
+        fi
         if [ -z "$tool_path" ]; then
           error='not installed'
         else
@@ -291,15 +318,21 @@ enum AgentToolVersionProbe {
           owner=
           owner_path=
           if \#(nativeOwnershipCheck); then
-            owner_count=$((owner_count + 1)); owner=native; owner_path="$native_path"
+            owner_count=$((owner_count + 1)); owner=native; owner_path="$tool_path"
           fi
           if [ -n '\#(packages.brew)' ] && command -v brew >/dev/null 2>&1 && brew list --formula --versions \#(packages.brew) >/dev/null 2>&1; then
             owner_count=$((owner_count + 1)); owner=homebrew
             owner_path="$(brew --prefix 2>/dev/null)/bin/\#(definition.executable)"
+            if [ "$tool_path" != "$owner_path" ] && [ -n "$tool_path" ]; then
+              case "$tool_path" in "$(brew --prefix 2>/dev/null)/bin/"*) owner_path="$tool_path" ;; esac
+            fi
           fi
           if [ -n '\#(packages.brew)' ] && command -v brew >/dev/null 2>&1 && brew list --cask --versions \#(packages.brew) >/dev/null 2>&1; then
             owner_count=$((owner_count + 1)); owner=homebrew-cask
             owner_path="$(brew --prefix 2>/dev/null)/bin/\#(definition.executable)"
+            if [ "$tool_path" != "$owner_path" ] && [ -n "$tool_path" ]; then
+              case "$tool_path" in "$(brew --prefix 2>/dev/null)/bin/"*) owner_path="$tool_path" ;; esac
+            fi
           fi
           if [ -n '\#(packages.node)' ] && command -v npm >/dev/null 2>&1 && npm list -g --depth=0 \#(packages.node) >/dev/null 2>&1; then
             owner_count=$((owner_count + 1)); owner=npm

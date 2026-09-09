@@ -60,7 +60,7 @@ struct HerdrIntegrationManagerTests {
                 "qwen": ["qwen"],
                 "cursor": ["cursor-agent"],
                 "mastracode": ["mastracode"],
-                "antigravity-cli": ["agy"],
+                "antigravity-cli": ["agy", "antigravity", "antigravity-cli"],
                 "grok": ["grok"],
             ])
         #expect(HerdrIntegrationManager.targets.allSatisfy { !$0.displayName.isEmpty })

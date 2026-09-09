@@ -646,6 +646,8 @@ final class AgentUpdateManager {
             "The host did not confirm the durable update request. Refresh before retrying."
         case AgentUpdateManagerError.remoteCommandFailed(let status):
             "The host updater command exited with status \(status)."
+        case let error as AgentUpdaterInstallerError:
+            bounded(AgentUpdaterInstaller.message(for: error))
         case is CancellationError:
             "Cancelled."
         default:
