@@ -35,6 +35,27 @@ struct TerminalRenderedRow: Identifiable, Equatable, @unchecked Sendable {
         }
         return runs[...lastContent].map(\.text).joined()
     }
+
+    /// Character rendered at a specific 0-based column index, if present.
+    func character(atColumn targetCol: Int) -> Character? {
+        guard targetCol >= 0 else { return nil }
+        var current = 0
+        for run in runs {
+            let next = current + run.columns
+            if targetCol >= current && targetCol < next {
+                if run.isPadding { return " " }
+                let offset = targetCol - current
+                let chars = Array(run.text)
+                if offset < chars.count {
+                    return chars[offset]
+                }
+                return " "
+            }
+            current = next
+            if current > targetCol { break }
+        }
+        return nil
+    }
 }
 
 extension TerminalRenderedRow {

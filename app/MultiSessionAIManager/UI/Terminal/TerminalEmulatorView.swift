@@ -286,9 +286,20 @@ struct TerminalEmulatorView: View {
     /// Anchor once at the press point, then track the finger. Both are viewport
     /// points; `cellAt` converts using the live scroll offset, so a row revealed
     /// by auto-scroll maps correctly even though the finger has not moved.
+    /// Columns are clamped to the active context area so the selection never
+    /// enters or highlights the sidebar or adjacent panes.
     private func extendSelection(toContentPoint start: CGPoint, current: CGPoint) {
-        if selStart == nil { selStart = cellAtViewport(start) }
-        selEnd = cellAtViewport(current)
+        if selStart == nil {
+            let cell = cellAtViewport(start)
+            let bounds = emulator.contextColumnBounds(around: cell.col)
+            let clampedCol = min(max(cell.col, bounds.lowerBound), bounds.upperBound)
+            selStart = (col: clampedCol, row: cell.row)
+        }
+        let anchorCol = selStart?.col ?? 0
+        let bounds = emulator.contextColumnBounds(around: anchorCol)
+        let cell = cellAtViewport(current)
+        let clampedCol = min(max(cell.col, bounds.lowerBound), bounds.upperBound)
+        selEnd = (col: clampedCol, row: cell.row)
         selection?.setHasSelection(true)
     }
 
@@ -313,7 +324,11 @@ struct TerminalEmulatorView: View {
         )
         guard delta != 0, let autoScroll, autoScroll(delta) != 0 else { return }
         // the finger has not moved, but the content under it has
-        selEnd = cellAtViewport(CGPoint(x: 0, y: lastDragViewportY))
+        let anchorCol = selStart?.col ?? 0
+        let bounds = emulator.contextColumnBounds(around: anchorCol)
+        let cell = cellAtViewport(CGPoint(x: 0, y: lastDragViewportY))
+        let clampedCol = min(max(cell.col, bounds.lowerBound), bounds.upperBound)
+        selEnd = (col: clampedCol, row: cell.row)
     }
 
     private func stopAutoScroll() {
@@ -340,16 +355,21 @@ struct TerminalEmulatorView: View {
     }
 
     /// The selection highlight, in scroll-content coordinates. Single row → one rect;
-    /// multi-row → text-flow shape (first row start→end-of-line, full middle rows, last
-    /// row start→end col). Empty when there's no selection.
+    /// multi-row → text-flow shape (first row start→pane right, full middle rows within
+    /// pane bounds, last row pane left→end col). Empty when there's no selection.
     @ViewBuilder
     private var selectionHighlight: some View {
         if let start = selStart, let end = selEnd {
             let glyph = emulator.fontMetrics.boundingBox
-            let cols = max(emulator.cols, 1)
+            let bounds = emulator.contextColumnBounds(around: start.col)
             // Normalize so `a` is before `b` in reading order.
             let (a, b) = ordered(start, end)
-            let rects = selectionRects(a: a, b: b, cols: cols, glyph: glyph)
+            let rects = selectionRects(
+                a: a, b: b,
+                minCol: bounds.lowerBound,
+                maxCol: bounds.upperBound,
+                glyph: glyph
+            )
             ForEach(Array(rects.enumerated()), id: \.offset) { _, rect in
                 Rectangle()
                     .fill(Theme.accent.opacity(0.3))
@@ -365,12 +385,15 @@ struct TerminalEmulatorView: View {
         return (p, q)
     }
 
-    /// Highlight rects for an ordered selection `a`→`b` (text-flow shape).
+    /// Highlight rects for an ordered selection `a`→`b` (text-flow shape),
+    /// bounded by the context column range `[minCol, maxCol]`.
     private func selectionRects(a: (col: Int, row: Int), b: (col: Int, row: Int),
-                                cols: Int, glyph: CGSize) -> [CGRect] {
+                                minCol: Int, maxCol: Int, glyph: CGSize) -> [CGRect] {
         let w = glyph.width, h = glyph.height
         func rowRect(row: Int, fromCol: Int, toCol: Int) -> CGRect {
-            let lo = min(fromCol, toCol), hi = max(fromCol, toCol)
+            let lo = max(min(fromCol, toCol), minCol)
+            let hi = min(max(fromCol, toCol), maxCol)
+            guard hi >= lo else { return .zero }
             return CGRect(x: CGFloat(lo) * w, y: CGFloat(row) * h,
                           width: CGFloat(hi - lo + 1) * w, height: h)
         }
@@ -378,22 +401,27 @@ struct TerminalEmulatorView: View {
             return [rowRect(row: a.row, fromCol: a.col, toCol: b.col)]
         }
         var rects: [CGRect] = []
-        rects.append(rowRect(row: a.row, fromCol: a.col, toCol: cols - 1))   // first row → EOL
+        rects.append(rowRect(row: a.row, fromCol: a.col, toCol: maxCol))   // first row → pane right edge
         if b.row - a.row > 1 {
-            // Full middle rows as one block.
-            rects.append(CGRect(x: 0, y: CGFloat(a.row + 1) * h,
-                                width: CGFloat(cols) * w, height: CGFloat(b.row - a.row - 1) * h))
+            // Full middle rows as one block constrained to pane bounds
+            rects.append(CGRect(x: CGFloat(minCol) * w, y: CGFloat(a.row + 1) * h,
+                                width: CGFloat(maxCol - minCol + 1) * w,
+                                height: CGFloat(b.row - a.row - 1) * h))
         }
-        rects.append(rowRect(row: b.row, fromCol: 0, toCol: b.col))          // last row start → end
-        return rects
+        rects.append(rowRect(row: b.row, fromCol: minCol, toCol: b.col))          // last row pane left edge → end
+        return rects.filter { $0.width > 0 && $0.height > 0 }
     }
 
     /// Floating Copy / clear control, shown only while a selection exists. Pinned
     /// top-trailing of the terminal so it never covers the selection itself.
     private func copySelection() {
         guard let start = selStart, let end = selEnd else { return }
-        let text = emulator.selectedText(fromRow: start.row, fromCol: start.col,
-                                         toRow: end.row, toCol: end.col)
+        let bounds = emulator.contextColumnBounds(around: start.col)
+        let text = emulator.selectedText(
+            fromRow: start.row, fromCol: start.col,
+            toRow: end.row, toCol: end.col,
+            minCol: bounds.lowerBound, maxCol: bounds.upperBound
+        )
         UIPasteboard.general.string = text
         clearSelection()
         selection?.exit()

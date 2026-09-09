@@ -21,7 +21,15 @@ TAB=$(printf '\t')
 CODESIGN_COMMAND=${MSAM_AGENT_UPDATER_CODESIGN:-/usr/bin/codesign}
 SPCTL_COMMAND=${MSAM_AGENT_UPDATER_SPCTL:-/usr/sbin/spctl}
 XATTR_COMMAND=${MSAM_AGENT_UPDATER_XATTR:-/usr/bin/xattr}
-REALPATH_COMMAND=${MSAM_AGENT_UPDATER_REALPATH:-/usr/bin/realpath}
+if [ -n "${MSAM_AGENT_UPDATER_REALPATH:-}" ]; then
+  REALPATH_COMMAND="$MSAM_AGENT_UPDATER_REALPATH"
+elif [ -x /bin/realpath ]; then
+  REALPATH_COMMAND=/bin/realpath
+elif [ -x /usr/bin/realpath ]; then
+  REALPATH_COMMAND=/usr/bin/realpath
+else
+  REALPATH_COMMAND=$(command -v realpath 2>/dev/null || printf '/bin/realpath')
+fi
 STAT_COMMAND=${MSAM_AGENT_UPDATER_STAT:-/usr/bin/stat}
 UNAME_COMMAND=${MSAM_AGENT_UPDATER_UNAME:-/usr/bin/uname}
 
@@ -355,7 +363,18 @@ gatekeeper_ready() {
   [ "$team" = "$expected_team" ] && [ "$identifier" = "$expected_identifier" ] || return 2
   requirement=$(run_bounded "$INSPECT_TIMEOUT_SECONDS" "$CODESIGN_COMMAND" -dr - -- "$artifact" 2>&1 || :)
   case "$requirement" in *"$expected_team"*"$expected_identifier"*|*"$expected_identifier"*"$expected_team"*) : ;; *) return 2 ;; esac
-  run_bounded "$INSPECT_TIMEOUT_SECONDS" "$SPCTL_COMMAND" --assess --type execute --verbose=4 -- "$artifact" >/dev/null 2>&1 || return 2
+  spctl_out=$(run_bounded "$INSPECT_TIMEOUT_SECONDS" "$SPCTL_COMMAND" --assess --type execute --verbose=4 -- "$artifact" 2>&1 || :)
+  case "$spctl_out" in
+    *"rejected"*"source="*) return 2 ;;
+    *"the code is valid but does not seem to be an app"*|*"accepted"*|"")
+      if [ -n "$spctl_out" ] || run_bounded "$INSPECT_TIMEOUT_SECONDS" "$SPCTL_COMMAND" --assess --type execute --verbose=4 -- "$artifact" >/dev/null 2>&1; then
+        :
+      else
+        return 2
+      fi
+      ;;
+    *) return 2 ;;
+  esac
 
   # Re-resolve and re-stat immediately before the only mutation. A symlink swap,
   # directory, parent path, or inode change falls back to manual approval.
@@ -611,14 +630,35 @@ agent_kind() {
 }
 
 agent_conversation() {
-  printf '%s\n' "$1" | tr -d '\n' | sed -nE 's/.*"agent_session"[[:space:]]*:[[:space:]]*\{[^}]*"value"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/p' | head -n 1
+  value=$(printf '%s\n' "$1" | tr -d '\n' | sed -nE 's/.*"agent_session"[[:space:]]*:[[:space:]]*\{[^}]*"value"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/p' | head -n 1)
+  if [ -z "$value" ] && [ -n "${2:-}" ] && [ -n "${3:-}" ]; then
+    info=$(run_bounded "$INSPECT_TIMEOUT_SECONDS" env HERDR_SOCKET_PATH="$2" herdr pane process-info --pane "$3" 2>/dev/null || :)
+    value=$(printf '%s\n' "$info" | tr -d '\n' | sed -nE 's/.*"--conversation"[[:space:]]*,[[:space:]]*"([^"]*)".*/\1/p' | head -n 1)
+    [ -n "$value" ] || value=$(printf '%s\n' "$info" | tr -d '\n' | sed -nE 's/.*"--resume"[[:space:]]*,[[:space:]]*"([^"]*)".*/\1/p' | head -n 1)
+    [ -n "$value" ] || value=$(printf '%s\n' "$info" | tr -d '\n' | sed -nE 's/.*"resume"[[:space:]]*,[[:space:]]*"([^"]*)".*/\1/p' | head -n 1)
+    [ -n "$value" ] || value=$(printf '%s\n' "$info" | tr -d '\n' | sed -nE 's/.*--conversation[[:space:]]+([^ "]+).*/\1/p' | head -n 1)
+    [ -n "$value" ] || value=$(printf '%s\n' "$info" | tr -d '\n' | sed -nE 's/.*--resume[[:space:]]+([^ "]+).*/\1/p' | head -n 1)
+    [ -n "$value" ] || value=$(printf '%s\n' "$info" | tr -d '\n' | sed -nE 's/.*resume[[:space:]]+([^ "]+).*/\1/p' | head -n 1)
+  fi
+  printf '%s' "$value"
 }
 
 foreground_pid() {
   socket=$1 pane=$2
   info=$(run_bounded "$INSPECT_TIMEOUT_SECONDS" env HERDR_SOCKET_PATH="$socket" herdr pane process-info --pane "$pane" 2>/dev/null || :)
-  value=$(printf '%s\n' "$info" | tr -d '\n' | sed -nE 's/.*"foreground_pid"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p' | head -n 1)
-  [ -n "$value" ] || value=$(printf '%s\n' "$info" | tr -d '\n' | sed -nE 's/.*"foreground_processes"[^]]*"pid"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p' | head -n 1)
+  value=$(printf '%s\n' "$info" | awk '
+    /"foreground_processes"/ {
+      rest = substr($0, index($0, "\"foreground_processes\""))
+      if (match(rest, /"pid"[[:space:]]*:[[:space:]]*[0-9]+/)) {
+        s = substr(rest, RSTART, RLENGTH)
+        sub(/[^0-9]*/, "", s)
+        print s
+        exit
+      }
+    }
+  ')
+  [ -n "$value" ] || value=$(printf '%s\n' "$info" | tr -d '\n' | sed -nE 's/.*"foreground_process_group_id"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p' | head -n 1)
+  [ -n "$value" ] || value=$(printf '%s\n' "$info" | tr -d '\n' | sed -nE 's/.*"foreground_pid"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p' | head -n 1)
   [ -n "$value" ] || value=$(printf '%s\n' "$info" | tr -d '\n' | sed -nE 's/.*"foreground_pgid"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p' | head -n 1)
   [ -n "$value" ] || value=$(printf '%s\n' "$info" | tr -d '\n' | sed -nE 's/.*"shell_pid"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p' | head -n 1)
   printf '%s' "$value"
@@ -627,7 +667,7 @@ foreground_pid() {
 kind_matches() {
   expected=$1 actual=$2
   case "$expected:$actual" in
-    claude:claude|codex:codex|antigravity:agy|antigravity:antigravity-cli) return 0 ;;
+    claude:claude|codex:codex|antigravity:agy|antigravity:antigravity-cli|antigravity:antigravity) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -640,7 +680,9 @@ mark_target() {
 
 snapshot_is_expected() {
   snapshot=$1 tool=$2 conversation=$3
-  kind_matches "$tool" "$(agent_kind "$snapshot")" && [ "$(agent_conversation "$snapshot")" = "$conversation" ]
+  sock=${4:-${socket:-}}
+  p=${5:-${pane:-}}
+  kind_matches "$tool" "$(agent_kind "$snapshot")" && [ "$(agent_conversation "$snapshot" "$sock" "$p")" = "$conversation" ]
 }
 
 start_agent() {
@@ -731,7 +773,7 @@ process_target() {
       fi
       exit_attempts=$((exit_attempts + 1))
       write_value "$batch_dir/target.$index.exit-attempts" "$exit_attempts"
-      run_bounded "$INSPECT_TIMEOUT_SECONDS" env HERDR_SOCKET_PATH="$socket" herdr agent prompt "$pane" /exit --timeout 30000 >/dev/null 2>&1 || return 0
+      run_bounded "$INSPECT_TIMEOUT_SECONDS" env HERDR_SOCKET_PATH="$socket" herdr agent prompt "$pane" /exit >/dev/null 2>&1 || return 0
       snapshot=$(agent_snapshot "$socket" "$pane" 2>/dev/null || :)
       current_pid=$(foreground_pid "$socket" "$pane")
     fi
@@ -818,6 +860,29 @@ run_once_locked() {
     IFS=$old_ifs
     executable_name=${1:-}
     executable=$(command -v "$executable_name" 2>/dev/null || :)
+    if [ -z "$executable" ]; then
+      case "$approval_tool" in
+        antigravity)
+          for cand in antigravity antigravity-cli agy; do
+            if command -v "$cand" >/dev/null 2>&1; then
+              executable=$(command -v "$cand")
+              executable_name=$cand
+              break
+            fi
+            if [ -x "$HOME/.local/bin/$cand" ]; then
+              executable="$HOME/.local/bin/$cand"
+              executable_name=$cand
+              break
+            fi
+            if [ -x "$HOME/.gemini/antigravity-cli/bin/$cand" ]; then
+              executable="$HOME/.gemini/antigravity-cli/bin/$cand"
+              executable_name=$cand
+              break
+            fi
+          done
+          ;;
+      esac
+    fi
     if [ -z "$executable" ] || ! gatekeeper_ready "$approval_tool" "$executable" "$policy"; then
       return 0
     fi

@@ -443,22 +443,57 @@ final class TerminalEmulator {
 
     // MARK: - Selection / copy
 
+    /// Determines the context area / pane column bounds for a given target column.
+    func contextColumnBounds(around column: Int) -> ClosedRange<Int> {
+        let dividers = TerminalSelectionBounds.findVerticalDividers(in: lines, cols: cols)
+        return TerminalSelectionBounds.columnBounds(forCol: column, totalCols: cols, dividers: dividers)
+    }
+
     /// Text for an inclusive rendered-cell range (rows are the bounded,
     /// buffer-relative indices used by the `lines` ForEach; cols are 0-based).
     ///
-    /// `Terminal.getText` expects the same buffer-relative row space. The end column
-    /// is made inclusive (+1) so a single-cell selection still yields that cell's
-    /// character.
-    func selectedText(fromRow: Int, fromCol: Int, toRow: Int, toCol: Int) -> String {
+    /// When `minCol` and `maxCol` are provided, row bounds constrain the selection
+    /// to the active context area so sidebar text or adjacent split panes are not copied.
+    func selectedText(
+        fromRow: Int, fromCol: Int,
+        toRow: Int, toCol: Int,
+        minCol: Int? = nil, maxCol: Int? = nil
+    ) -> String {
         var startRow = fromRow, startCol = fromCol
         var endRow = toRow, endCol = toCol
         if endRow < startRow || (endRow == startRow && endCol < startCol) {
             swap(&startRow, &endRow)
             swap(&startCol, &endCol)
         }
-        let start = Position(col: max(startCol, 0), row: max(startRow, 0))
-        let end = Position(col: max(endCol, 0) + 1, row: max(endRow, 0))
-        return terminal.getText(start: start, end: end)
+        let colMin = max(minCol ?? 0, 0)
+        let colMax = min(maxCol ?? (cols - 1), cols - 1)
+
+        startCol = min(max(startCol, colMin), colMax)
+        endCol = min(max(endCol, colMin), colMax)
+
+        if startRow == endRow {
+            let start = Position(col: min(startCol, endCol), row: max(startRow, 0))
+            let end = Position(col: max(startCol, endCol) + 1, row: max(startRow, 0))
+            return terminal.getText(start: start, end: end)
+                .replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression)
+        }
+
+        var lineTexts: [String] = []
+        lineTexts.reserveCapacity(endRow - startRow + 1)
+        for r in startRow...endRow {
+            let rowStartCol = (r == startRow) ? startCol : colMin
+            let rowEndCol = (r == endRow) ? endCol : colMax
+            guard rowEndCol >= rowStartCol else {
+                lineTexts.append("")
+                continue
+            }
+            let start = Position(col: rowStartCol, row: max(r, 0))
+            let end = Position(col: rowEndCol + 1, row: max(r, 0))
+            let rawText = terminal.getText(start: start, end: end)
+            let trimmed = rawText.replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression)
+            lineTexts.append(trimmed)
+        }
+        return lineTexts.joined(separator: "\n")
     }
 
     /// Plain text for the currently visible terminal viewport. Used as a local copy

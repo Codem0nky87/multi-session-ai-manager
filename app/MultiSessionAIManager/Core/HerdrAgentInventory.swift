@@ -125,7 +125,7 @@ enum HerdrAgentInventory {
         let fresh = try parseAgent(value, session: session, expectedTool: snapshot.tool)
         guard fresh.paneID == snapshot.paneID,
               fresh.tool == snapshot.tool,
-              fresh.conversationID == snapshot.conversationID else {
+              snapshot.conversationID == nil || fresh.conversationID == nil || fresh.conversationID == snapshot.conversationID else {
             throw HerdrAgentInventoryError.staleAgent(snapshot.paneID)
         }
 
@@ -139,13 +139,40 @@ enum HerdrAgentInventory {
         let foregroundPID = processes.lazy.compactMap { int32($0["pid"]) }.first
             ?? int32(processInfo["foreground_pid"])
 
+        var conversationID = fresh.conversationID ?? snapshot.conversationID
+        if conversationID == nil {
+            for proc in processes {
+                if let argv = proc["argv"] as? [String] {
+                    if let idx = argv.firstIndex(of: "--conversation"), idx + 1 < argv.count {
+                        let cand = argv[idx + 1]
+                        if isSafeField(cand, maximumBytes: 2_048) {
+                            conversationID = cand
+                            break
+                        }
+                    } else if let idx = argv.firstIndex(of: "--resume"), idx + 1 < argv.count {
+                        let cand = argv[idx + 1]
+                        if isSafeField(cand, maximumBytes: 2_048) {
+                            conversationID = cand
+                            break
+                        }
+                    } else if let idx = argv.firstIndex(of: "resume"), idx + 1 < argv.count {
+                        let cand = argv[idx + 1]
+                        if isSafeField(cand, maximumBytes: 2_048) {
+                            conversationID = cand
+                            break
+                        }
+                    }
+                }
+            }
+        }
+
         return HerdrAgentSnapshot(
             herdrSession: snapshot.herdrSession,
             socketPath: snapshot.socketPath,
             paneID: snapshot.paneID,
             tool: snapshot.tool,
             lifecycle: fresh.lifecycle,
-            conversationID: fresh.conversationID,
+            conversationID: conversationID,
             foregroundPID: foregroundPID,
             integrationCurrent: snapshot.integrationCurrent
         )

@@ -112,7 +112,7 @@ enum AgentToolRegistry {
             id: .antigravity,
             displayName: "Antigravity",
             executable: "agy",
-            herdrKinds: ["agy", "antigravity-cli"],
+            herdrKinds: ["agy", "antigravity-cli", "antigravity"],
             exitCommand: "/exit",
             macOSPublisher: .init(
                 teamIdentifier: "EQHXZ8M8AV",

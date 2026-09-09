@@ -18,7 +18,7 @@ import Testing
 
         #expect(claude.herdrKinds == ["claude"])
         #expect(codex.herdrKinds == ["codex"])
-        #expect(antigravity.herdrKinds == ["agy", "antigravity-cli"])
+        #expect(antigravity.herdrKinds == ["agy", "antigravity-cli", "antigravity"])
         #expect(AgentToolRegistry.definitions.allSatisfy { $0.exitCommand == "/exit" })
     }
 

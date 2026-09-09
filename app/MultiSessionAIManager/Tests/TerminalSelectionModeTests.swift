@@ -146,3 +146,66 @@ import UIKit
         #expect(pan != secondary)
     }
 }
+
+@Suite @MainActor struct TerminalSelectionBoundsTests {
+    @Test func isVerticalDividerCharIdentifiesBorderCharacters() {
+        #expect(TerminalSelectionBounds.isVerticalDividerChar("│"))
+        #expect(TerminalSelectionBounds.isVerticalDividerChar("┃"))
+        #expect(TerminalSelectionBounds.isVerticalDividerChar("║"))
+        #expect(TerminalSelectionBounds.isVerticalDividerChar("├"))
+        #expect(TerminalSelectionBounds.isVerticalDividerChar("┤"))
+        #expect(TerminalSelectionBounds.isVerticalDividerChar("┼"))
+        #expect(!TerminalSelectionBounds.isVerticalDividerChar("A"))
+        #expect(!TerminalSelectionBounds.isVerticalDividerChar(" "))
+        #expect(!TerminalSelectionBounds.isVerticalDividerChar("─"))
+    }
+
+    @Test func columnBoundsReturnsFullWidthWhenNoDividers() {
+        let bounds = TerminalSelectionBounds.columnBounds(forCol: 10, totalCols: 80, dividers: [])
+        #expect(bounds == 0...79)
+    }
+
+    @Test func columnBoundsConstrainsToContextAreaWhenTargetIsInSidebar() {
+        // Sidebar divider at col 20
+        let bounds = TerminalSelectionBounds.columnBounds(forCol: 5, totalCols: 80, dividers: [20])
+        #expect(bounds == 21...79)
+
+        // Target on divider itself
+        let dividerBounds = TerminalSelectionBounds.columnBounds(forCol: 20, totalCols: 80, dividers: [20])
+        #expect(dividerBounds == 21...79)
+    }
+
+    @Test func columnBoundsConstrainsToContextAreaWhenTargetIsInContext() {
+        let bounds = TerminalSelectionBounds.columnBounds(forCol: 35, totalCols: 80, dividers: [20])
+        #expect(bounds == 21...79)
+    }
+
+    @Test func columnBoundsHandlesSplitPanes() {
+        // Sidebar at 20, split pane divider at 50
+        let dividers = [20, 50]
+        let pane1 = TerminalSelectionBounds.columnBounds(forCol: 30, totalCols: 80, dividers: dividers)
+        #expect(pane1 == 21...49)
+
+        let pane2 = TerminalSelectionBounds.columnBounds(forCol: 60, totalCols: 80, dividers: dividers)
+        #expect(pane2 == 51...79)
+    }
+
+    @Test func selectedTextExcludesSidebarWhenBounded() {
+        let emulator = TerminalEmulator(cols: 50, rows: 4)
+        // Col 0-14: sidebar, Col 15: divider, Col 16+: context area
+        let row0 = "Sidebar 1      │Context line 1\r\n"
+        let row1 = "Sidebar 2      │Context line 2\r\n"
+        let row2 = "Sidebar 3      │Context line 3\r\n"
+        emulator.feed(Data((row0 + row1 + row2).utf8))
+        emulator.tick()
+
+        // Extract with minCol: 16, maxCol: 49 (context area bounds)
+        let text = emulator.selectedText(fromRow: 0, fromCol: 16, toRow: 2, toCol: 35, minCol: 16, maxCol: 49)
+        #expect(text.contains("Context line 1"))
+        #expect(text.contains("Context line 2"))
+        #expect(text.contains("Context line 3"))
+        #expect(!text.contains("Sidebar"))
+        #expect(!text.contains("│"))
+    }
+}
+
