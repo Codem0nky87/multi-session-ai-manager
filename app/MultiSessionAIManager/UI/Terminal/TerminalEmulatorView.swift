@@ -107,6 +107,8 @@ struct TerminalEmulatorView: View {
                 isAltScreen: emulator.isAlternateScreen,
                 cellSize: emulator.fontMetrics.boundingBox,
                 scrollEnabled: TerminalTouchPolicy.scrollEnabled(isSelecting: selecting),
+                inputEnabled: inputEnabled,
+                keyInputController: resolvedInputController,
                 onScrollHandle: { scroller, height in
                     autoScroll = scroller
                     viewportHeight = height
@@ -175,6 +177,16 @@ struct TerminalEmulatorView: View {
                 } else {
                     requestAutomaticFocusIfEligible()
                 }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIWindow.didBecomeKeyNotification)) { _ in
+                guard inputEnabled, isMounted else { return }
+                resolvedInputController.restoreAfterActivation()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIWindow.didResignKeyNotification)) { notification in
+                guard let window = notification.object as? UIWindow,
+                      let viewWindow = resolvedInputController.view?.window,
+                      window === viewWindow else { return }
+                resolvedInputController.suspendForDeactivation()
             }
         }
         .background(backgroundColor)
@@ -535,7 +547,9 @@ struct TerminalEmulatorView: View {
         TerminalViewLifecycleController.handle(
             event,
             stopAutoScroll: stopAutoScroll,
-            blurInput: resolvedInputController.blur
+            blurInput: resolvedInputController.blur,
+            suspendInput: resolvedInputController.suspendForDeactivation,
+            restoreInput: resolvedInputController.restoreAfterActivation
         )
     }
 }
@@ -556,15 +570,26 @@ struct TerminalViewLifecycleController {
     static func handle(
         _ event: Event,
         stopAutoScroll: () -> Void,
-        blurInput: () -> Void
+        blurInput: () -> Void,
+        suspendInput: (() -> Void)? = nil,
+        restoreInput: (() -> Void)? = nil
     ) {
         switch event {
-        case .sceneChanged(isActive: false), .disappeared:
+        case .sceneChanged(isActive: false):
+            stopAutoScroll()
+            if let suspendInput {
+                suspendInput()
+            } else {
+                blurInput()
+            }
+        case .disappeared:
             stopAutoScroll()
             blurInput()
         case .selectionChanged(isSelecting: false):
             stopAutoScroll()
-        case .sceneChanged(isActive: true), .selectionChanged(isSelecting: true):
+        case .sceneChanged(isActive: true):
+            restoreInput?()
+        case .selectionChanged(isSelecting: true):
             break
         }
     }
@@ -661,6 +686,8 @@ private struct TerminalScrollContainer<Content: View>: UIViewControllerRepresent
     let isAltScreen: Bool
     let cellSize: CGSize
     let scrollEnabled: Bool
+    let inputEnabled: Bool
+    let keyInputController: KeyInputController
     let onScrollHandle: ((@escaping (CGFloat) -> CGFloat), CGFloat) -> Void
     let onScrollOffsetChange: (CGFloat) -> Void
     let onBottomStateChange: (Bool) -> Void
@@ -677,7 +704,9 @@ private struct TerminalScrollContainer<Content: View>: UIViewControllerRepresent
                     onTap: onTap,
                     onSecondaryTap: onSecondaryTap,
                     onScrollWheel: onScrollWheel,
-                    onZoom: onZoom)
+                    onZoom: onZoom,
+                    inputEnabled: inputEnabled,
+                    keyInputController: keyInputController)
     }
 
     func makeUIViewController(context: Context) -> Controller<Content> {
@@ -698,6 +727,8 @@ private struct TerminalScrollContainer<Content: View>: UIViewControllerRepresent
         context.coordinator.onZoom = onZoom
         context.coordinator.isAltScreen = isAltScreen
         context.coordinator.cellSize = cellSize
+        context.coordinator.inputEnabled = inputEnabled
+        context.coordinator.keyInputController = keyInputController
         controller.hostingController.rootView = content()
         controller.scrollView.isScrollEnabled = scrollEnabled
         // Separate recognizer, separate switch: this one forwards drags to the
@@ -738,6 +769,8 @@ private struct TerminalScrollContainer<Content: View>: UIViewControllerRepresent
         var onUserInteractionBegan: () -> Void = {}
         weak var directScrollRecognizer: UIPanGestureRecognizer?
         weak var wheelRecognizer: UIPanGestureRecognizer?
+        var inputEnabled: Bool
+        weak var keyInputController: KeyInputController?
         private var directScrollSentTicks = 0
         private var wheelSentTicks = 0
         private var zoomSentSteps: CGFloat = 0
@@ -746,12 +779,16 @@ private struct TerminalScrollContainer<Content: View>: UIViewControllerRepresent
              onTap: @escaping (CGPoint) -> Void,
              onSecondaryTap: @escaping (CGPoint) -> Void,
              onScrollWheel: @escaping (Bool, Int, CGPoint) -> Void,
-             onZoom: @escaping (CGFloat, Bool) -> Void) {
+             onZoom: @escaping (CGFloat, Bool) -> Void,
+             inputEnabled: Bool,
+             keyInputController: KeyInputController) {
             self.onBottomStateChange = onBottomStateChange
             self.onTap = onTap
             self.onSecondaryTap = onSecondaryTap
             self.onScrollWheel = onScrollWheel
             self.onZoom = onZoom
+            self.inputEnabled = inputEnabled
+            self.keyInputController = keyInputController
         }
 
         func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
@@ -894,6 +931,37 @@ private struct TerminalScrollContainer<Content: View>: UIViewControllerRepresent
 
         required init?(coder: NSCoder) {
             fatalError("init(coder:) has not been implemented")
+        }
+
+        override var canBecomeFirstResponder: Bool { true }
+
+        override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+            if coordinator.inputEnabled, let keyInputController = coordinator.keyInputController {
+                if !keyInputController.isFocusRequested {
+                    keyInputController.focus()
+                }
+                if let view = keyInputController.view {
+                    view.pressesBegan(presses, with: event)
+                    return
+                }
+            }
+            super.pressesBegan(presses, with: event)
+        }
+
+        override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+            if let view = coordinator.keyInputController?.view, view.isFirstResponder {
+                view.pressesEnded(presses, with: event)
+                return
+            }
+            super.pressesEnded(presses, with: event)
+        }
+
+        override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+            if let view = coordinator.keyInputController?.view, view.isFirstResponder {
+                view.pressesCancelled(presses, with: event)
+                return
+            }
+            super.pressesCancelled(presses, with: event)
         }
 
         override func viewDidLoad() {
@@ -1124,6 +1192,7 @@ private struct KeyInputRepresentable: UIViewRepresentable {
 @Observable
 final class KeyInputController {
     private(set) var isFocusRequested = false
+    private(set) var wasFocusedBeforeDeactivation = false
     weak var view: TerminalKeyInputView? {
         didSet {
             guard isFocusRequested else { return }
@@ -1135,17 +1204,41 @@ final class KeyInputController {
     }
 
     func focus() {
+        wasFocusedBeforeDeactivation = false
         isFocusRequested = true
         focusAttachedViewIfRequested()
     }
 
     func blur() {
+        wasFocusedBeforeDeactivation = false
         isFocusRequested = false
         view?.resignFirstResponder()
     }
 
+    func suspendForDeactivation() {
+        wasFocusedBeforeDeactivation = isFocusRequested || (view?.isFirstResponder ?? false)
+        isFocusRequested = false
+        view?.resignFirstResponder()
+    }
+
+    func restoreAfterActivation() {
+        guard wasFocusedBeforeDeactivation else { return }
+        wasFocusedBeforeDeactivation = false
+        focus()
+    }
+
     private func focusAttachedViewIfRequested() {
         guard isFocusRequested, let view, !view.isFirstResponder else { return }
-        view.becomeFirstResponder()
+        if !view.becomeFirstResponder() {
+            Task { @MainActor [weak self] in
+                await Task.yield()
+                guard let self, self.isFocusRequested, let view = self.view, !view.isFirstResponder else { return }
+                if !view.becomeFirstResponder() {
+                    try? await Task.sleep(for: .milliseconds(50))
+                    guard self.isFocusRequested, let view = self.view, !view.isFirstResponder else { return }
+                    view.becomeFirstResponder()
+                }
+            }
+        }
     }
 }

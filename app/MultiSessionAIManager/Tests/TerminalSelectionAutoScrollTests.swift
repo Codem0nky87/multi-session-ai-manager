@@ -109,6 +109,74 @@ import Testing
         #expect(!controller.isFocusRequested)
         #expect(!inputView.isFirstResponder)
     }
+
+    @Test func inactiveSceneSuspendsFocusAndActiveSceneRestoresIt() {
+        let controller = KeyInputController()
+        controller.focus()
+        #expect(controller.isFocusRequested)
+
+        TerminalViewLifecycleController.handle(
+            .sceneChanged(isActive: false),
+            stopAutoScroll: {},
+            blurInput: controller.blur,
+            suspendInput: controller.suspendForDeactivation,
+            restoreInput: controller.restoreAfterActivation
+        )
+        #expect(!controller.isFocusRequested)
+        #expect(controller.wasFocusedBeforeDeactivation)
+
+        TerminalViewLifecycleController.handle(
+            .sceneChanged(isActive: true),
+            stopAutoScroll: {},
+            blurInput: controller.blur,
+            suspendInput: controller.suspendForDeactivation,
+            restoreInput: controller.restoreAfterActivation
+        )
+        #expect(controller.isFocusRequested)
+        #expect(!controller.wasFocusedBeforeDeactivation)
+    }
+
+    @Test func activeSceneDoesNotRestoreFocusWhenNotPreviouslyFocused() {
+        let controller = KeyInputController()
+        #expect(!controller.isFocusRequested)
+
+        TerminalViewLifecycleController.handle(
+            .sceneChanged(isActive: false),
+            stopAutoScroll: {},
+            blurInput: controller.blur,
+            suspendInput: controller.suspendForDeactivation,
+            restoreInput: controller.restoreAfterActivation
+        )
+        #expect(!controller.isFocusRequested)
+        #expect(!controller.wasFocusedBeforeDeactivation)
+
+        TerminalViewLifecycleController.handle(
+            .sceneChanged(isActive: true),
+            stopAutoScroll: {},
+            blurInput: controller.blur,
+            suspendInput: controller.suspendForDeactivation,
+            restoreInput: controller.restoreAfterActivation
+        )
+        #expect(!controller.isFocusRequested)
+        #expect(!controller.wasFocusedBeforeDeactivation)
+    }
+
+    @Test func disappearanceClearsFocusRestorationState() {
+        let controller = KeyInputController()
+        controller.focus()
+        controller.suspendForDeactivation()
+        #expect(controller.wasFocusedBeforeDeactivation)
+
+        TerminalViewLifecycleController.handle(
+            .disappeared,
+            stopAutoScroll: {},
+            blurInput: controller.blur,
+            suspendInput: controller.suspendForDeactivation,
+            restoreInput: controller.restoreAfterActivation
+        )
+        #expect(!controller.wasFocusedBeforeDeactivation)
+        #expect(!controller.isFocusRequested)
+    }
 }
 
 @Suite struct TerminalAutoScrollTickGateTests {
