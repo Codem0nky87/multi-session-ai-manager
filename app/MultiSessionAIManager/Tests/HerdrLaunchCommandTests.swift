@@ -15,6 +15,11 @@ import Testing
         #expect(script.contains("--session 'build box'"))
     }
 
+    @Test func namedSessionArgumentTrimsOnlySurroundingWhitespace() {
+        let script = HerdrLaunchCommand.remoteScript(sessionName: " \tbuild box's release-42\n ")
+        #expect(script.hasSuffix(#"exec herdr --session 'build box'\''s release-42'"#))
+    }
+
     @Test func sessionNameCannotEscapeIntoAnotherCommand() {
         let script = HerdrLaunchCommand.remoteScript(sessionName: "a'; rm -rf ~; echo '")
         // the dangerous text survives as DATA inside one quoted argument,
