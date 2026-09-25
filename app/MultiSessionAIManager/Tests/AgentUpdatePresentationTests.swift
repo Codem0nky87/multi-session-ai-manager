@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import MultiSessionAIManager
 
+/// Verifies agent update states, service actions, confirmation copy, and progress summaries.
 @Suite struct AgentUpdatePresentationTests {
     @Test func rowsDistinguishCurrentAvailableUnknownMissingAndAmbiguous() {
         #expect(AgentUpdatePresentation.row(for: version("1.0.0", "1.0.0", .native)).action == .none)
