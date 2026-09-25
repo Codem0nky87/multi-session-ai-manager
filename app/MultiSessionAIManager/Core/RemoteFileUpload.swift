@@ -38,7 +38,7 @@ enum RemoteFileUpload {
     /// more; this is generous headroom while still catching "the picker handed
     /// us a video". The whole file is held in memory to be written in one SFTP
     /// call, which is the real reason for a ceiling.
-    static let maximumByteCount = 25 * 1024 * 1024
+    static let maximumByteCount = 100 * 1024 * 1024
 
     /// Used when a file arrives with no usable extension.
     static let defaultExtension = "bin"

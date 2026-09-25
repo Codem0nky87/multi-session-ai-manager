@@ -302,13 +302,13 @@ import UIKit
     }
 
     @Test func anOversizeImageIsReportedInMegabytesNotBytes() {
-        // "26214401 bytes" tells the user nothing about whether their photo is
-        // unusual; "25.0 MB, limit 25 MB" does.
+        // "105906176 bytes" tells the user nothing about whether their photo is
+        // unusual; "101.0 MB, limit 100 MB" does.
         let message = FileSendSheet.message(
-            for: RemoteFileUpload.Failure.tooLarge(byteCount: 26 * 1_048_576)
+            for: RemoteFileUpload.Failure.tooLarge(byteCount: 101 * 1_048_576)
         )
-        #expect(message.contains("26.0 MB"))
-        #expect(message.contains("25 MB"))
+        #expect(message.contains("101.0 MB"))
+        #expect(message.contains("100 MB"))
     }
 
     @Test func anUnexpectedErrorStillProducesSomethingReadable() {

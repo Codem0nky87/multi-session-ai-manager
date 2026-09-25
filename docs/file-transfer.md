@@ -36,7 +36,7 @@ Two details matter:
 Home-relative, not workspace-relative: Herdr's active workspace has a working
 directory the app cannot see.
 
-Uploads are capped at **25 MB**.
+Uploads are capped at **100 MB**.
 
 ## host → iPad
 
