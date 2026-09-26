@@ -105,7 +105,6 @@ struct RootView: View {
     /// Modal text selection, shared with the terminal so the top bar can enable
     /// Copy only when a range exists, and so a tab switch can force-exit.
     @State private var selection = TerminalSelectionModel()
-    @State private var metricsModel = HostMetricsModel()
     private let keyStore = KeyStore(backing: RealKeychain())
     private let knownHosts = KnownHostsStore()
 
@@ -208,8 +207,10 @@ struct RootView: View {
                     .accessibilityIdentifier("msam.tab.theme")
                     .background(HerdrTheme.panel, ignoresSafeAreaEdges: [])
                     
-                    HostMetricsBarView(metricsModel: metricsModel)
-                        .background(HerdrTheme.panel, ignoresSafeAreaEdges: [])
+                    if let tab = selectedTab {
+                        HostMetricsBarView(metricsModel: tabs.session(for: tab).metrics)
+                            .background(HerdrTheme.panel, ignoresSafeAreaEdges: [])
+                    }
                 }
                 Button {
                     showingSettings = true

@@ -1,74 +1,80 @@
 import Foundation
 import Observation
 
-struct ProcessStat: Identifiable {
-    let id = UUID()
+struct ProcessStat: Identifiable, Decodable {
+    let id: String
     let name: String
     let usage: Double
+    
+    enum CodingKeys: String, CodingKey {
+        case id, name, usage
+    }
 }
 
-struct CPUMetrics {
-    var temperature: Double
-    var utilization: Double
-    var loadAverage1m: Double
-    var loadAverage5m: Double
-    var loadAverage15m: Double
+struct CPUMetrics: Decodable {
+    var temperature: Double = 0.0
+    var utilization: Double = 0.0
+    var loadAverage1m: Double = 0.0
+    var loadAverage5m: Double = 0.0
+    var loadAverage15m: Double = 0.0
     
-    var systemUsage: Double
-    var userUsage: Double
-    var idleUsage: Double
-    var efficiencyCoreUsage: Double
-    var performanceCoreUsage: Double
-    var uptime: String
+    var systemUsage: Double = 0.0
+    var userUsage: Double = 0.0
+    var idleUsage: Double = 0.0
+    var efficiencyCoreUsage: Double = 0.0
+    var performanceCoreUsage: Double = 0.0
+    var uptime: String = ""
     
-    var freqAllCores: Int
-    var freqEfficiency: Int
-    var freqPerformance: Int
+    var freqAllCores: Int = 0
+    var freqEfficiency: Int = 0
+    var freqPerformance: Int = 0
     
-    var history: [Double]
-    var topProcesses: [ProcessStat]
+    var history: [Double] = []
+    var topProcesses: [ProcessStat] = []
 }
 
-struct MemoryMetrics {
-    var usagePercent: Double
+struct MemoryMetrics: Decodable {
+    var usagePercent: Double = 0.0
 }
 
-struct GPUMetrics {
-    var usagePercent: Double
+struct GPUMetrics: Decodable {
+    var usagePercent: Double = 0.0
 }
 
 @Observable
 final class HostMetricsModel {
-    var cpu = CPUMetrics(
-        temperature: 48.0,
-        utilization: 43.0,
-        loadAverage1m: 2.31,
-        loadAverage5m: 2.59,
-        loadAverage15m: 2.50,
-        systemUsage: 9.0,
-        userUsage: 33.0,
-        idleUsage: 56.0,
-        efficiencyCoreUsage: 40.0,
-        performanceCoreUsage: 44.0,
-        uptime: "9 days, 5 hours",
-        freqAllCores: 2607,
-        freqEfficiency: 1951,
-        freqPerformance: 3264,
-        history: [10, 15, 30, 20, 15, 10, 45, 25, 20, 15, 55, 30, 25, 20, 15, 40, 25],
-        topProcesses: [
-            ProcessStat(name: "Docker", usage: 295.3),
-            ProcessStat(name: "WindowServer", usage: 37.4),
-            ProcessStat(name: "ScreensharingAgent", usage: 25.5),
-            ProcessStat(name: "agy", usage: 15.2),
-            ProcessStat(name: "wdavdaemon", usage: 13.0),
-            ProcessStat(name: "claude", usage: 9.0),
-            ProcessStat(name: "Stats", usage: 6.6)
-        ]
-    )
+    struct MetricsPayload: Decodable {
+        let cpu: CPUMetrics?
+        let memory: MemoryMetrics?
+        let gpu: GPUMetrics?
+    }
     
-    var memory = MemoryMetrics(usagePercent: 83.0)
-    var gpu = GPUMetrics(usagePercent: 39.0)
+    var cpu = CPUMetrics()
+    var memory = MemoryMetrics()
+    var gpu = GPUMetrics()
     
-    // In the future, we'll have a timer or stream updating this.
-    // For now, it's static mock data.
+    func update(from payload: MetricsPayload) {
+        if let newCPU = payload.cpu {
+            cpu.temperature = newCPU.temperature
+            cpu.utilization = newCPU.utilization
+            cpu.history.append(newCPU.utilization)
+            if cpu.history.count > 20 { cpu.history.removeFirst() }
+            
+            cpu.loadAverage1m = newCPU.loadAverage1m
+            cpu.loadAverage5m = newCPU.loadAverage5m
+            cpu.loadAverage15m = newCPU.loadAverage15m
+            cpu.systemUsage = newCPU.systemUsage
+            cpu.userUsage = newCPU.userUsage
+            cpu.idleUsage = newCPU.idleUsage
+            cpu.topProcesses = newCPU.topProcesses
+            cpu.uptime = newCPU.uptime
+        }
+        if let newMem = payload.memory {
+            memory.usagePercent = newMem.usagePercent
+        }
+        if let newGpu = payload.gpu {
+            gpu.usagePercent = newGpu.usagePercent
+        }
+    }
 }
+

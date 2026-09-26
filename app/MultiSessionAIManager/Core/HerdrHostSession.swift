@@ -121,6 +121,12 @@ final class HerdrHostSession {
     /// publish a stale watcher after a newer live stretch has begun.
     private var watchTask: Task<Void, Never>?
     private var watchGeneration: UInt64 = 0
+    
+    private var metricsChannel: PTYChannel?
+    private var metricsTask: Task<Void, Never>?
+    private var metricsGeneration: UInt64 = 0
+    let metrics = HostMetricsModel()
+    
     /// Paths queued on the host and not yet handled. Read by the UI.
     private(set) var incomingPaths: [String] = []
     private var sawMissingSentinel = false
@@ -351,6 +357,103 @@ final class HerdrHostSession {
         watchChannel = nil
     }
 
+    func ensureMetricsStream() async {
+        guard status == .live, let service = connection.provisioningCommandRunner else { return }
+        guard metricsChannel?.isOpen != true else { return }
+        if let metricsTask {
+            await metricsTask.value
+            return
+        }
+
+        metricsChannel?.close()
+        metricsChannel = nil
+        metricsGeneration &+= 1
+        let metricsAttemptGeneration = metricsGeneration
+        let sessionGeneration = operationGeneration
+
+        let accumulator = NIOLockedValueBox(RemoteFileDownload.LineAccumulator())
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.openMetricsCandidate(
+                using: service,
+                accumulator: accumulator,
+                metricsGeneration: metricsAttemptGeneration,
+                sessionGeneration: sessionGeneration
+            )
+        }
+        metricsTask = task
+        await task.value
+        guard metricsGeneration == metricsAttemptGeneration else { return }
+        metricsTask = nil
+    }
+    
+    private func openMetricsCandidate(
+        using service: SSHService,
+        accumulator: NIOLockedValueBox<RemoteFileDownload.LineAccumulator>,
+        metricsGeneration metricsAttemptGeneration: UInt64,
+        sessionGeneration: UInt64
+    ) async {
+        do {
+            try await MSAMMetricsInstaller.install(using: service)
+            
+            let candidate = try await service.openPTY(
+                command: "$HOME/.local/bin/msam-metrics --loop",
+                cols: 200,
+                rows: 24,
+                onOutput: { [weak self] data in
+                    let lines = accumulator.withLockedValue { $0.consume(data) }
+                    guard !lines.isEmpty else { return }
+                    Task { @MainActor [weak self] in
+                        self?.processMetrics(
+                            lines,
+                            metricsGeneration: metricsAttemptGeneration,
+                            sessionGeneration: sessionGeneration
+                        )
+                    }
+                }
+            )
+            guard metricsGeneration == metricsAttemptGeneration,
+                  operationGeneration == sessionGeneration,
+                  status == .live,
+                  !Task.isCancelled,
+                  candidate.isOpen else {
+                candidate.close()
+                return
+            }
+            metricsChannel = candidate
+        } catch {
+            // Failed to start metrics, that's fine
+        }
+    }
+    
+    private func retireMetrics() {
+        metricsGeneration &+= 1
+        metricsTask?.cancel()
+        metricsTask = nil
+        metricsChannel?.close()
+        metricsChannel = nil
+    }
+    
+    private func processMetrics(
+        _ lines: [String],
+        metricsGeneration: UInt64,
+        sessionGeneration: UInt64
+    ) {
+        guard self.metricsGeneration == metricsGeneration,
+              operationGeneration == sessionGeneration,
+              status == .live else { return }
+              
+        for line in lines {
+            guard let data = line.data(using: .utf8) else { continue }
+            do {
+                let parsed = try JSONDecoder().decode(HostMetricsModel.MetricsPayload.self, from: data)
+                self.metrics.update(from: parsed)
+            } catch {
+                // Ignore parse errors, could be incomplete line or bash warning
+            }
+        }
+    }
+
     private func enqueueIncoming(
         _ lines: [String],
         watchGeneration: UInt64,
@@ -425,6 +528,7 @@ final class HerdrHostSession {
             guard operationGeneration == generation else { return }
             if status == .live, alive {
                 await ensureWatching()
+                await ensureMetricsStream()
                 return
             }
             if status == .live, !alive {
@@ -447,6 +551,7 @@ final class HerdrHostSession {
             await start()
             if status == .live {
                 await ensureWatching()
+                await ensureMetricsStream()
             }
             return
         }
@@ -458,6 +563,7 @@ final class HerdrHostSession {
             await start()
             if status == .live {
                 await ensureWatching()
+                await ensureMetricsStream()
             }
             return
         }
@@ -529,6 +635,7 @@ final class HerdrHostSession {
             channel?.close()
             channel = nil
             retireWatch()
+            retireMetrics()
             terminal.pty = nil
             status = .idle
         }
@@ -567,6 +674,7 @@ final class HerdrHostSession {
         channel?.close()
         channel = nil
         retireWatch()
+        retireMetrics()
         terminal.pty = nil
         status = .connecting
 
@@ -624,6 +732,7 @@ final class HerdrHostSession {
             guard recoveryGeneration == generation, !Task.isCancelled else { return }
             if succeeded {
                 await ensureWatching()
+                await ensureMetricsStream()
                 finishRecovery(generation: generation)
                 return
             }
@@ -671,6 +780,7 @@ final class HerdrHostSession {
         // Its own channel, so it needs its own close -- otherwise every closed
         // tab leaves a `tail -F` running on the host for the life of the process.
         retireWatch()
+        retireMetrics()
         terminal.pty = nil
         // Permanently shut down frame scheduling. Ordinary visibility changes
         // only retire temporary frames and remain reversible.
