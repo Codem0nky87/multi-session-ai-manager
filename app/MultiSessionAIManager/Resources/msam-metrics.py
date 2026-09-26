@@ -45,9 +45,20 @@ def get_mac_metrics():
         metrics["cpu"]["loadAverage5m"] = load5
         metrics["cpu"]["loadAverage15m"] = load15
         
-        # macOS temperature requires root/powermetrics or compiled IOKit C code.
-        # We'll provide a synthetic temperature based on load average so the UI gauge works.
-        metrics["cpu"]["temperature"] = 40.0 + min(load1 * 10.0, 50.0)
+        # Try to read SMC temperatures via powermetrics for Intel Macs (requires passwordless sudo)
+        try:
+            pm_out = subprocess.check_output(['sudo', 'powermetrics', '--samplers', 'smc', '-n', '1', '-i', '1'], stderr=subprocess.DEVNULL).decode('utf-8')
+            for line in pm_out.split('\n'):
+                if 'CPU die temperature' in line or 'CPU thermal level' in line:
+                    # Format: "CPU die temperature: 45.32 C"
+                    parts = line.split(':')
+                    if len(parts) > 1:
+                        val = parts[1].strip().split(' ')[0]
+                        metrics["cpu"]["temperature"] = float(val)
+                        break
+        except Exception:
+            # Fallback for Apple Silicon where SMC sampler isn't supported and raw temp requires compiled IOKit C
+            pass
     except Exception:
         pass
 
