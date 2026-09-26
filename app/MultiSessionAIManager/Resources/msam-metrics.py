@@ -59,8 +59,31 @@ def get_mac_metrics():
         except Exception:
             # Fallback for Apple Silicon where SMC sampler isn't supported and raw temp requires compiled IOKit C
             pass
+            
+        # Try to read GPU utilization via powermetrics for macOS
+        try:
+            gpu_out = subprocess.check_output(['sudo', 'powermetrics', '--samplers', 'gpu_power', '-n', '1', '-i', '1'], stderr=subprocess.DEVNULL).decode('utf-8')
+            for line in gpu_out.split('\n'):
+                if 'GPU HW active residency:' in line:
+                    parts = line.split(':')
+                    if len(parts) > 1:
+                        val = parts[1].strip().split('%')[0]
+                        metrics["gpu"]["usagePercent"] = float(val)
+                        break
+        except Exception:
+            pass
+            
     except Exception:
         pass
+
+    # Try to read GPU utilization for Linux via nvidia-smi
+    try:
+        nvidia_out = subprocess.check_output(['nvidia-smi', '--query-gpu=utilization.gpu', '--format=csv,noheader,nounits'], stderr=subprocess.DEVNULL).decode('utf-8')
+        val = nvidia_out.strip().split('\n')[0]
+        metrics["gpu"]["usagePercent"] = float(val)
+    except Exception:
+        pass
+
 
     try:
         # Top processes
