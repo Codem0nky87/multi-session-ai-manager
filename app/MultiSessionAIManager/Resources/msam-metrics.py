@@ -6,6 +6,18 @@ import subprocess
 import time
 import math
 
+_last_net_bytes_recv = 0
+_last_net_bytes_sent = 0
+_last_net_time = 0
+
+def format_bytes(bytes_per_sec):
+    if bytes_per_sec < 1024:
+        return f"{int(bytes_per_sec)} B/s"
+    elif bytes_per_sec < 1024 * 1024:
+        return f"{int(bytes_per_sec / 1024)} KB/s"
+    else:
+        return f"{bytes_per_sec / (1024 * 1024):.1f} MB/s"
+
 def get_mac_metrics():
     metrics = {
         "cpu": {
@@ -78,6 +90,41 @@ def get_mac_metrics():
         user_idx = uptime_out.find(',', uptime_out.find(',', up_idx)+1)
         if up_idx != -1 and user_idx != -1:
             metrics["cpu"]["uptime"] = uptime_out[up_idx+3:user_idx].strip()
+    except Exception:
+        pass
+
+    global _last_net_bytes_recv, _last_net_bytes_sent, _last_net_time
+    try:
+        netstat_out = subprocess.check_output(['netstat', '-ib']).decode('utf-8')
+        total_recv = 0
+        total_sent = 0
+        for line in netstat_out.strip().split('\n')[1:]:
+            parts = line.split()
+            if len(parts) >= 10 and not parts[0].startswith('lo'):
+                try:
+                    # simplistic fallback for finding bytes based on standard mac netstat output
+                    # columns often are Name Mtu Network Address Ipkts Ierrs Ibytes Opkts Oerrs Obytes Coll
+                    # we will look at indices from the right
+                    total_recv += int(parts[-4])
+                    total_sent += int(parts[-2])
+                except Exception:
+                    pass
+        
+        now = time.time()
+        if _last_net_time > 0:
+            dt = now - _last_net_time
+            if dt > 0:
+                recv_speed = max(0, total_recv - _last_net_bytes_recv) / dt
+                sent_speed = max(0, total_sent - _last_net_bytes_sent) / dt
+                metrics["network"] = {
+                    "downloadSpeed": recv_speed,
+                    "uploadSpeed": sent_speed,
+                    "downloadString": format_bytes(recv_speed),
+                    "uploadString": format_bytes(sent_speed)
+                }
+        _last_net_bytes_recv = total_recv
+        _last_net_bytes_sent = total_sent
+        _last_net_time = now
     except Exception:
         pass
 
@@ -166,6 +213,40 @@ def get_linux_metrics():
             days = int(uptime_seconds // 86400)
             hours = int((uptime_seconds % 86400) // 3600)
             metrics["cpu"]["uptime"] = f"{days} days, {hours} hours"
+    except Exception:
+        pass
+
+    global _last_net_bytes_recv, _last_net_bytes_sent, _last_net_time
+    try:
+        with open('/proc/net/dev', 'r') as f:
+            lines = f.readlines()
+            total_recv = 0
+            total_sent = 0
+            for line in lines[2:]:
+                parts = line.split(':')
+                if len(parts) == 2:
+                    iface = parts[0].strip()
+                    if iface != 'lo':
+                        stats = parts[1].split()
+                        if len(stats) >= 9:
+                            total_recv += int(stats[0])
+                            total_sent += int(stats[8])
+                            
+            now = time.time()
+            if _last_net_time > 0:
+                dt = now - _last_net_time
+                if dt > 0:
+                    recv_speed = max(0, total_recv - _last_net_bytes_recv) / dt
+                    sent_speed = max(0, total_sent - _last_net_bytes_sent) / dt
+                    metrics["network"] = {
+                        "downloadSpeed": recv_speed,
+                        "uploadSpeed": sent_speed,
+                        "downloadString": format_bytes(recv_speed),
+                        "uploadString": format_bytes(sent_speed)
+                    }
+            _last_net_bytes_recv = total_recv
+            _last_net_bytes_sent = total_sent
+            _last_net_time = now
     except Exception:
         pass
 

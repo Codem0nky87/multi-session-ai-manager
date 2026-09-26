@@ -6,6 +6,7 @@ struct HostMetricsBarView: View {
     @State private var showingCPUDetail = false
     @State private var showingMemoryDetail = false
     @State private var showingGPUDetail = false
+    @State private var showingNetworkDetail = false
     
     var body: some View {
         HStack(spacing: 16) {
@@ -38,6 +39,10 @@ struct HostMetricsBarView: View {
                 .foregroundStyle(HerdrTheme.subtext)
             }
             .buttonStyle(.plain)
+            .popover(isPresented: $showingGPUDetail, arrowEdge: .top) {
+                GPUMetricsDetailView(metrics: metricsModel.gpu)
+                    .presentationCompactAdaptation(.popover)
+            }
             
             Button {
                 showingMemoryDetail.toggle()
@@ -51,18 +56,34 @@ struct HostMetricsBarView: View {
                 .foregroundStyle(HerdrTheme.subtext)
             }
             .buttonStyle(.plain)
-            
-            // Network indicator
-            VStack(spacing: 2) {
-                HStack(spacing: 2) {
-                    Image(systemName: "circle.fill").foregroundStyle(.red).font(.system(size: 6))
-                    Image(systemName: "circle.fill").foregroundStyle(.blue).font(.system(size: 6))
-                }
-                HStack(spacing: 2) {
-                    Image(systemName: "circle.fill").foregroundStyle(.blue).font(.system(size: 6))
-                    Image(systemName: "circle.fill").foregroundStyle(.blue).font(.system(size: 6))
-                }
+            .popover(isPresented: $showingMemoryDetail, arrowEdge: .top) {
+                MemoryMetricsDetailView(metrics: metricsModel.memory)
+                    .presentationCompactAdaptation(.popover)
             }
+            
+            Button {
+                showingNetworkDetail.toggle()
+            } label: {
+                HStack(spacing: 4) {
+                    VStack(spacing: 2) {
+                        Image(systemName: "arrow.down").foregroundStyle(.blue).font(.system(size: 8, weight: .bold))
+                        Image(systemName: "arrow.up").foregroundStyle(.red).font(.system(size: 8, weight: .bold))
+                    }
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(metricsModel.network.downloadString)
+                            .font(HerdrTheme.mono(.caption2, weight: .bold))
+                        Text(metricsModel.network.uploadString)
+                            .font(HerdrTheme.mono(.caption2, weight: .bold))
+                    }
+                }
+                .foregroundStyle(HerdrTheme.subtext)
+            }
+            .buttonStyle(.plain)
+            .popover(isPresented: $showingNetworkDetail, arrowEdge: .top) {
+                NetworkMetricsDetailView(metrics: metricsModel.network)
+                    .presentationCompactAdaptation(.popover)
+            }
+
         }
         .padding(.horizontal, 16)
     }

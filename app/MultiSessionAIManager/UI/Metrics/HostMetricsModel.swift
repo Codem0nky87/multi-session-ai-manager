@@ -41,17 +41,26 @@ struct GPUMetrics: Decodable {
     var usagePercent: Double = 0.0
 }
 
+struct NetworkMetrics: Decodable {
+    var downloadSpeed: Double = 0.0
+    var uploadSpeed: Double = 0.0
+    var downloadString: String = "0 KB/s"
+    var uploadString: String = "0 KB/s"
+}
+
 @Observable
 final class HostMetricsModel {
     struct MetricsPayload: Decodable {
         let cpu: CPUMetrics?
         let memory: MemoryMetrics?
         let gpu: GPUMetrics?
+        let network: NetworkMetrics?
     }
     
     var cpu = CPUMetrics()
     var memory = MemoryMetrics()
     var gpu = GPUMetrics()
+    var network = NetworkMetrics()
     
     func update(from payload: MetricsPayload) {
         if let newCPU = payload.cpu {
@@ -74,6 +83,12 @@ final class HostMetricsModel {
         }
         if let newGpu = payload.gpu {
             gpu.usagePercent = newGpu.usagePercent
+        }
+        if let newNet = payload.network {
+            network.downloadSpeed = newNet.downloadSpeed
+            network.uploadSpeed = newNet.uploadSpeed
+            network.downloadString = newNet.downloadString
+            network.uploadString = newNet.uploadString
         }
     }
 }
