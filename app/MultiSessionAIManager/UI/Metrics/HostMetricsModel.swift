@@ -39,6 +39,8 @@ struct MemoryMetrics: Decodable {
 
 struct GPUMetrics: Decodable {
     var usagePercent: Double = 0.0
+    var modelName: String = ""
+    var cores: Int = 0
 }
 
 struct NetworkMetrics: Decodable {

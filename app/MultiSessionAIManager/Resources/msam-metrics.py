@@ -70,6 +70,14 @@ def get_mac_metrics():
                         val = parts[1].strip().split('%')[0]
                         metrics["gpu"]["usagePercent"] = float(val)
                         break
+                        
+            # Get macOS GPU model and cores
+            sp_out = subprocess.check_output(['system_profiler', 'SPDisplaysDataType'], stderr=subprocess.DEVNULL).decode('utf-8')
+            for line in sp_out.split('\n'):
+                if 'Chipset Model:' in line:
+                    metrics["gpu"]["modelName"] = line.split(':')[1].strip()
+                elif 'Total Number of Cores:' in line:
+                    metrics["gpu"]["cores"] = int(line.split(':')[1].strip())
         except Exception:
             pass
             
@@ -78,9 +86,11 @@ def get_mac_metrics():
 
     # Try to read GPU utilization for Linux via nvidia-smi
     try:
-        nvidia_out = subprocess.check_output(['nvidia-smi', '--query-gpu=utilization.gpu', '--format=csv,noheader,nounits'], stderr=subprocess.DEVNULL).decode('utf-8')
-        val = nvidia_out.strip().split('\n')[0]
-        metrics["gpu"]["usagePercent"] = float(val)
+        nvidia_util = subprocess.check_output(['nvidia-smi', '--query-gpu=utilization.gpu', '--format=csv,noheader,nounits'], stderr=subprocess.DEVNULL).decode('utf-8')
+        metrics["gpu"]["usagePercent"] = float(nvidia_util.strip().split('\n')[0])
+        
+        nvidia_name = subprocess.check_output(['nvidia-smi', '--query-gpu=name', '--format=csv,noheader'], stderr=subprocess.DEVNULL).decode('utf-8')
+        metrics["gpu"]["modelName"] = nvidia_name.strip().split('\n')[0]
     except Exception:
         pass
 

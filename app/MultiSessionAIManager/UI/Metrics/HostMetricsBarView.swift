@@ -33,12 +33,13 @@ struct HostMetricsBarView: View {
                 VStack(spacing: 0) {
                     Text("GPU")
                         .font(HerdrTheme.mono(.caption2, weight: .bold))
-                    Text("\(Int(metricsModel.gpu.usagePercent))%")
+                    Text(metricsModel.gpu.modelName.isEmpty ? "--%" : "\(Int(metricsModel.gpu.usagePercent))%")
                         .font(HerdrTheme.mono(.caption, weight: .bold))
                 }
-                .foregroundStyle(HerdrTheme.subtext)
+                .foregroundStyle(metricsModel.gpu.modelName.isEmpty ? HerdrTheme.muted : HerdrTheme.subtext)
             }
             .buttonStyle(.plain)
+            .disabled(metricsModel.gpu.modelName.isEmpty)
             .popover(isPresented: $showingGPUDetail, arrowEdge: .top) {
                 GPUMetricsDetailView(metrics: metricsModel.gpu)
                     .presentationCompactAdaptation(.popover)
