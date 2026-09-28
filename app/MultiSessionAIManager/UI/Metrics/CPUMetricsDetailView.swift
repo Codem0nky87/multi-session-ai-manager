@@ -90,8 +90,8 @@ struct CPUMetricsDetailView: View {
                 detailRow(label: "System:", value: "\(Int(metrics.systemUsage))%", color: .red)
                 detailRow(label: "User:", value: "\(Int(metrics.userUsage))%", color: .blue)
                 detailRow(label: "Idle:", value: "\(Int(metrics.idleUsage))%", color: .gray)
-                detailRow(label: "Efficiency cores:", value: "\(Int(metrics.efficiencyCoreUsage))%", color: .cyan)
-                detailRow(label: "Performance cores:", value: "\(Int(metrics.performanceCoreUsage))%", color: .indigo)
+                if metrics.efficiencyCoreUsage > 0 || metrics.performanceCoreUsage > 0 { detailRow(label: "Efficiency cores:", value: "\(Int(metrics.efficiencyCoreUsage))%", color: .cyan) }
+                if metrics.efficiencyCoreUsage > 0 || metrics.performanceCoreUsage > 0 { detailRow(label: "Performance cores:", value: "\(Int(metrics.performanceCoreUsage))%", color: .indigo) }
                 
                 HStack {
                     Text("Uptime:")

@@ -35,6 +35,13 @@ struct CPUMetrics: Decodable {
 
 struct MemoryMetrics: Decodable {
     var usagePercent: Double = 0.0
+    var total: Double = 0.0
+    var used: Double = 0.0
+    var app: Double = 0.0
+    var wired: Double = 0.0
+    var compressed: Double = 0.0
+    var free: Double = 0.0
+    var swap: Double = 0.0
 }
 
 struct GPUMetrics: Decodable {
@@ -82,6 +89,13 @@ final class HostMetricsModel {
         }
         if let newMem = payload.memory {
             memory.usagePercent = newMem.usagePercent
+            memory.total = newMem.total
+            memory.used = newMem.used
+            memory.app = newMem.app
+            memory.wired = newMem.wired
+            memory.compressed = newMem.compressed
+            memory.free = newMem.free
+            memory.swap = newMem.swap
         }
         if let newGpu = payload.gpu {
             gpu.usagePercent = newGpu.usagePercent
