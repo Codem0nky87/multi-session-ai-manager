@@ -85,6 +85,8 @@ final class HostMetricsModel {
         }
         if let newGpu = payload.gpu {
             gpu.usagePercent = newGpu.usagePercent
+            gpu.modelName = newGpu.modelName
+            gpu.cores = newGpu.cores
         }
         if let newNet = payload.network {
             network.downloadSpeed = newNet.downloadSpeed

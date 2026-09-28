@@ -36,7 +36,11 @@ def get_mac_metrics():
             "topProcesses": []
         },
         "memory": {"usagePercent": 0.0},
-        "gpu": {"usagePercent": 0.0}
+        "gpu": {
+            "usagePercent": 0.0,
+            "modelName": "",
+            "cores": 0
+        }
     }
     
     try:
@@ -196,7 +200,11 @@ def get_linux_metrics():
             "topProcesses": []
         },
         "memory": {"usagePercent": 0.0},
-        "gpu": {"usagePercent": 0.0}
+        "gpu": {
+            "usagePercent": 0.0,
+            "modelName": "",
+            "cores": 0
+        }
     }
     
     try:
@@ -227,6 +235,15 @@ def get_linux_metrics():
         with open('/sys/class/thermal/thermal_zone0/temp', 'r') as f:
             temp_mc = int(f.read().strip())
             metrics["cpu"]["temperature"] = temp_mc / 1000.0
+    except Exception:
+        pass
+        
+    try:
+        nvidia_util = subprocess.check_output(['nvidia-smi', '--query-gpu=utilization.gpu', '--format=csv,noheader,nounits'], stderr=subprocess.DEVNULL).decode('utf-8')
+        metrics["gpu"]["usagePercent"] = float(nvidia_util.strip().split('\n')[0])
+        
+        nvidia_name = subprocess.check_output(['nvidia-smi', '--query-gpu=name', '--format=csv,noheader'], stderr=subprocess.DEVNULL).decode('utf-8')
+        metrics["gpu"]["modelName"] = nvidia_name.strip().split('\n')[0]
     except Exception:
         pass
 
