@@ -48,6 +48,9 @@ struct GPUMetrics: Decodable {
     var usagePercent: Double = 0.0
     var modelName: String = ""
     var cores: Int = 0
+    var temperature: Double = 0.0
+    var memoryUsed: Double = 0.0
+    var memoryTotal: Double = 0.0
 }
 
 struct NetworkMetrics: Decodable {
@@ -101,6 +104,9 @@ final class HostMetricsModel {
             gpu.usagePercent = newGpu.usagePercent
             gpu.modelName = newGpu.modelName
             gpu.cores = newGpu.cores
+            gpu.temperature = newGpu.temperature
+            gpu.memoryUsed = newGpu.memoryUsed
+            gpu.memoryTotal = newGpu.memoryTotal
         }
         if let newNet = payload.network {
             network.downloadSpeed = newNet.downloadSpeed

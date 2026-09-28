@@ -20,8 +20,17 @@ struct GPUMetricsDetailView: View {
             .padding(.bottom, 8)
             
             HStack(spacing: 24) {
+                if metrics.temperature > 0 {
+                    CircularGaugeView(value: metrics.temperature, max: 100, title: "\(Int(metrics.temperature))°C", color: .blue)
+                }
+                
                 CircularGaugeView(value: metrics.usagePercent, max: 100, title: "\(Int(metrics.usagePercent))%", color: .blue)
                     .scaleEffect(1.2)
+                    
+                if metrics.memoryTotal > 0 {
+                    let memPercent = (metrics.memoryUsed / metrics.memoryTotal) * 100.0
+                    CircularGaugeView(value: memPercent, max: 100, title: "\(Int(memPercent))%", color: .blue)
+                }
             }
             .padding(.bottom, 16)
             
@@ -36,6 +45,9 @@ struct GPUMetricsDetailView: View {
                     detailRow(label: "Cores:", value: "\(metrics.cores)")
                 }
                 detailRow(label: "Utilization:", value: "\(Int(metrics.usagePercent))%")
+                if metrics.memoryTotal > 0 {
+                    detailRow(label: "VRAM Used:", value: String(format: "%.1f / %.1f GB", metrics.memoryUsed / 1024.0, metrics.memoryTotal / 1024.0))
+                }
             }
         }
         .padding()

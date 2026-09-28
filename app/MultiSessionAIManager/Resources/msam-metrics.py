@@ -48,7 +48,10 @@ def get_mac_metrics():
         "gpu": {
             "usagePercent": 0.0,
             "modelName": "",
-            "cores": 0
+            "cores": 0,
+            "temperature": 0.0,
+            "memoryUsed": 0.0,
+            "memoryTotal": 0.0
         }
     }
     
@@ -259,7 +262,10 @@ def get_linux_metrics():
         "gpu": {
             "usagePercent": 0.0,
             "modelName": "",
-            "cores": 0
+            "cores": 0,
+            "temperature": 0.0,
+            "memoryUsed": 0.0,
+            "memoryTotal": 0.0
         }
     }
     
