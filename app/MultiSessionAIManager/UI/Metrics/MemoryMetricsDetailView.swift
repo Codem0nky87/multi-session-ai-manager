@@ -86,8 +86,8 @@ struct MemoryMetricsDetailView: View {
                 detailRow(label: "Free:", value: String(format: "%.2f GB", metrics.free), color: .gray.opacity(0.3))
                 if metrics.swap > 0 { detailRow(label: "Swap:", value: String(format: "%.2f GB", metrics.swap), color: .clear) }
             }
-            
-                    .padding()
+        }
+        .padding()
         .frame(width: 320)
         .background(HerdrTheme.background)
     }
