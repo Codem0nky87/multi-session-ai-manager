@@ -116,6 +116,11 @@ struct RootView: View {
                 // Only shown with a live tab: it asks Herdr over that tab's own
                 // authenticated SSH connection.
                 if selectedTab != nil {
+                    if let tab = selectedTab {
+                        HostMetricsBarView(metricsModel: tabs.session(for: tab).metrics)
+                            .background(HerdrTheme.panel, ignoresSafeAreaEdges: [])
+                    }
+                    
                     Button {
                         if selection.isSelecting { selection.exit() } else { selection.isSelecting = true }
                     } label: {
@@ -206,11 +211,6 @@ struct RootView: View {
                     .accessibilityLabel("Change tab theme")
                     .accessibilityIdentifier("msam.tab.theme")
                     .background(HerdrTheme.panel, ignoresSafeAreaEdges: [])
-                    
-                    if let tab = selectedTab {
-                        HostMetricsBarView(metricsModel: tabs.session(for: tab).metrics)
-                            .background(HerdrTheme.panel, ignoresSafeAreaEdges: [])
-                    }
                 }
                 Button {
                     showingSettings = true
