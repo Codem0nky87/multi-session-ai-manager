@@ -61,12 +61,6 @@ struct DiskMetricsDetailView: View {
                                         }
                                     }
                                     .frame(height: 8)
-                                    
-                                    if !volume.mountPoint.isEmpty {
-                                        Text(volume.mountPoint)
-                                            .font(HerdrTheme.mono(.caption2))
-                                            .foregroundStyle(HerdrTheme.muted)
-                                    }
                                 }
                                 .padding(.leading, 12)
                                 .padding(.top, 4)

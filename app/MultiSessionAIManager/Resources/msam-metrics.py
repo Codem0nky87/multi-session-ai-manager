@@ -98,19 +98,44 @@ def get_unix_disks():
         disks = {}
         for line in df_out.split('\n')[1:]:
             parts = line.split()
-            if len(parts) >= 9 and parts[0].startswith('/dev/'):
+            if len(parts) >= 6 and parts[0].startswith('/dev/'):
                 fs = parts[0]
                 total_kb = int(parts[1])
                 used_kb = int(parts[2])
-                mount_point = " ".join(parts[8:])
-                name = os.path.basename(mount_point) if mount_point != '/' else 'Root'
                 
                 if sys.platform == "darwin":
-                    disk_id = fs.split('/')[2].split('s')[0]
-                    model = "Apple APFS Container" if disk_id != "disk0" else "Apple SSD"
+                    mount_point = " ".join(parts[8:]) if len(parts) >= 9 else parts[-1]
+                else:
+                    mount_point = " ".join(parts[5:]) if len(parts) >= 6 else parts[-1]
+                    
+                name = os.path.basename(mount_point) if mount_point != '/' else 'Root'
+                
+                # Filter out macOS technical APFS volumes to keep it simple and clean
+                if sys.platform == "darwin":
+                    if mount_point in ['/System/Volumes/VM', '/System/Volumes/Preboot', '/System/Volumes/Update', 
+                                       '/System/Volumes/xarts', '/System/Volumes/iSCPreboot', '/System/Volumes/Hardware',
+                                       '/Volumes/Recovery']:
+                        continue
+                    if "cryptexd" in mount_point or "CoreSimulator" in mount_point:
+                        continue
+                    if name == "Data" and mount_point == "/System/Volumes/Data":
+                        continue # Hide Data volume to keep UI simple
+                    if name == "Root":
+                        name = "Macintosh HD"
+                        try:
+                            import shutil
+                            usage = shutil.disk_usage("/")
+                            used_kb = usage.used / 1024
+                            total_kb = usage.total / 1024
+                        except:
+                            pass
+                
+                if sys.platform == "darwin":
+                    import re; disk_id = re.match(r'/dev/(disk\d+)', fs).group(1) if re.match(r'/dev/(disk\d+)', fs) else fs
+                    model = "Apple SSD"
                 else:
                     import re
-                    m = re.match(r'/dev/([a-zA-Z]+)\d*', fs)
+                    m = re.match(r'/dev/(mapper/\w+|nvme\dn\d|[a-zA-Z]+)\d*', fs)
                     disk_id = m.group(1) if m else fs
                     model = "Linux Disk"
                 
@@ -130,7 +155,6 @@ def get_unix_disks():
                         "usedGB": used_kb / (1024**2)
                     })
         
-        # Filter out disks with 0 volumes
         valid_disks = [d for d in disks.values() if len(d["volumes"]) > 0]
         metrics["disks"] = valid_disks
     except Exception as e:
