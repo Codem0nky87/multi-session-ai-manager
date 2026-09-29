@@ -1,3 +1,24 @@
+struct DiskVolume: Decodable, Identifiable {
+    var id: String
+    var name: String
+    var mountPoint: String
+    var totalGB: Double
+    var usedGB: Double
+}
+
+struct PhysicalDisk: Decodable, Identifiable {
+    var id: String
+    var model: String
+    var volumes: [DiskVolume]
+}
+
+struct DiskMetrics: Decodable {
+    var usagePercent: Double = 0.0
+    var totalGB: Double = 0.0
+    var usedGB: Double = 0.0
+    var disks: [PhysicalDisk] = []
+}
+
 import Foundation
 import Observation
 
@@ -62,16 +83,20 @@ struct NetworkMetrics: Decodable {
 
 @Observable
 final class HostMetricsModel {
-    struct MetricsPayload: Decodable {
+    
+
+struct MetricsPayload: Decodable {
         let cpu: CPUMetrics?
         let memory: MemoryMetrics?
         let gpu: GPUMetrics?
+        let disk: DiskMetrics?
         let network: NetworkMetrics?
     }
     
     var cpu = CPUMetrics()
     var memory = MemoryMetrics()
     var gpu = GPUMetrics()
+    var disk = DiskMetrics()
     var network = NetworkMetrics()
     
     func update(from payload: MetricsPayload) {
@@ -100,6 +125,14 @@ final class HostMetricsModel {
             memory.free = newMem.free
             memory.swap = newMem.swap
         }
+        
+        if let newDisk = payload.disk {
+            self.disk.usagePercent = newDisk.usagePercent
+            self.disk.totalGB = newDisk.totalGB
+            self.disk.usedGB = newDisk.usedGB
+            self.disk.disks = newDisk.disks
+        }
+
         if let newGpu = payload.gpu {
             gpu.usagePercent = newGpu.usagePercent
             gpu.modelName = newGpu.modelName

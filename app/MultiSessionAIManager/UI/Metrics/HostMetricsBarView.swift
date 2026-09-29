@@ -7,6 +7,7 @@ struct HostMetricsBarView: View {
     @State private var showingMemoryDetail = false
     @State private var showingGPUDetail = false
     @State private var showingNetworkDetail = false
+    @State private var showingDiskDetail = false
     
     var body: some View {
         HStack(spacing: 16) {
@@ -45,6 +46,25 @@ struct HostMetricsBarView: View {
                     .presentationCompactAdaptation(.popover)
             }
             
+
+            Button {
+                showingDiskDetail.toggle()
+            } label: {
+                VStack(spacing: 0) {
+                    Text("DSK")
+                        .font(HerdrTheme.mono(.caption2, weight: .bold))
+                    Text("\(Int(metricsModel.disk.usagePercent))%")
+                        .font(HerdrTheme.mono(.caption, weight: .bold))
+                }
+                .foregroundStyle(metricsModel.disk.totalGB > 0 ? HerdrTheme.subtext : HerdrTheme.muted)
+            }
+            .buttonStyle(.plain)
+            .disabled(metricsModel.disk.totalGB == 0)
+            .popover(isPresented: $showingDiskDetail, arrowEdge: .top) {
+                DiskMetricsDetailView(metrics: metricsModel.disk)
+                    .presentationCompactAdaptation(.popover)
+            }
+
             Button {
                 showingMemoryDetail.toggle()
             } label: {
