@@ -209,7 +209,7 @@ def get_mac_metrics():
         
         # Try to read SMC temperatures via powermetrics for Intel Macs (requires passwordless sudo)
         try:
-            pm_out = subprocess.check_output(['sudo', 'powermetrics', '--samplers', 'smc', '-n', '1', '-i', '1'], stderr=subprocess.DEVNULL).decode('utf-8')
+            pm_out = subprocess.check_output(['sudo', 'powermetrics', '--samplers', 'smc', '-n', '1', '-i', '100'], stderr=subprocess.DEVNULL).decode('utf-8')
             for line in pm_out.split('\n'):
                 if 'CPU die temperature' in line or 'CPU thermal level' in line:
                     # Format: "CPU die temperature: 45.32 C"
@@ -224,7 +224,7 @@ def get_mac_metrics():
             
         # Try to read GPU utilization via powermetrics for macOS
         try:
-            gpu_out = subprocess.check_output(['sudo', 'powermetrics', '--samplers', 'gpu_power', '-n', '1', '-i', '1'], stderr=subprocess.DEVNULL).decode('utf-8')
+            gpu_out = subprocess.check_output(['sudo', 'powermetrics', '--samplers', 'gpu_power', '-n', '1', '-i', '100'], stderr=subprocess.DEVNULL).decode('utf-8')
             for line in gpu_out.split('\n'):
                 if 'GPU HW active residency:' in line:
                     parts = line.split(':')
