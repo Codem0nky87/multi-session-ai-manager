@@ -1,18 +1,9 @@
-import Foundation
+import re
 
-enum MSAMMetricsInstaller {
-    static let scriptRelativePath = ".local/bin/msam-metrics"
-    static let commandName = "msam-metrics"
-    static let timeout = Duration.seconds(30)
-    static let outputLimit = 64 * 1024
+with open("app/MultiSessionAIManager/Core/MSAMMetricsInstaller.swift", "r") as f:
+    code = f.read()
 
-    enum Failure: Error, Equatable {
-        case notConnected
-        case scriptNotFound
-        case uploadFailed(String)
-    }
-
-    static let windowsScript = """
+win_script = '''    static let windowsScript = """
 param([switch]$loop)
 
 function Get-Disks {
@@ -23,7 +14,7 @@ function Get-Disks {
     foreach ($vol in $volumes) {
         $id = if ($vol.DriveLetter) { $vol.DriveLetter + ':' } else { 'Vol' }
         $name = if ($vol.FileSystemLabel) { $vol.FileSystemLabel } else { 'Local Disk' }
-        $mountPoint = if ($vol.DriveLetter) { $vol.DriveLetter + ':\' } else { '' }
+        $mountPoint = if ($vol.DriveLetter) { $vol.DriveLetter + ':\\\\' } else { '' }
         $tGB = 0.0
         $uGB = 0.0
         if ($vol.Size -gt 0) {
@@ -69,7 +60,7 @@ function Get-Metrics {
     
     $gpuUtil = 0.0
     try {
-        $gpuSamples = Get-Counter '\\GPU Engine(*)\\Utilization Percentage' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty CounterSamples | Where-Object { $_.CookedValue -gt 0 }
+        $gpuSamples = Get-Counter '\\\\GPU Engine(*)\\\\Utilization Percentage' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty CounterSamples | Where-Object { $_.CookedValue -gt 0 }
         if ($null -ne $gpuSamples) {
             $gpuUtil = ($gpuSamples | Measure-Object -Property CookedValue -Sum).Sum
             if ($gpuUtil -gt 100.0) { $gpuUtil = 100.0 }
@@ -133,7 +124,9 @@ do {
     }
 } while ($loop)
 """
+'''
 
+replacement = win_script + """
     static func install(using service: SSHService) async throws {
         let isWindows = service.isWindows
         
@@ -147,55 +140,12 @@ do {
             do {
                 scriptData = try Data(contentsOf: scriptURL)
             } catch {
-                throw Failure.uploadFailed("Could not read msam-metrics.py from bundle: \(error)")
+                throw Failure.uploadFailed("Could not read msam-metrics.py from bundle: \\(error)")
             }
         }
-        let home: String
-        do {
-            if isWindows {
-                let probe = try await service.runCommand("powershell -Command \"if (!(Test-Path $env:USERPROFILE\\.local\\bin)) { New-Item -ItemType Directory -Force -Path $env:USERPROFILE\\.local\\bin | Out-Null }; Write-Host -NoNewline $env:USERPROFILE\"")
-                home = probe.trimmingCharacters(in: .whitespacesAndNewlines)
-            } else {
-                let probe = try await service.run(
-                    "mkdir -p \"$HOME/.local/bin\" && printf %s \"$HOME\"",
-                    timeout: timeout,
-                    outputLimit: outputLimit
-                )
-                home = probe.stdoutString.trimmingCharacters(in: .whitespacesAndNewlines)
-            }
-        } catch {
-            throw Failure.uploadFailed("could not prepare ~/.local/bin: \(error)")
-        }
-        
-        if !isWindows {
-            guard home.hasPrefix("/") else {
-                throw Failure.uploadFailed("the host did not report a home directory")
-            }
-        }
+"""
 
-        let winPath = home + "\\.local\\bin\\msam-metrics.ps1"
-        let posixPath = home + "/" + scriptRelativePath
-        
-        do {
-            if isWindows {
-                // write to windows path
-                // SSHService.writeFile on Windows uses SFTP which uses POSIX style paths relative to home usually, or absolute
-                // Actually SFTP supports absolute Windows paths if formatted properly.
-                // Let's use service.writeFile and cross fingers.
-                try await service.writeFile(scriptData, to: winPath.replacingOccurrences(of: "\\", with: "/"))
-            } else {
-                try await service.writeFile(scriptData, to: posixPath)
-            }
-        } catch {
-            throw Failure.uploadFailed("\(error)")
-        }
+code = re.sub(r'    static func install\(using service: SSHService\) async throws \{\n        let isWindows = service.isWindows.*?(?=        let home: String)', replacement.strip('\n') + '\n', code, flags=re.DOTALL)
 
-        if !isWindows {
-            do {
-                _ = try await service.run("chmod 0755 \"$HOME/\(scriptRelativePath)\"", timeout: timeout, outputLimit: outputLimit)
-            } catch {
-                throw Failure.uploadFailed("could not make script executable: \(error)")
-            }
-        }
-    }
-    }
+with open("app/MultiSessionAIManager/Core/MSAMMetricsInstaller.swift", "w") as f:
+    f.write(code)

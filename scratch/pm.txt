@@ -1,0 +1,167 @@
+Machine model: Mac15,12
+OS version: 26A428
+Boot arguments: 
+Boot time: Thu Sep 17 08:50:56 2026
+
+
+
+*** Sampled system activity (Sat Sep 26 16:12:17 2026 +0200) (24.17ms elapsed) ***
+
+*** Running tasks ***
+
+Name                               ID     CPU ms/s  samp ms/s  User%  Deadlines (<2 ms, 2-5 ms)  Wakeups (Intr, Pkg idle)  SFI ms/s  QoS (L/T)  RPID  PPID  Bytes Read  Bytes Written  Pageins  Packets (In/Out)       Bytes (In/Out)        GPU ms/s QOS (ms/s) Disabled Maint   BG      Util   Default  U-Init  U-Intr  PCPU ms/s %PCPU  Switches  Energy Impact  Instr/s      Cycles/s    P-Instr/s    P-Cycles/s
+com.openssh.sshd.501210F4-997E-4   3207   2753.22   2845.43                                      2202.25 0.00                                                 164007.8            0.0                                                        0.00                                                                                                    6385.45         22682958708  9547614672  17513027905  7223782898  
+  powermetrics                     11065  823.97    832.75     27.25  40.95   0.00               40.95   0.00               0.00      -1/-1      -1    -1     167714.5            0.0      0.0         0.0        0.0        0.0        0.0  0.00                 678.09  0.00    0.00    0.00    145.88  0.00    0.00    815.50    98.97  327.57    2072.00         6775720558   2976588802  6760955337   2953441419  
+  herdr                            23419  22.24     22.47      97.87  40.95   0.00               81.89   0.00               0.00      -1/-1      -1    -1          0.0            0.0      0.0         0.0        0.0        0.0        0.0  0.00                 0.00    0.00    0.00    0.00    22.24   0.00    0.00    22.24     100.00 0.00      91.09           433983666    80843377    433983666    80843377    
+  Google Chrome Helper             70618  13.43     13.57      83.87  0.00    0.00               81.89   0.00               0.00       0/ 0      -1    -1          0.0            0.0      0.0         0.0        0.0        0.0        0.0  0.00                 1.04    0.00    0.00    0.00    0.00    12.39   0.00    13.43     100.00 0.00      21.83           35256975     48806880    35256975     48806880    
+  claude                           7046   12.88     13.01      64.83  0.00    0.00               40.95   0.00               0.00      -1/-1      -1    -1          0.0            0.0      0.0         0.0        0.0        0.0        0.0  0.00                 0.00    0.00    0.00    0.00    12.88   0.00    0.00    6.72      52.18  163.78    12.14           13364830     37146179    6869374      24423586    
+  Google Chrome Helper (Renderer)  70625  7.03      7.10       88.47  0.00    0.00               0.00    0.00               0.00       0/ 0      -1    -1          0.0            0.0      0.0         0.0        0.0        0.0        0.0  0.00                 0.00    0.00    0.00    0.00    0.00    7.03    0.00    7.03      100.00 0.00      10.36           13197934     25553693    13197934     25553693    
+  sudo                             11063  2.12      2.15       14.86  0.00    0.00               0.00    0.00               0.00      -1/-1      -1    -1          0.0            0.0      0.0         0.0        0.0        0.0        0.0  0.00                 0.00    0.00    0.00    0.00    2.12    0.00    0.00    0.00      0.00   40.95     0.58            3700324      5744426     0            0           
+com.docker.docker                  3640   1014.85   1048.84                                      280.29  0.00                                                      0.0            0.0                                                        0.00                                                                                                    3025.00         8135518307   3591881332  7968941924   3424431815  
+  com.apple.Virtualization.Virtual 39875  908.41    918.08     87.47  204.73  0.00               245.68  0.00               0.00       0/ 0      -1    -1          0.0            0.0      0.0         0.0        0.0        0.0        0.0  0.00                 0.00    0.00    0.00    0.00    908.41  0.00    0.00    822.27    90.52  4299.32   1471.13         6801547606   3163766274  6689159493   2939139542  
+kernel_coalition                   1      216.83    224.10                                       560.57  0.00                                                      0.0            0.0                                                        0.00                                                                                                    527.24          1747861245   713711805   1722791150   666858739   
+  launchd                          1      182.92    184.87     38.18  0.00    0.00               0.00    0.00               0.00      -1/-1      -1    -1          0.0            0.0      0.0         0.0        0.0        0.0        0.0  0.00                 0.00    0.00    0.00    0.00    0.00    182.92  0.00    182.05    99.53  81.89     518.81          1749189595   636490962   1747965967   634185420   
+  kernel_task                      0      54.05     54.63      0.00   450.41  0.00               532.30  0.00               0.00      -1/-1      -1    -1          0.0            0.0      0.0         0.0        0.0        0.0        0.0  0.00                 52.48   0.00    0.00    0.00    0.00    0.00    0.00    21.86     40.44  81.89     47.65           109794353    130090589   79334929     79339147    
+com.microsoft.fresno               37030  12.38     12.80                                        0.00    0.00                                                      0.0            0.0                                                        0.00                                                                                                    21.83           42053234     39101013    40137274     34936111    
+  wdavdaemon                       52802  25.33     25.60      54.56  0.00    0.00               0.00    0.00               0.00       3/ 2      -1    -1          0.0            0.0      0.0         0.0        0.0        0.0        0.0  0.00                 0.00    0.00    0.00    25.33   0.00    0.00    0.00    14.30     56.46  900.81    26.22           55778373     80875601    34524493     50814950    
+  wdavdaemon_enterprise            52934  10.00     10.11      49.67  0.00    0.00               0.00    0.00               0.00       3/ 2      -1    -1          0.0            0.0      0.0         0.0        0.0        0.0        0.0  0.00                 0.00    0.00    0.00    10.00   0.00    0.00    0.00    8.97      89.63  122.84    18.17           39760944     35444057    38337050     32590863    
+com.apple.WindowServer             603    11.70     12.09                                        0.00    0.00                                                      0.0            0.0                                                        0.00                                                                                                    9.05            14504643     35933292    8366802      16327949    
+  WindowServer                     967    5.67      5.73       62.38  0.00    0.00               0.00    0.00               0.00       0/ 0      -1    -1          0.0            0.0      0.0         0.0        0.0        0.0        0.0  0.00                 5.67    0.00    0.00    0.00    0.00    0.00    0.00    2.05      36.08  163.78    4.39            7804988      17388913    4313407      7439382     
+com.apple.Spotlight                865    9.44      9.76                                         0.00    0.00                                                      0.0            0.0                                                        0.00                                                                                                    3.61            24211777     33528991    0            0           
+  mds_stores                       1192   12.75     12.89      30.64  0.00    0.00               0.00    0.00               0.00      -1/-1      -1    -1          0.0            0.0      0.0         0.0        0.0        0.0        0.0  0.00                 0.00    0.00    12.75   0.00    0.00    0.00    0.00    0.00      0.00   0.00      3.69            24758974     34286761    0            0           
+com.cloudflare.cloudflared         847    13.46     13.91                                        160.16  0.00                                                      0.0            0.0                                                        0.00                                                                                                    3.24            13688168     36680256    0            0           
+  cloudflared                      1183   13.76     13.91      29.66  122.84  0.00               163.78  0.00               0.00       3/ 2      -1    -1          0.0            0.0      0.0         0.0        0.0        0.0        0.0  0.00                 0.00    0.00    0.00    13.76   0.00    0.00    0.00    0.00      0.00   0.00      3.31            13997526     37509246    0            0           
+com.apple.Spotlight                517    11.57     11.95                                        40.04   0.00                                                      0.0            0.0                                                        0.00                                                                                                    2.92            15530773     31397570    0            0           
+  mds                              924    11.83     11.95      43.47  0.00    0.00               40.95   0.00               0.00      -1/-1      -1    -1          0.0            0.0      0.0         0.0        0.0        0.0        0.0  0.00                 1.47    0.00    2.57    7.13    0.00    0.66    0.00    0.00      0.00   0.00      2.99            15881775     32107169    0            0           
+com.apple.notifyd                  591    1.88      1.94                                         0.00    0.00                                                      0.0            0.0                                                        0.00                                                                                                    2.85            3308105      6824063     3308105      6824063     
+  notifyd                          961    1.92      1.94       26.67  0.00    0.00               0.00    0.00               0.00      -1/-1      -1    -1          0.0            0.0      0.0         0.0        0.0        0.0        0.0  0.00                 0.00    0.00    0.00    0.00    0.00    1.92    0.00    1.92      100.00 0.00      2.92            3382870      6978290     3382870      6978290     
+com.apple.DriverKit-AppleBCMWLAN   747    24.40     25.22                                        240.25  0.00                                                      0.0            0.0                                                        0.00                                                                                                    2.27            20719083     35362708    0            0           
+  com.apple.DriverKit-AppleBCMWLAN 1097   8.73      8.82       70.39  0.00    0.00               81.89   0.00               0.00      -1/-1      -1    -1          0.0            0.0      0.0         0.0        0.0        0.0        0.0  0.00                 8.73    0.00    0.00    0.00    0.00    0.00    0.00    0.00      0.00   0.00      1.05            6238643      15926284    0            0           
+com.apple.fseventsd                469    5.42      5.60                                         40.04   0.00                                                      0.0            0.0                                                        0.00                                                                                                    1.59            14389285     14890398    0            0           
+  fseventsd                        900    5.54      5.60       78.63  0.00    0.00               40.95   0.00               0.00      -1/-1      -1    -1          0.0            0.0      0.0         0.0        0.0        0.0        0.0  0.00                 5.54    0.00    0.00    0.00    0.00    0.00    0.00    0.00      0.00   0.00      1.62            14714489     15226927    0            0           
+UBF8T346G9.com.microsoft.wdav.ep   37034  11.41     11.79                                        40.04   0.00                                                      0.0            0.0                                                        0.00                                                                                                    1.44            14724628     16871345    0            0           
+  epsext                           53113  19.92     20.13      39.28  0.00    0.00               40.95   0.00               0.00      -1/-1      -1    -1          0.0            0.0      0.0         0.0        0.0        0.0        0.0  0.00                 10.09   0.00    5.98    0.00    3.42    0.43    0.00    0.00      0.00   0.00      4.07            34191030     39783055    0            0           
+com.microsoft.wdav.tray            37032  6.31      6.53                                         40.04   0.00                                                      0.0            0.0                                                        0.00                                                                                                    1.44            6302930      16908143    0            0           
+  Microsoft Defender Helper        52845  6.46      6.53       46.39  0.00    0.00               40.95   0.00               0.00       3/ 2      -1    -1          0.0            0.0      0.0         0.0        0.0        0.0        0.0  0.00                 0.00    0.00    0.00    6.46    0.00    0.00    0.00    0.00      0.00   0.00      1.47            6445379      17290274    0            0           
+com.apple.FileProvider             1173   3.27      3.38                                         80.08   0.00                                                      0.0            0.0                                                        0.00                                                                                                    0.72            4594302      7889113     0            0           
+  fileproviderd                    1798   3.34      3.38       45.86  0.00    0.00               81.89   0.00               0.00      -1/-1      -1    -1          0.0            0.0      0.0         0.0        0.0        0.0        0.0  0.00                 0.00    0.00    0.00    2.22    0.00    1.12    0.00    0.00      0.00   0.00      0.74            4698135      8067411     0            0           
+com.apple.SafariBookmarksSyncAge   2043   2.38      2.46                                         40.04   0.00                                                      0.0            0.0                                                        0.00                                                                                                    0.63            3395515      6373202     0            0           
+com.apple.loginwindow.B16B5A7B-0   609    3.29      3.40                                         40.04   0.00                                                      0.0            0.0                                                        0.00                                                                                                    0.30            1704224      3757685     0            0           
+  loginwindow                      970    3.37      3.40       74.77  0.00    0.00               40.95   0.00               0.00       0/ 0      -1    -1          0.0            0.0      0.0         0.0        0.0        0.0        0.0  0.00                 0.00    0.00    0.00    0.00    0.00    0.00    3.37    0.00      0.00   0.00      0.31            1742740      3842611     0            0           
+ALL_TASKS                          -2     2178.62   2178.62    55.58  869.02  0.00               1572.52 0.00               0.00      -1/-1      0     0      169501.1            0.0      0.0         0.0        0.0        0.0        0.0  0.00                 771.24  0.00    21.53   65.60   1106.61 208.66  3.40    1938.75   88.99  6248.70   4362.52         16337350022  7529115882  16016093717  6956883225  
+
+
+**** Battery and backlight usage ****
+
+Battery: percent_charge: 80
+
+
+**** Network activity ****
+
+out: 0.00 packets/s, 0.00 bytes/s
+in:  0.00 packets/s, 0.00 bytes/s
+
+
+**** Disk activity ****
+
+read: 0.00 ops/s 0.00 KBytes/s
+write: 0.00 ops/s 0.00 KBytes/s
+
+****  Interrupt distribution ****
+
+CPU 0:
+	Total IRQ: 5255.53 interrupts/sec
+	|-> IPI: 4758.94 interrupts/sec
+	|-> TIMER: 413.82 interrupts/sec
+CPU 1:
+	Total IRQ: 2151.87 interrupts/sec
+	|-> IPI: 1696.67 interrupts/sec
+	|-> TIMER: 455.20 interrupts/sec
+CPU 2:
+	Total IRQ: 1572.52 interrupts/sec
+	|-> IPI: 1158.70 interrupts/sec
+	|-> TIMER: 413.82 interrupts/sec
+CPU 3:
+	Total IRQ: 1282.84 interrupts/sec
+	|-> IPI: 910.41 interrupts/sec
+	|-> TIMER: 372.44 interrupts/sec
+CPU 4:
+	Total IRQ: 1075.93 interrupts/sec
+	|-> IPI: 496.59 interrupts/sec
+	|-> TIMER: 248.29 interrupts/sec
+CPU 5:
+	Total IRQ: 5834.88 interrupts/sec
+	|-> IPI: 5379.67 interrupts/sec
+	|-> TIMER: 372.44 interrupts/sec
+CPU 6:
+	Total IRQ: 2069.10 interrupts/sec
+	|-> IPI: 1820.81 interrupts/sec
+	|-> TIMER: 206.91 interrupts/sec
+CPU 7:
+	Total IRQ: 455.20 interrupts/sec
+	|-> IPI: 372.44 interrupts/sec
+	|-> TIMER: 82.76 interrupts/sec
+
+
+
+**** Processor usage ****
+
+E-Cluster HW active frequency: 2474 MHz
+E-Cluster HW active residency:  55.18% (744 MHz: 3.5% 1044 MHz:  12% 1476 MHz:   0% 2004 MHz:   0% 2268 MHz:   0% 2556 MHz:   0% 2748 MHz:  85%)
+E-Cluster idle residency:  44.82%
+E-Cluster SW requested overall frequency: 0 MHz
+E-Cluster average core count: 0.0
+CPU 0 frequency: 2518 MHz
+CPU 0 active residency:  50.52% (744 MHz: .83% 1044 MHz: 5.8% 1476 MHz:   0% 2004 MHz:   0% 2268 MHz:   0% 2556 MHz:   0% 2748 MHz:  44%)
+CPU 0 idle residency:  49.48%
+CPU 1 frequency: 2583 MHz
+CPU 1 active residency:  42.80% (744 MHz: .65% 1044 MHz: 3.4% 1476 MHz:   0% 2004 MHz:   0% 2268 MHz:   0% 2556 MHz:   0% 2748 MHz:  39%)
+CPU 1 idle residency:  57.20%
+CPU 2 frequency: 2585 MHz
+CPU 2 active residency:  35.16% (744 MHz: .09% 1044 MHz: 3.3% 1476 MHz:   0% 2004 MHz:   0% 2268 MHz:   0% 2556 MHz:   0% 2748 MHz:  32%)
+CPU 2 idle residency:  64.84%
+CPU 3 frequency: 2734 MHz
+CPU 3 active residency:  36.95% (744 MHz:   0% 1044 MHz: .31% 1476 MHz:   0% 2004 MHz:   0% 2268 MHz:   0% 2556 MHz:   0% 2748 MHz:  37%)
+CPU 3 idle residency:  63.05%
+
+P-Cluster HW active frequency: 3638 MHz
+P-Cluster HW active residency: 100.00% (816 MHz:   0% 1092 MHz:   0% 1356 MHz:   0% 1596 MHz:   0% 1884 MHz:   0% 2172 MHz:   0% 2424 MHz:   0% 2616 MHz:   0% 2808 MHz:   0% 2988 MHz:   0% 3144 MHz:   0% 3288 MHz:   0% 3420 MHz:   0% 3540 MHz:   0% 3636 MHz:  97% 3720 MHz: 2.7% 3780 MHz:   0% 3864 MHz:   0% 3960 MHz:   0% 4056 MHz:   0%)
+P-Cluster idle residency:   0.00%
+P-Cluster SW requested overall frequency: 0 MHz
+P-Cluster average core count: 0.0
+CPU 4 frequency: 4056 MHz
+CPU 4 active residency:  93.59% (816 MHz:   0% 1092 MHz:   0% 1356 MHz:   0% 1596 MHz:   0% 1884 MHz:   0% 2172 MHz:   0% 2424 MHz:   0% 2616 MHz:   0% 2808 MHz:   0% 2988 MHz:   0% 3144 MHz:   0% 3288 MHz:   0% 3420 MHz:   0% 3540 MHz:   0% 3636 MHz:   0% 3720 MHz:   0% 3780 MHz:   0% 3864 MHz:   0% 3960 MHz:   0% 4056 MHz:  94%)
+CPU 4 idle residency:   6.41%
+CPU 5 frequency: 4056 MHz
+CPU 5 active residency:  83.96% (816 MHz:   0% 1092 MHz:   0% 1356 MHz:   0% 1596 MHz:   0% 1884 MHz:   0% 2172 MHz:   0% 2424 MHz:   0% 2616 MHz:   0% 2808 MHz:   0% 2988 MHz:   0% 3144 MHz:   0% 3288 MHz:   0% 3420 MHz:   0% 3540 MHz:   0% 3636 MHz:   0% 3720 MHz:   0% 3780 MHz:   0% 3864 MHz:   0% 3960 MHz:   0% 4056 MHz:  84%)
+CPU 5 idle residency:  16.04%
+CPU 6 frequency: 4056 MHz
+CPU 6 active residency:  85.26% (816 MHz:   0% 1092 MHz:   0% 1356 MHz:   0% 1596 MHz:   0% 1884 MHz:   0% 2172 MHz:   0% 2424 MHz:   0% 2616 MHz:   0% 2808 MHz:   0% 2988 MHz:   0% 3144 MHz:   0% 3288 MHz:   0% 3420 MHz:   0% 3540 MHz:   0% 3636 MHz:   0% 3720 MHz:   0% 3780 MHz:   0% 3864 MHz:   0% 3960 MHz:   0% 4056 MHz:  85%)
+CPU 6 idle residency:  14.74%
+CPU 7 frequency: 4056 MHz
+CPU 7 active residency:  99.90% (816 MHz:   0% 1092 MHz:   0% 1356 MHz:   0% 1596 MHz:   0% 1884 MHz:   0% 2172 MHz:   0% 2424 MHz:   0% 2616 MHz:   0% 2808 MHz:   0% 2988 MHz:   0% 3144 MHz:   0% 3288 MHz:   0% 3420 MHz:   0% 3540 MHz:   0% 3636 MHz:   0% 3720 MHz:   0% 3780 MHz:   0% 3864 MHz:   0% 3960 MHz:   0% 4056 MHz: 100%)
+CPU 7 idle residency:   0.10%
+
+CPU Power: 9021 mW
+GPU Power: 0 mW
+ANE Power: 0 mW
+Combined Power (CPU + GPU + ANE): 9021 mW
+
+
+**** Thermal pressure ****
+
+Current pressure level: Nominal
+
+
+**** Selective Forced Idle ****
+
+
+**** GPU usage ****
+
+GPU HW active frequency: 0 MHz
+GPU HW active residency:   0.00% (338 MHz:   0% 618 MHz:   0% 796 MHz:   0% 836 MHz:   0% 928 MHz:   0% 952 MHz:   0% 1056 MHz:   0% 1053 MHz:   0% 1170 MHz:   0% 1152 MHz:   0% 1278 MHz:   0% 1204 MHz:   0% 1338 MHz:   0%)
+GPU SW requested state: (P1 :   0% P2 :   0% P3 :   0% P4 :   0% P5 :   0% P6 :   0% P7 :   0% P8 :   0% P9 :   0% P10 :   0% P11 :   0% P12 :   0% P13 :   0%)
+GPU SW state: (SW_P1 :   0% SW_P2 :   0% SW_P3 :   0% SW_P4 :   0% SW_P5 :   0% SW_P6 :   0% SW_P7 :   0% SW_P8 :   0% SW_P9 :   0% SW_P10 :   0% SW_P11 :   0% SW_P12 :   0% SW_P13 :   0%)
+GPU idle residency: 100.00%
+GPU Power: 0 mW
+

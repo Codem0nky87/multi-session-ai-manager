@@ -62,16 +62,24 @@ struct HostListView: View {
             }
             .sheet(item: $sheetRoute, onDismiss: continueNewHostOnboarding) { route in
                 switch route {
-                case .new, .edit:
+                case .new:
+                    AddHostWizardView(
+                        store: store,
+                        keyStore: keyStore,
+                        knownHosts: knownHosts,
+                        onSaved: { host, isNew in
+                            if isNew { pendingNewHostSetup = host }
+                        }
+                    )
+                    .preferredColorScheme(.dark)
+                case .edit:
                     NavigationStack {
                         HostEditView(
                             store: store,
                             keyStore: keyStore,
                             knownHosts: knownHosts,
                             host: route.host,
-                            onSaved: { host, isNew in
-                                if isNew { pendingNewHostSetup = host }
-                            }
+                            onSaved: { _, _ in }
                         )
                     }
                     .preferredColorScheme(.dark)
@@ -87,6 +95,13 @@ struct HostListView: View {
                                 to: store.hosts.first(where: { $0.id == host.id }) ?? host
                             ))
                         }
+                    )
+                    .preferredColorScheme(.dark)
+                case .info(let host):
+                    HostInfoSheet(
+                        host: host,
+                        keyStore: keyStore,
+                        knownHosts: knownHosts
                     )
                     .preferredColorScheme(.dark)
                 }
@@ -197,6 +212,15 @@ struct HostListView: View {
                     }
                 }
                 Spacer(minLength: Theme.Space.sm)
+                
+                Button {
+                    sheetRoute = .info(host)
+                } label: {
+                    Image(systemName: "info.circle")
+                        .font(.system(size: 20))
+                        .foregroundStyle(Theme.accent)
+                }
+                .buttonStyle(.plain)
             }
             .frame(minHeight: 44)
             .contentShape(Rectangle())
@@ -270,12 +294,14 @@ private enum HostSheetRoute: Identifiable {
     case new
     case edit(Host)
     case setup(Host)
+    case info(Host)
 
     var id: String {
         switch self {
         case .new: return "new"
         case .edit(let host): return host.id.uuidString
         case .setup(let host): return "setup-\(host.id.uuidString)"
+        case .info(let host): return "info-\(host.id.uuidString)"
         }
     }
 
@@ -284,6 +310,7 @@ private enum HostSheetRoute: Identifiable {
         case .new: return nil
         case .edit(let host): return host
         case .setup(let host): return host
+        case .info(let host): return host
         }
     }
 }

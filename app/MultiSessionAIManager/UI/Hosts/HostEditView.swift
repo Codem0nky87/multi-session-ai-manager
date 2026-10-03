@@ -99,8 +99,9 @@ struct HostEditView: View {
     }
 
     var body: some View {
-        ZStack {
-            AppBackground()
+        Group {
+            ZStack {
+                AppBackground()
 
             ScrollView {
                 VStack(spacing: Theme.Space.lg) {
@@ -128,16 +129,6 @@ struct HostEditView: View {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Cancel") { dismiss() }
                     .foregroundStyle(Theme.textSecondary)
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    showHostSetup = true
-                } label: {
-                    Image(systemName: "info.circle")
-                }
-                .foregroundStyle(Theme.accent)
-                .accessibilityLabel("Host Setup")
-                .accessibilityIdentifier("host.setup.help")
             }
         }
         .onAppear { refreshKeyIDs() }
@@ -234,6 +225,7 @@ struct HostEditView: View {
                 Text(SSHKeyDeletion.confirmationMessage)
             }
         )
+        }
         .alert(
             "Host Setup Error",
             isPresented: errorIsPresented

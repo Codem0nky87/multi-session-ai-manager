@@ -571,7 +571,7 @@ final class AgentUpdateManager {
         using service: SSHService
     ) async throws -> AgentUpdaterHostContext {
         let result = try await service.run(
-            AgentUpdaterInstaller.contextCommand,
+            AgentUpdaterInstaller.contextCommand(isWindows: service.isWindows),
             timeout: commandTimeout,
             outputLimit: outputLimit
         )

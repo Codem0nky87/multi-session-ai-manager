@@ -32,6 +32,7 @@ final class SSHService: @unchecked Sendable {
     let host: Host
     private let transport: SSHTransport
     private let knownHosts: KnownHostsStore
+    var isWindows: Bool = false
 
     init(host: Host, transport: SSHTransport, knownHosts: KnownHostsStore) {
         self.host = host
@@ -60,10 +61,13 @@ final class SSHService: @unchecked Sendable {
                 return true
             }
         }
+        
+        let probe = try? await transport.runCommand(.init(command: "echo %OS%", timeout: .seconds(3), outputLimit: 1024))
+        self.isWindows = probe?.stdoutString.contains("Windows_NT") ?? false
     }
-
     func runCommand(_ command: String) async throws -> String {
-        try await transport.runCommand(Self.loginShellCommand(command))
+        let shellCmd = isWindows ? command : Self.loginShellCommand(command)
+        return try await transport.runCommand(shellCmd)
     }
 
     /// Cheapest possible round trip on this connection: liveness proof and
@@ -72,7 +76,7 @@ final class SSHService: @unchecked Sendable {
     /// small enough to run on a heartbeat.
     func ping(timeout: Duration) async throws {
         _ = try await transport.runCommand(.init(
-            command: "true",
+            command: isWindows ? "cmd /c exit 0" : "true",
             timeout: timeout,
             outputLimit: 1024
         ))
@@ -83,12 +87,14 @@ final class SSHService: @unchecked Sendable {
         timeout: Duration,
         outputLimit: Int
     ) async throws -> SSHCommandResult {
-        try await transport.runCommand(.init(
-            command: Self.provisioningShellCommand(command),
+        let shellCmd = isWindows ? command : Self.provisioningShellCommand(command)
+        return try await transport.runCommand(.init(
+            command: shellCmd,
             timeout: timeout,
             outputLimit: outputLimit
         ))
     }
+
 
     /// Upload bytes to an absolute remote path on this connection. Used by
     /// `RemoteImageUpload`; deliberately takes an absolute path, because the

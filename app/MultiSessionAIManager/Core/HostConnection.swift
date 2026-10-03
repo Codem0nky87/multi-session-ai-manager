@@ -128,8 +128,10 @@ final class HostConnection {
         onClose: @escaping @Sendable () -> Void
     ) async throws -> PTYChannel {
         guard state == .connected else { throw PTYUnavailable() }
+        let isWindows = service.isWindows
+        let cmd = isWindows ? "powershell.exe" : HerdrLaunchCommand.launch(sessionName: sessionName)
         return try await service.openPTY(
-            command: HerdrLaunchCommand.launch(sessionName: sessionName),
+            command: cmd,
             cols: cols,
             rows: rows,
             onOutput: onOutput,

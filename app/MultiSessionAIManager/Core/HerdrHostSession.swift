@@ -396,8 +396,11 @@ final class HerdrHostSession {
         do {
             try await MSAMMetricsInstaller.install(using: service)
             
+            let isWindows = service.isWindows
+            let cmd = isWindows ? "powershell -ExecutionPolicy Bypass -Command \"& \\\"$env:USERPROFILE\\.local\\bin\\msam-metrics.ps1\\\" -loop\"" : "$HOME/.local/bin/msam-metrics --loop"
+            
             let candidate = try await service.openPTY(
-                command: "$HOME/.local/bin/msam-metrics --loop",
+                command: cmd,
                 cols: 200,
                 rows: 24,
                 onOutput: { [weak self] data in
