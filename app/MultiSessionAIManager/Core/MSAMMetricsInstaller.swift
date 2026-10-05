@@ -6,10 +6,18 @@ enum MSAMMetricsInstaller {
     static let timeout = Duration.seconds(30)
     static let outputLimit = 64 * 1024
 
-    enum Failure: Error, Equatable {
+    enum Failure: Error, Equatable, LocalizedError {
         case notConnected
         case scriptNotFound
         case uploadFailed(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .notConnected: "Connect to the host before installing hardware metrics."
+            case .scriptNotFound: "The app is missing its bundled hardware metrics helper."
+            case .uploadFailed(let message): "Could not install hardware metrics: \(message)"
+            }
+        }
     }
 
     static let windowsScript = """
@@ -178,13 +186,9 @@ do {
         
         do {
             if isWindows {
-                // write to windows path
-                // SSHService.writeFile on Windows uses SFTP which uses POSIX style paths relative to home usually, or absolute
-                // Actually SFTP supports absolute Windows paths if formatted properly.
-                // Let's use service.writeFile and cross fingers.
-                try await service.writeFile(scriptData, to: winPath.replacingOccurrences(of: "\\", with: "/"))
+                try await service.writeSetupFile(scriptData, to: winPath.replacingOccurrences(of: "\\", with: "/"))
             } else {
-                try await service.writeFile(scriptData, to: posixPath)
+                try await service.writeSetupFile(scriptData, to: posixPath)
             }
         } catch {
             throw Failure.uploadFailed("\(error)")

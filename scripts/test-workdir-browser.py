@@ -80,7 +80,7 @@ LogLevel ERROR
             model_tests = re.findall(r"@Test func (\w+)\(", (app / "Tests/FileBrowserModelTests.swift").read_text())
             selections = ["SSHDirectoryBrowserTests", "WorkdirBrowserLiveTests", "AddHostProvisioningModelTests"]
             if os.environ.get("MSAM_SERVICE_TESTS_ONLY") == "1":
-                selections = ["ServiceSetupLiveTests", "AgentUpdaterInstallerTemplateTests", "AgentUpdaterInstallerOperationTests", "AddHostProvisioningModelTests"]
+                selections = ["ServiceSetupLiveTests", "SSHSetupFileUploadTests", "AgentUpdaterInstallerTemplateTests", "AgentUpdaterInstallerOperationTests", "AddHostProvisioningModelTests"]
             selections += [name + "()" for name in model_tests]
             result = subprocess.run([
                 "xcodebuild", "-project", "MultiSessionAIManager.xcodeproj", "-scheme", "MultiSessionAIManager",

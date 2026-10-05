@@ -137,7 +137,7 @@ final class AgentUpdaterInstaller {
                 timeout: Self.commandTimeout,
                 outputLimit: Self.outputLimit
             )
-            try await service.writeFile(helper, to: Self.helperPath(for: context))
+            try await service.writeSetupFile(helper, to: Self.helperPath(for: context))
             let serviceData: Data
             switch context.platform {
             case .macOS:
@@ -153,7 +153,7 @@ final class AgentUpdaterInstaller {
             case .unsupported:
                 return
             }
-            try await service.writeFile(serviceData, to: Self.servicePath(for: context))
+            try await service.writeSetupFile(serviceData, to: Self.servicePath(for: context))
 
             var finaliseError: Error?
             do {
@@ -295,6 +295,7 @@ final class AgentUpdaterInstaller {
             """
         case .linux:
             return """
+            \(linuxUserServiceEnvironment(uid: context.uid))
             chmod 0700 \(helper) && chmod 0600 \(service) || exit 1
             systemctl --user daemon-reload || exit 1
             systemctl --user enable --now \(serviceFileName) || exit 1
@@ -321,6 +322,7 @@ final class AgentUpdaterInstaller {
             lingerProbe = "printf unknown"
         }
         return """
+        \(context.platform == .linux ? linuxUserServiceEnvironment(uid: context.uid) : "")
         protocol=$(\(helper) protocol 2>/dev/null || printf unknown)
         if \(serviceProbe); then service=active; else service=inactive; fi
         verify_dir=\(state)/.verify.$$
@@ -335,6 +337,15 @@ final class AgentUpdaterInstaller {
         printf 'platform=%s\\n' "$(uname -s 2>/dev/null || printf unknown)"
         printf 'linger=%s\\n' "$linger"
         printf 'MSAM_VERIFY_END\\n'
+        """
+    }
+
+    /// sshd configurations without PAM may omit these even when the user's
+    /// systemd manager is already running (for example, with linger enabled).
+    nonisolated static func linuxUserServiceEnvironment(uid: Int) -> String {
+        """
+        export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/\(uid)}"
+        export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}"
         """
     }
 

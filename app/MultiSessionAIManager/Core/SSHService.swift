@@ -111,6 +111,10 @@ final class SSHService: @unchecked Sendable {
         try await transport.writeFile(data, to: path)
     }
 
+    func writeSetupFile(_ data: Data, to path: String) async throws {
+        try await transport.writeSetupFile(data, to: path, isWindows: isWindows)
+    }
+
     /// Download a file from an absolute remote path on this connection.
     func readFile(at path: String) async throws -> Data {
         try await transport.readFile(at: path)
