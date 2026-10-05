@@ -158,6 +158,35 @@ private func makeFake() -> FakeFileTransfer {
     #expect(m.entries.isEmpty)
 }
 
+@MainActor
+@Test func failedNavigationKeepsPathAndListingTogether() async {
+    let model = FileBrowserModel(transfer: makeFake(), root: "/")
+    await model.load()
+    let entries = model.entries
+    await model.navigate(to: "/missing")
+    #expect(model.errorMessage != nil)
+    #expect(model.currentPath == "/")
+    #expect(model.entries == entries)
+    await model.navigate(to: "/home")
+    #expect(model.errorMessage == nil)
+    #expect(model.currentPath == "/home")
+}
+
+@Test func windowsDriveNavigationPreservesAbsolutePaths() {
+    #expect(FileBrowserModel.parent(of: "C:/Users/rufus") == "C:/Users")
+    #expect(FileBrowserModel.parent(of: "C:/Users") == "C:/")
+    #expect(FileBrowserModel.parent(of: "C:/") == "/")
+    #expect(FileBrowserModel.breadcrumbs(for: "C:/Users/rufus").map(\.path)
+            == ["/", "C:/", "C:/Users", "C:/Users/rufus"])
+}
+
+@Test func windowsShareNavigationPreservesShareBoundary() {
+    #expect(FileBrowserModel.parent(of: "//server/share/projects") == "//server/share")
+    #expect(FileBrowserModel.parent(of: "//server/share") == "/")
+    #expect(FileBrowserModel.breadcrumbs(for: "//server/share/projects").map(\.path)
+            == ["/", "//server/share", "//server/share/projects"])
+}
+
 // MARK: - Fake transfer write/read
 
 @MainActor

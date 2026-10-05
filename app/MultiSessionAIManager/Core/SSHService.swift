@@ -62,7 +62,9 @@ final class SSHService: @unchecked Sendable {
             }
         }
         
-        let probe = try? await transport.runCommand(.init(command: "echo %OS%", timeout: .seconds(3), outputLimit: 1024))
+        // CMD expands %OS%; PowerShell expands $env:OS. POSIX shells leave
+        // these without Windows_NT, including WSL where cmd.exe may exist.
+        let probe = try? await transport.runCommand(.init(command: "echo %OS% $env:OS", timeout: .seconds(3), outputLimit: 1024))
         self.isWindows = probe?.stdoutString.contains("Windows_NT") ?? false
     }
     func runCommand(_ command: String) async throws -> String {
@@ -93,6 +95,12 @@ final class SSHService: @unchecked Sendable {
             timeout: timeout,
             outputLimit: outputLimit
         ))
+    }
+
+    /// Bounded exec for commands that supply their own shell and do not need
+    /// the user's login profile (for example, directory browsing).
+    func runRaw(_ command: String, timeout: Duration, outputLimit: Int) async throws -> SSHCommandResult {
+        try await transport.runCommand(.init(command: command, timeout: timeout, outputLimit: outputLimit))
     }
 
 

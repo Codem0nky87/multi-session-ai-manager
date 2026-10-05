@@ -3,7 +3,7 @@ import SwiftUI
 /// Remote directory picker over `FileBrowserModel`. The user navigates the host's
 /// filesystem and taps "Use this folder" to return the current path via `onPick`.
 ///
-/// Pure UI glue: the model is built once in `.task` (the SFTP transfer captures
+/// Pure UI glue: the model is built once in `.task` (the SSH browser captures
 /// the host + known-hosts store), then the view threads taps through its async
 /// navigation methods. This is a *directory* picker — no preview/upload.
 struct WorkdirPickerSheet: View {
@@ -15,8 +15,11 @@ struct WorkdirPickerSheet: View {
 
     @State private var model: FileBrowserModel?
     /// Whether the very first `load()` has returned (so we can show a "Connecting…"
-    /// state instead of a blank list while the SFTP session is establishing).
+    /// state instead of a blank list while the SSH session is establishing).
     @State private var firstLoadDone = false
+    @State private var isNavigating = false
+    @State private var transfer: SSHDirectoryBrowser?
+    @State private var navigation = HostSetupRestoreOperationCoordinator()
 
     @Environment(\.dismiss) private var dismiss
     @Environment(ToastCenter.self) private var toasts
@@ -48,19 +51,30 @@ struct WorkdirPickerSheet: View {
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
-                        if let model { Task { await model.goUp() } }
+                        if let model { navigate { await model.goUp() } }
                     } label: {
                         Label("Up", systemImage: "arrow.up")
                     }
-                    .disabled(model?.atRoot ?? true)
+                    .disabled((model?.atRoot ?? true) || isNavigating)
                 }
             }
         }
         .preferredColorScheme(.dark)
         .task {
             if model == nil { model = makeModel() }
-            await model?.load()
-            withAnimation(Theme.spring) { firstLoadDone = true }
+            navigate {
+                // The starting folder is not a navigation boundary: the user
+                // must still be able to choose a sibling or parent directory.
+                await model?.navigate(to: startPath.isEmpty ? "~" : startPath)
+                withAnimation(Theme.spring) { firstLoadDone = true }
+            }
+        }
+        .onDisappear {
+            let transfer = transfer
+            Task {
+                await navigation.cancelAndWait()
+                await transfer?.disconnect()
+            }
         }
     }
 
@@ -101,12 +115,12 @@ struct WorkdirPickerSheet: View {
                 ForEach(model.visibleEntries, id: \.path) { entry in
                     if entry.isDirectory {
                         Button {
-                            Task { await model.open(entry) }
+                            navigate { await model.open(entry) }
                         } label: {
                             row(name: entry.name, glyph: "folder.fill", glyphColor: Theme.accent, muted: false)
                         }
                         .buttonStyle(.plain)
-                        .pressable()
+                        .disabled(isNavigating)
                     } else {
                         row(name: entry.name, glyph: "doc", glyphColor: Theme.textMuted, muted: true)
                             .opacity(0.55)
@@ -116,6 +130,10 @@ struct WorkdirPickerSheet: View {
             }
             .padding(Theme.Space.md)
         }
+        // Each directory starts at its first entry rather than inheriting the
+        // previous folder's scroll offset and hiding its initial children.
+        .id(model.currentPath)
+        .accessibilityIdentifier("workdir.folders")
     }
 
     private func row(name: String, glyph: String, glyphColor: Color, muted: Bool) -> some View {
@@ -170,13 +188,15 @@ struct WorkdirPickerSheet: View {
                     }
                     let isCurrent = crumb.path == model.currentPath
                     Button {
-                        Task { await model.navigate(to: crumb.path) }
+                        navigate { await model.navigate(to: crumb.path) }
                     } label: {
                         Text(crumb.name)
                             .font(Theme.mono(13, weight: isCurrent ? .semibold : .regular))
                             .foregroundStyle(isCurrent ? Theme.accent : Theme.textSecondary)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityIdentifier(crumb.path == "/" ? "workdir.root" : "workdir.breadcrumb.\(index)")
+                    .disabled(isNavigating)
                 }
             }
             .padding(.horizontal, Theme.Space.md)
@@ -195,7 +215,8 @@ struct WorkdirPickerSheet: View {
                 .truncationMode(.head)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-            NeonButton(title: "Use this folder", systemImage: "checkmark") {
+            NeonButton(title: "Use this folder", systemImage: "checkmark",
+                       enabled: !isNavigating && model.errorMessage == nil) {
                 onPick(model.currentPath)
                 toasts.success("Workdir set")
                 dismiss()
@@ -209,23 +230,19 @@ struct WorkdirPickerSheet: View {
     // MARK: - Model
 
     private func makeModel() -> FileBrowserModel {
-        let knownHostsKey = host.knownHostsKey
-        let kh = knownHosts
-        let transfer = CitadelFileTransfer(
-            host: host,
-            key: keyMaterial,
-            hostKeyValidator: { fp in
-                switch kh.verify(host: knownHostsKey, fingerprint: fp) {
-                case .match:
-                    return true
-                case .trustedNew:
-                    kh.pin(host: knownHostsKey, fingerprint: fp)
-                    return true
-                case .mismatch:
-                    return false
-                }
-            }
-        )
-        return FileBrowserModel(transfer: transfer, root: startPath.isEmpty ? "/" : startPath)
+        let transfer = SSHDirectoryBrowser(host: host, key: keyMaterial, knownHosts: knownHosts)
+        self.transfer = transfer
+        return FileBrowserModel(transfer: transfer, root: "/")
+    }
+
+    private func navigate(_ operation: @escaping @MainActor @Sendable () async -> Void) {
+        guard !isNavigating else { return }
+        isNavigating = true
+        if !navigation.start({
+            await operation()
+            isNavigating = false
+        }) {
+            isNavigating = false
+        }
     }
 }
