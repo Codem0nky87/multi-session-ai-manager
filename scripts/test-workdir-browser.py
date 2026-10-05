@@ -50,6 +50,7 @@ StrictModes no
 PasswordAuthentication no
 KbdInteractiveAuthentication no
 UsePAM no
+SetEnv SHELL={root}/fixture-shell
 AllowUsers {getpass.getuser()}
 AllowTcpForwarding no
 X11Forwarding no
@@ -78,13 +79,15 @@ LogLevel ERROR
             subprocess.run(["xcodegen", "generate"], cwd=app, check=True)
             model_tests = re.findall(r"@Test func (\w+)\(", (app / "Tests/FileBrowserModelTests.swift").read_text())
             selections = ["SSHDirectoryBrowserTests", "WorkdirBrowserLiveTests", "AddHostProvisioningModelTests"]
+            if os.environ.get("MSAM_SERVICE_TESTS_ONLY") == "1":
+                selections = ["ServiceSetupLiveTests", "AgentUpdaterInstallerTemplateTests", "AgentUpdaterInstallerOperationTests", "AddHostProvisioningModelTests"]
             selections += [name + "()" for name in model_tests]
             result = subprocess.run([
                 "xcodebuild", "-project", "MultiSessionAIManager.xcodeproj", "-scheme", "MultiSessionAIManager",
                 "-destination", destination, "-derivedDataPath", "build/DerivedData", "-parallel-testing-enabled", "NO",
                 "-collect-test-diagnostics", "never",
                 *["-only-testing:MultiSessionAIManagerTests/" + name for name in selections],
-                "-only-testing:MultiSessionAIManagerUITests/AddHostWizardUITests", "test"
+                *([] if os.environ.get("MSAM_SERVICE_TESTS_ONLY") == "1" else ["-only-testing:MultiSessionAIManagerUITests/AddHostWizardUITests"]), "test"
             ], cwd=app, env=env)
             return result.returncode
         finally:
