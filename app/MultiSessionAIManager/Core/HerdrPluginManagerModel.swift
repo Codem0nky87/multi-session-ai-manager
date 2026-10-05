@@ -147,7 +147,9 @@ final class HerdrPluginManagerModel {
             return
         }
         busyIdentifier = trimmed
-        defer { busyIdentifier = nil }
+        defer { busyIdentifier = nil; operation = nil }
+        errorMessage = nil
+        noticeMessage = nil
         await performInstall(source: trimmed, ref: ref, identifier: trimmed)
     }
 

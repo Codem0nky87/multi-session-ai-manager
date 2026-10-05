@@ -94,6 +94,9 @@ protocol SSHTransport: AnyObject, Sendable {
     /// than dialling a second one keeps the upload on the same host key the
     /// user already accepted, and costs no extra authentication.
     func writeFile(_ data: Data, to path: String) async throws
+    /// Bounded upload for small installer resources. POSIX hosts require only
+    /// SSH exec; Windows retains the existing file-transfer implementation.
+    func writeSetupFile(_ data: Data, to path: String, permissions: UInt16, isWindows: Bool) async throws
     /// Read a file from the host over SFTP on THIS connection.
     func readFile(at path: String) async throws -> Data
     /// Size in bytes, WITHOUT reading the file. Checked before `readFile` so a
@@ -106,6 +109,14 @@ protocol SSHTransport: AnyObject, Sendable {
 /// (for example a probe-only test double). The real and general fake transports
 /// override this; callers receive an explicit disabled/error state, never fake success.
 extension SSHTransport {
+    func writeSetupFile(_ data: Data, to path: String, permissions: UInt16, isWindows: Bool) async throws {
+        if isWindows {
+            try await writeFile(data, to: path)
+        } else {
+            try await SSHSetupFileUpload.upload(data, to: path, permissions: permissions, using: self)
+        }
+    }
+
     func openPTY(
         command: String,
         cols: Int,

@@ -133,6 +133,10 @@ final class FakeSSHTransport: SSHTransport, @unchecked Sendable {
         writtenFiles[path] = data
     }
 
+    func writeSetupFile(_ data: Data, to path: String, permissions: UInt16, isWindows: Bool) async throws {
+        try await writeFile(data, to: path)
+    }
+
     func readFile(at path: String) async throws -> Data {
         guard isConnected else { throw SSHTransportError.notConnected }
         if let readFileError { throw readFileError }

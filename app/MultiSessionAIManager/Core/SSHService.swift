@@ -62,7 +62,9 @@ final class SSHService: @unchecked Sendable {
             }
         }
         
-        let probe = try? await transport.runCommand(.init(command: "echo %OS%", timeout: .seconds(3), outputLimit: 1024))
+        // CMD expands %OS%; PowerShell expands $env:OS. POSIX shells leave
+        // these without Windows_NT, including WSL where cmd.exe may exist.
+        let probe = try? await transport.runCommand(.init(command: "echo %OS% $env:OS", timeout: .seconds(3), outputLimit: 1024))
         self.isWindows = probe?.stdoutString.contains("Windows_NT") ?? false
     }
     func runCommand(_ command: String) async throws -> String {
@@ -95,12 +97,22 @@ final class SSHService: @unchecked Sendable {
         ))
     }
 
+    /// Bounded exec for commands that supply their own shell and do not need
+    /// the user's login profile (for example, directory browsing).
+    func runRaw(_ command: String, timeout: Duration, outputLimit: Int) async throws -> SSHCommandResult {
+        try await transport.runCommand(.init(command: command, timeout: timeout, outputLimit: outputLimit))
+    }
+
 
     /// Upload bytes to an absolute remote path on this connection. Used by
     /// `RemoteImageUpload`; deliberately takes an absolute path, because the
     /// caller also types that path into a pane whose cwd it cannot see.
     func writeFile(_ data: Data, to path: String) async throws {
         try await transport.writeFile(data, to: path)
+    }
+
+    func writeSetupFile(_ data: Data, to path: String, permissions: UInt16 = 0o600) async throws {
+        try await transport.writeSetupFile(data, to: path, permissions: permissions, isWindows: isWindows)
     }
 
     /// Download a file from an absolute remote path on this connection.

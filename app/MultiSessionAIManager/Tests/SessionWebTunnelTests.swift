@@ -245,7 +245,7 @@ struct NIOSessionWebTunnelServerTests {
         )
         let listener = try await server.start(tunnel: tunnel) { _ in }
 
-        let startCommand = try #require(transport.commandsRun.first)
+        let startCommand = try #require(transport.commandsRun.last)
         #expect(startCommand.contains("BatchMode=yes"))
         #expect(startCommand.contains("StrictHostKeyChecking=accept-new"))
         #expect(startCommand.contains("ExitOnForwardFailure=yes"))
@@ -293,7 +293,7 @@ struct NIOSessionWebTunnelServerTests {
             hopPassword: "secret-hop-pw"
         ) { _ in }
 
-        let startCommand = try #require(transport.commandsRun.first)
+        let startCommand = try #require(transport.commandsRun.last)
         #expect(startCommand.contains("secret-hop-pw"))
         #expect(startCommand.contains("SSH_ASKPASS"))
         #expect(startCommand.contains("SSH_ASKPASS_REQUIRE"))
@@ -417,6 +417,7 @@ struct NIOSessionWebTunnelServerTests {
 
     @Test func passwordRemoteForwardFailureRunsDefensiveAskpassCleanup() async throws {
         let (service, transport) = try await connectedSSHService()
+        let connectedCommandCount = transport.commandsRun.count
         transport.defaultCommandResponse = "authentication failed"
         let controlPath = "/tmp/failed-password-forward.sock"
         let server = NIOSessionWebTunnelServer(
@@ -441,7 +442,7 @@ struct NIOSessionWebTunnelServerTests {
             #expect(error.localizedDescription.contains("Could not start SSH hop"))
         }
 
-        #expect(transport.commandsRun.count == 2)
+        #expect(transport.commandsRun.count == connectedCommandCount + 2)
         let cleanupCommand = try #require(transport.commandsRun.last)
         #expect(cleanupCommand.contains("\(controlPath).askpass"))
         #expect(cleanupCommand.contains("rm"))
@@ -507,6 +508,7 @@ struct NIOSessionWebTunnelServerTests {
             key: SSHKeyMaterial(ed25519Seed: Data(repeating: 7, count: 32))
         ) { _, _ in true }
 
+        let connectedCommandCount = transport.commandsRun.count
         let controlPath = "/tmp/cancelled-password-forward.sock"
         let server = NIOSessionWebTunnelServer(
             service: service,
@@ -528,13 +530,13 @@ struct NIOSessionWebTunnelServerTests {
         await model.stop()
 
         for _ in 0..<25 {
-            if transport.commandsRun.count >= 2 { break }
+            if transport.commandsRun.count >= connectedCommandCount + 2 { break }
             try await Task.sleep(nanoseconds: 10_000_000)
         }
-        let cleanupStarted = transport.commandsRun.count >= 2
+        let cleanupStarted = transport.commandsRun.count >= connectedCommandCount + 2
         #expect(cleanupStarted)
         if cleanupStarted {
-            let cleanupCommand = transport.commandsRun[1]
+            let cleanupCommand = transport.commandsRun[connectedCommandCount + 1]
             #expect(cleanupCommand.contains("\(controlPath).askpass"))
             #expect(cleanupCommand.contains("\(controlPath).cancel"))
             #expect(cleanupCommand.contains("rm"))
@@ -544,7 +546,7 @@ struct NIOSessionWebTunnelServerTests {
         await transport.allowStartCommandToReturn()
         await startTask.value
         #expect(model.status == .idle)
-        #expect(transport.commandsRun.count == 2)
+        #expect(transport.commandsRun.count == connectedCommandCount + 2)
     }
 }
 

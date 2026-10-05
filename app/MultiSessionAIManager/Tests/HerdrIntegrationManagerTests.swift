@@ -172,6 +172,7 @@ struct HerdrIntegrationManagerTests {
         let transport = FakeSSHTransport()
         let manager = try makeManager(transport: transport)
         await manager.connection.connect()
+        let connectedCommandCount = transport.structuredCommandsRun.count
         transport.structuredCommandResults = [
             result("MSAM_AGENT:claude\nMSAM_AGENT:kilo\n"),
             result(
@@ -193,7 +194,7 @@ struct HerdrIntegrationManagerTests {
             ])
         #expect(manager.failures.isEmpty)
 
-        let requests = transport.structuredCommandsRun
+        let requests = Array(transport.structuredCommandsRun.dropFirst(connectedCommandCount))
         #expect(requests.count == 2)
         #expect(requests[0].command.contains("MSAM_AGENT:claude"))
         #expect(requests[1].command.contains("herdr integration status"))

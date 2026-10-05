@@ -124,20 +124,22 @@ import Testing
 
     @Test func anEmptyImageIsRejectedBeforeAnyRoundTrip() async throws {
         let (service, transport) = try await makeService()
+        let connectedCommands = transport.commandsRun
         await #expect(throws: RemoteFileUpload.Failure.emptyFile) {
             try await RemoteFileUpload.upload(Data(), fileExtension: "png", using: service, at: Date())
         }
-        #expect(transport.commandsRun.isEmpty)
+        #expect(transport.commandsRun == connectedCommands)
     }
 
     @Test func anOversizeImageIsRejectedBeforeAnyRoundTrip() async throws {
         let (service, transport) = try await makeService()
+        let connectedCommands = transport.commandsRun
         let huge = RemoteFileUpload.maximumByteCount + 1
         await #expect(throws: RemoteFileUpload.Failure.tooLarge(byteCount: huge)) {
             try await RemoteFileUpload.upload(Data(repeating: 0, count: huge),
                                                fileExtension: "png", using: service, at: Date())
         }
-        #expect(transport.commandsRun.isEmpty)
+        #expect(transport.commandsRun == connectedCommands)
     }
 
     @Test func aHostThatCannotReportHomeFailsRatherThanGuessing() async throws {

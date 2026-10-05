@@ -255,7 +255,7 @@ import Testing
         let result = try await AgentToolVersionProbe.fetch(.codex, using: service)
 
         #expect(result.installed == "0.153.1")
-        let request = try #require(transport.structuredCommandsRun.first)
+        let request = try #require(transport.structuredCommandsRun.last)
         #expect(request.timeout == AgentToolVersionProbe.timeout)
         #expect(request.outputLimit == AgentToolVersionProbe.outputLimit)
     }

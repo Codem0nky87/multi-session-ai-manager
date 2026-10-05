@@ -232,11 +232,12 @@ import Testing
 
     @Test func aHostileSourceNeverReachesTheHost() async throws {
         let (service, transport) = try await makeService()
+        let connectedCommands = transport.commandsRun
 
         await #expect(throws: HerdrPluginManagement.Failure.invalidSource("owner/repo; rm -rf ~")) {
             try await HerdrPluginManagement.install(source: "owner/repo; rm -rf ~", using: service)
         }
-        #expect(transport.commandsRun.isEmpty)
+        #expect(transport.commandsRun == connectedCommands)
     }
 
     private func ackJSON(logID: String) -> String {
@@ -364,6 +365,31 @@ private final class StubCatalogue: PluginCatalogueFetching, @unchecked Sendable 
 }
 
 @Suite @MainActor struct HerdrPluginManagerModelTests {
+
+    @Test(arguments: [true, false])
+    func manualInstallClearsTheProgressOverlay(succeeds: Bool) async {
+        let (model, transport) = makeModel(StubCatalogue())
+        await model.connection.connect()
+        let empty = "{\"result\":{\"plugins\":[]}}"
+        let installed = "{\"result\":{\"plugins\":[{\"plugin_id\":\"thing\",\"name\":\"thing\",\"source\":{\"kind\":\"github\",\"owner\":\"owner\",\"repo\":\"thing\"}}]}}"
+        let outputs: [Result<String, SSHCommandExecutionError>] = [
+            .success(empty),
+            succeeds ? .success("Installed") : .failure(.ambiguousDisconnect),
+            .success(succeeds ? installed : empty),
+            .success(empty),
+            .success("{}")
+        ]
+        transport.structuredCommandResults = outputs.map {
+            $0.map { SSHCommandResult(exitStatus: 0, stdout: Data($0.utf8), stderr: Data()) }
+        }
+
+        await model.install(source: "owner/thing", ref: nil)
+
+        #expect(model.operation == nil)
+        #expect(!model.isBusy)
+        #expect(succeeds ? model.noticeMessage != nil : model.errorMessage != nil)
+        await model.connection.disconnect()
+    }
 
     private func makeModel(
         _ catalogue: StubCatalogue,

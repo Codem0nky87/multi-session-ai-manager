@@ -16,7 +16,46 @@ account's login PATH.
 | Username | The account Herdr runs as |
 | Key | Generate on-device, or import an OpenSSH private key |
 
-A default working directory is optional. Nothing else is required.
+A default working directory is optional. **Browse remote folders…** opens an
+authenticated remote explorer using SSH commands. No SFTP subsystem is required.
+The explorer starts in the remote home directory when no workdir is set.
+Navigate folders, go up or use the breadcrumbs, then tap **Use this folder**.
+Linked directories are navigable. The selected path is retained when
+moving back and forward through the wizard.
+
+The add-host wizard has four steps:
+
+1. **Connection details** — enter the fields above, generate or import a key,
+   and use **Install key on host…** for one-time password-based installation.
+   With no key selected, that action generates one before opening the installer.
+   Required fields must be valid before **Next** becomes available.
+2. **Herdr and host services** — connect and automatically discover Herdr first.
+   If absent, **Install Herdr** runs the displayed official installer and verifies
+   the result. An older unsupported version must be updated. Only then can
+   **Install or Check Services** install hardware metrics and verify or repair
+   the background updater. Linux and macOS setup uploads use SSH commands and
+   do not require SFTP. Errors and required host-side actions remain visible;
+   **Next** requires successful setup, or an explicit **Continue without
+   Background Updater** choice after a service failure. Skipped setup is saved
+   with the existing degraded-capability warning, never as ready.
+3. **Updater settings and session restore** — choose the persisted macOS
+   downloaded-app approval policy, inspect detected agent integrations, and
+   optionally enable or repair them. The updater processes explicitly queued
+   updates; this step does not claim to schedule automatic daily installation.
+4. **Summary** — review the connection and workdir, then save the host with its
+   verified updater readiness and selected approval policy.
+
+**Back** retains the draft; returning to connection details closes the setup
+connection and the next attempt checks the current endpoint again. Cancelling
+the wizard cancels outstanding setup work and closes its SSH connection.
+
+## Managing plugins
+
+Open **⚙︎ → Manage Hosts → host → Manage plugins**. The manager connects to that
+host over SSH and shows installed plugins, the searchable catalogue, and manual
+repository installation. Connection failures offer **Retry**. Closing the
+manager releases its connection; while a plugin operation is running, wait for
+it to finish before closing.
 
 ### Getting to the host
 

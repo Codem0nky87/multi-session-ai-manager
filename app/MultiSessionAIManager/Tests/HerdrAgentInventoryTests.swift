@@ -137,6 +137,7 @@ import Testing
 
     @Test @MainActor func fetchUsesBoundedCommandsAndFailsClosedOnNamedSessionError() async throws {
         let (service, transport) = try await makeService()
+        let connectedCommandCount = transport.structuredCommandsRun.count
         transport.structuredCommandResults = [
             result("""
             {"sessions":[{"name":"default","default":true,"running":true,"socket_path":"/tmp/herdr.sock","session_dir":"/tmp/default"}]}
@@ -148,8 +149,9 @@ import Testing
         await #expect(throws: HerdrAgentInventoryError.self) {
             try await HerdrAgentInventory.fetch(using: service)
         }
-        #expect(transport.structuredCommandsRun.count == 3)
-        #expect(transport.structuredCommandsRun.allSatisfy {
+        let requests = transport.structuredCommandsRun.dropFirst(connectedCommandCount)
+        #expect(requests.count == 3)
+        #expect(requests.allSatisfy {
             $0.timeout > .zero && $0.outputLimit == HerdrAgentInventory.outputLimit
         })
     }

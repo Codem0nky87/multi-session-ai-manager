@@ -39,7 +39,7 @@ struct HerdrPluginManagerSheet: View {
             .animation(.easeInOut(duration: 0.15), value: model.operation)
             // Nothing behind the modal is safe to touch mid-install, and a
             // swipe-to-dismiss would leave the operation running unseen.
-            .interactiveDismissDisabled(model.operation != nil)
+            .interactiveDismissDisabled(model.isBusy || model.operation != nil)
             .navigationTitle("Plugins on \(hostName)")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(Theme.bg, for: .navigationBar)
@@ -48,6 +48,7 @@ struct HerdrPluginManagerSheet: View {
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
+                        .disabled(model.isBusy || model.operation != nil)
                         .foregroundStyle(Theme.accent)
                         .accessibilityIdentifier("host.plugins.close")
                 }
