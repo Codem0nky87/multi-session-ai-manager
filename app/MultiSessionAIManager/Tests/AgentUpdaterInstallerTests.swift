@@ -47,6 +47,7 @@ import Testing
 @Suite @MainActor struct AgentUpdaterInstallerOperationTests {
     @Test func macOSInstallUploadsHelperAndLaunchAgentThenVerifies() async throws {
         let (installer, transport) = try await makeInstaller()
+        let connectionCommandCount = transport.structuredCommandsRun.count
         stub(transport, [
             "MSAM_HOME=/Users/alice\nMSAM_OS=Darwin\nMSAM_UID=501",
             "login domain ready",
@@ -67,7 +68,7 @@ import Testing
             "/Users/alice/Library/LaunchAgents/com.codem0nky87.msam-agent-updater.plist"
         ])
         #expect(String(decoding: plist, as: UTF8.self).contains("LimitLoadToSessionType"))
-        #expect(transport.structuredCommandsRun.allSatisfy {
+        #expect(transport.structuredCommandsRun.dropFirst(connectionCommandCount).allSatisfy {
             $0.timeout > .zero && $0.outputLimit == AgentUpdaterInstaller.outputLimit
         })
     }
@@ -129,6 +130,7 @@ import Testing
 
     @Test func ambiguousDisconnectStillRunsFinalVerification() async throws {
         let (installer, transport) = try await makeInstaller()
+        let connectionCommandCount = transport.structuredCommandsRun.count
         transport.structuredCommandResults = [
             result("MSAM_HOME=/Users/alice\nMSAM_OS=Darwin\nMSAM_UID=501"),
             result("login domain ready"),
@@ -143,7 +145,7 @@ import Testing
             Issue.record("final verification should be authoritative, got \(installer.state)")
             return
         }
-        #expect(transport.structuredCommandsRun.count == 5)
+        #expect(transport.structuredCommandsRun.count - connectionCommandCount == 5)
     }
 
     @Test func macOSWithoutALoginDomainExplainsHowToApproveAndWritesNothing() async throws {

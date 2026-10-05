@@ -214,13 +214,14 @@ struct HerdrInstallerTests {
         let transport = FakeSSHTransport()
         let (installer, _) = try makeInstaller(transport: transport)
         await installer.connection.connect()
+        let connectionCommandCount = transport.structuredCommandsRun.count
         transport.structuredCommandResults = [ok("installed"), ok("herdr 0.8.2")]
 
         let shown = HerdrInstaller.installCommand
         await installer.install()
 
         // what the UI promises the user and what we send must not drift apart
-        #expect(transport.structuredCommandsRun.first?.command.contains(shown) == true)
+        #expect(transport.structuredCommandsRun.dropFirst(connectionCommandCount).first?.command.contains(shown) == true)
     }
 
     @Test func theInstallBudgetCoversTheScriptsOwnRetryAllowance() {

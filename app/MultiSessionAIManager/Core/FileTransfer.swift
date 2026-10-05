@@ -9,10 +9,17 @@ struct RemoteFile: Identifiable, Equatable, Sendable {
     let size: Int           // bytes; 0 for dirs
 }
 
-/// Seam for reading/writing files on a remote host. Concrete impls: a Citadel
-/// SFTP transport (Task 6.2) and `FakeFileTransfer` for tests.
+struct RemoteDirectoryListing: Equatable, Sendable {
+    let path: String
+    let entries: [RemoteFile]
+}
+
+/// Seam for browsing and transferring files. Folder selection uses SSH exec;
+/// file-transfer implementations and tests can also supply directory listings.
 protocol FileTransfer: AnyObject, Sendable {
     func listDirectory(_ path: String) async throws -> [RemoteFile]
+    /// Return the resolved absolute path along with its children (e.g. for ~).
+    func directoryListing(_ path: String) async throws -> RemoteDirectoryListing
     func read(_ path: String) async throws -> Data
     func write(_ data: Data, to path: String) async throws
     /// Release any underlying connection (SFTP/SSH). Idempotent; called on host
@@ -21,6 +28,9 @@ protocol FileTransfer: AnyObject, Sendable {
 }
 
 extension FileTransfer {
+    func directoryListing(_ path: String) async throws -> RemoteDirectoryListing {
+        .init(path: path, entries: try await listDirectory(path))
+    }
     func disconnect() async {}
 }
 

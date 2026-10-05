@@ -31,33 +31,32 @@ final class FileBrowserModel {
     /// List `currentPath`, sort, and publish. On error, set `errorMessage` and
     /// leave `entries` unchanged.
     func load() async {
-        do {
-            let listed = try await transfer.listDirectory(currentPath)
-            entries = Self.sort(listed)
-            errorMessage = nil
-        } catch {
-            errorMessage = Self.describe(error)
-        }
+        await navigate(to: currentPath)
     }
 
     /// Enter a directory and load it; files are a no-op here (UI previews).
     func open(_ file: RemoteFile) async {
         guard file.isDirectory else { return }
-        currentPath = file.path
-        await load()
+        await navigate(to: file.path)
     }
 
     /// Go to the parent directory and load it, unless already at root or "/".
     func goUp() async {
         guard currentPath != root, currentPath != "/" else { return }
-        currentPath = Self.parent(of: currentPath)
-        await load()
+        await navigate(to: Self.parent(of: currentPath))
     }
 
     /// Navigate directly to an absolute path (e.g. a breadcrumb) and load it.
     func navigate(to path: String) async {
-        currentPath = path
-        await load()
+        do {
+            let listing = try await transfer.directoryListing(path)
+            try Task.checkCancellation()
+            currentPath = listing.path
+            entries = Self.sort(listing.entries)
+            errorMessage = nil
+        } catch {
+            errorMessage = Self.describe(error)
+        }
     }
 
     /// Read a file's bytes for preview/export. On error, set `errorMessage` and
@@ -108,8 +107,15 @@ final class FileBrowserModel {
     nonisolated static func parent(of path: String) -> String {
         var comps = path.split(separator: "/", omittingEmptySubsequences: true)
         guard !comps.isEmpty else { return "/" }
+        if path.hasPrefix("//") {
+            guard comps.count > 2 else { return "/" }
+            return "//" + comps.dropLast().joined(separator: "/")
+        }
         comps.removeLast()
         if comps.isEmpty { return "/" }
+        if isDrivePath(path) {
+            return comps.joined(separator: "/") + (comps.count == 1 ? "/" : "")
+        }
         return "/" + comps.joined(separator: "/")
     }
 
@@ -131,12 +137,33 @@ final class FileBrowserModel {
     /// [("/","/"),("a","/a"),("b","/a/b")]; "/" -> [("/","/")].
     nonisolated static func breadcrumbs(for path: String) -> [(name: String, path: String)] {
         var result: [(name: String, path: String)] = [(name: "/", path: "/")]
+        if path.hasPrefix("//") {
+            let components = path.split(separator: "/", omittingEmptySubsequences: true)
+            guard components.count >= 2 else { return result }
+            var sharePath = "//" + components.prefix(2).joined(separator: "/")
+            result.append((name: sharePath, path: sharePath))
+            for component in components.dropFirst(2) {
+                sharePath = Self.join(sharePath, String(component))
+                result.append((name: String(component), path: sharePath))
+            }
+            return result
+        }
         var acc = ""
         for comp in path.split(separator: "/", omittingEmptySubsequences: true) {
-            acc += "/" + comp
+            if acc.isEmpty && isDrivePath(path) {
+                acc = String(comp) + "/"
+            } else {
+                acc = acc.isEmpty ? "/" + comp : Self.join(acc, String(comp))
+            }
             result.append((name: String(comp), path: acc))
         }
         return result
+    }
+
+    nonisolated static func isDrivePath(_ path: String) -> Bool {
+        let bytes = Array(path.utf8.prefix(3))
+        return bytes.count == 3 && bytes[1] == 58 && bytes[2] == 47
+            && ((65...90).contains(bytes[0]) || (97...122).contains(bytes[0]))
     }
 
     nonisolated private static func describe(_ error: Error) -> String {
@@ -145,6 +172,9 @@ final class FileBrowserModel {
         case FileTransferError.permissionDenied: return "Permission denied"
         case FileTransferError.notConnected: return "Not connected"
         case FileTransferError.failed(let m): return m
+        case SSHCommandExecutionError.timedOut: return "The remote folder took too long to respond. Try again."
+        case SSHCommandExecutionError.outputLimitExceeded: return "This folder has too many entries to display. Choose a smaller folder."
+        case SSHTransportError.hostKeyRejected: return "The host's SSH key has changed. Verify the host before reconnecting."
         default: return String(describing: error)
         }
     }

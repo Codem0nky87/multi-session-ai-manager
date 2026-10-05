@@ -12,6 +12,9 @@ struct HostEditView: View {
     let keyStore: KeyStore
     let knownHosts: KnownHostsStore
     let onSaved: (Host, Bool) -> Void
+    /// In the add-host wizard, validate and hand off the draft without saving.
+    private let onContinue: ((Host) -> Void)?
+    private let draftID: UUID
 
     /// nil ⇒ creating a new host; non-nil ⇒ editing the host with this id.
     private let existingID: UUID?
@@ -57,13 +60,16 @@ struct HostEditView: View {
         keyStore: KeyStore,
         knownHosts: KnownHostsStore,
         host: Host? = nil,
+        onContinue: ((Host) -> Void)? = nil,
         onSaved: @escaping (Host, Bool) -> Void = { _, _ in }
     ) {
         self.store = store
         self.keyStore = keyStore
         self.knownHosts = knownHosts
         self.onSaved = onSaved
-        self.existingID = host?.id
+        self.onContinue = onContinue
+        self.draftID = host?.id ?? UUID()
+        self.existingID = onContinue == nil ? host?.id : nil
         _name = State(initialValue: host?.name ?? "")
         _address = State(initialValue: host?.address ?? "")
         _port = State(initialValue: host?.port ?? 22)
@@ -98,18 +104,19 @@ struct HostEditView: View {
         return trimmed.isEmpty ? "ipad" : trimmed
     }
 
-    var body: some View {
-        Group {
-            ZStack {
-                AppBackground()
+    private var editorContent: some View {
+        ZStack {
+            AppBackground()
 
             ScrollView {
                 VStack(spacing: Theme.Space.lg) {
                     privateSSHSection
                     authSection
                     workdirSection
-                    portForwardingSection
-                    agentUpdatesSection
+                    if onContinue == nil {
+                        portForwardingSection
+                        agentUpdatesSection
+                    }
                     validationFeedback
                 }
                 .padding(.horizontal, Theme.Space.md)
@@ -117,10 +124,15 @@ struct HostEditView: View {
                 .padding(.bottom, 100) // clears the pinned Save bar
             }
             .accessibilityIdentifier("host.editor.form")
+            .scrollDismissesKeyboard(.interactively)
 
             saveBar
         }
-        .navigationTitle(existingID == nil ? "Add Host" : "Edit Host")
+    }
+
+    private var editorWithKeySheets: some View {
+        editorContent
+        .navigationTitle(onContinue != nil ? "Add Host - Step 1 of 4" : (existingID == nil ? "Add Host" : "Edit Host"))
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(Theme.bg, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
@@ -177,6 +189,10 @@ struct HostEditView: View {
                 )
             }
         )
+    }
+
+    var body: some View {
+        editorWithKeySheets
         .background(
             Color.clear.sheet(isPresented: $showHostSetup) {
                 HostSetupHelpSheet(
@@ -225,7 +241,6 @@ struct HostEditView: View {
                 Text(SSHKeyDeletion.confirmationMessage)
             }
         )
-        }
         .alert(
             "Host Setup Error",
             isPresented: errorIsPresented
@@ -441,32 +456,54 @@ struct HostEditView: View {
         GlassCard {
             VStack(alignment: .leading, spacing: Theme.Space.md) {
                 SectionLabel(text: "Working directory")
-                HStack(alignment: .bottom, spacing: Theme.Space.sm) {
-                    DarkField(label: "Default workdir", text: $defaultWorkdir,
-                              placeholder: "~/projects", autocapitalize: false, autocorrect: false)
-                    Button {
+                if onContinue != nil {
+                    Text(defaultWorkdir.isEmpty ? "Use the host's default directory, or choose a remote folder." : defaultWorkdir)
+                        .font(Theme.mono(13))
+                        .foregroundStyle(Theme.textSecondary)
+                        .textSelection(.enabled)
+                    GhostButton(title: "Browse remote folders…", systemImage: "folder") {
                         browseWorkdir()
-                    } label: {
-                        Image(systemName: "folder")
-                            .font(.system(size: 17, weight: .semibold))
-                            .foregroundStyle(keyID.isEmpty ? Theme.textMuted : Theme.accent)
-                            .frame(width: 48, height: 48)
-                            .background(
-                                RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous)
-                                    .fill(Theme.surface)
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous)
-                                    .strokeBorder(Theme.hairline, lineWidth: 1)
-                            )
                     }
-                    .buttonStyle(.plain)
-                    .pressable()
-                    .disabled(keyID.isEmpty)
-                    .accessibilityLabel("Browse for folder")
+                    .disabled(!canBrowseWorkdir)
+                    .accessibilityIdentifier("host.workdir.browse")
+                    if !defaultWorkdir.isEmpty {
+                        Button("Use host default") { defaultWorkdir = "" }
+                            .tint(Theme.accent)
+                    }
+                } else {
+                    HStack(alignment: .bottom, spacing: Theme.Space.sm) {
+                        DarkField(label: "Default workdir", text: $defaultWorkdir,
+                                  placeholder: "~/projects", autocapitalize: false, autocorrect: false)
+                        Button {
+                            browseWorkdir()
+                        } label: {
+                            Image(systemName: "folder")
+                                .font(.system(size: 17, weight: .semibold))
+                                .foregroundStyle(keyID.isEmpty ? Theme.textMuted : Theme.accent)
+                                .frame(width: 48, height: 48)
+                                .background(
+                                    RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous)
+                                        .fill(Theme.surface)
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous)
+                                        .strokeBorder(Theme.hairline, lineWidth: 1)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .pressable()
+                        .disabled(!canBrowseWorkdir)
+                        .accessibilityLabel("Browse for folder")
+                    }
                 }
             }
         }
+    }
+
+    private var canBrowseWorkdir: Bool {
+        !address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && (1...65_535).contains(port) && !keyID.isEmpty
     }
 
     // MARK: - Save bar
@@ -474,7 +511,8 @@ struct HostEditView: View {
     private var saveBar: some View {
         VStack(spacing: 0) {
             Spacer()
-            NeonButton(title: "Save host", systemImage: "checkmark", enabled: isValid) {
+            NeonButton(title: onContinue == nil ? "Save host" : "Next",
+                       systemImage: onContinue == nil ? "checkmark" : "arrow.right", enabled: isValid) {
                 save()
             }
             .padding(.horizontal, Theme.Space.md)
@@ -619,7 +657,7 @@ struct HostEditView: View {
     /// sheets — only address/port/username matter for connecting).
     private var candidateHost: Host {
         Host(
-            id: existingID ?? UUID(),
+            id: draftID,
             name: name.trimmingCharacters(in: .whitespaces),
             address: address.trimmingCharacters(in: .whitespaces),
             port: port,
@@ -688,6 +726,10 @@ struct HostEditView: View {
     private func save() {
         do {
             let host = try candidateHost.validated()
+            if let onContinue {
+                onContinue(host)
+                return
+            }
             let isNew = existingID == nil
             if isNew {
                 store.add(host)
