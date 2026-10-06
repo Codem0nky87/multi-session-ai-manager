@@ -36,8 +36,7 @@ enum RemoteFileUpload {
 
     /// Refused above this. An iPad screenshot is 1-3 MB and a long PDF a few
     /// more; this is generous headroom while still catching "the picker handed
-    /// us a video". The whole file is held in memory to be written in one SFTP
-    /// call, which is the real reason for a ceiling.
+    /// us a video". The whole file is held in memory during the transfer, which is the real reason for a ceiling.
     static let maximumByteCount = 100 * 1024 * 1024
 
     /// Used when a file arrives with no usable extension.

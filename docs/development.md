@@ -51,6 +51,26 @@ xcodebuild -scheme MultiSessionAIManager \
 The unit suite is hermetic — it uses `FakeSSHTransport`, `FakeFileTransfer`, and
 `FakeKeyInstaller`, and touches no network and no real host.
 
+### File transfers without SFTP
+
+Linux/macOS uploads, downloads, and file-size queries use bounded SSH exec.
+Run the production shell protocol checks on Linux with:
+
+```sh
+python3 scripts/test-ssh-file-transfer.py
+```
+
+On the Mac, generate the project and run the Swift suite, including
+`SSHFileTransferTests`. For real SSH integration against a disposable server
+with no SFTP subsystem, run:
+
+```sh
+MSAM_SERVICE_TESTS_ONLY=1 python3 scripts/test-workdir-browser.py
+```
+
+This includes binary transfers across multiple chunks and preservation of an
+existing destination when an upload fails.
+
 ### Disposable-host session recovery diagnostic
 
 > **Destructive opt-in only.** The following procedure stops a Herdr session,

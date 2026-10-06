@@ -94,6 +94,10 @@ protocol SSHTransport: AnyObject, Sendable {
     /// than dialling a second one keeps the upload on the same host key the
     /// user already accepted, and costs no extra authentication.
     func writeFile(_ data: Data, to path: String) async throws
+    /// POSIX transfers use bounded SSH exec; Windows retains SFTP.
+    func transferFile(_ data: Data, to path: String, isWindows: Bool) async throws
+    func receiveFile(at path: String, isWindows: Bool) async throws -> Data
+    func transferFileSize(at path: String, isWindows: Bool) async throws -> Int
     /// Bounded upload for small installer resources. POSIX hosts require only
     /// SSH exec; Windows retains the existing file-transfer implementation.
     func writeSetupFile(_ data: Data, to path: String, permissions: UInt16, isWindows: Bool) async throws
@@ -109,6 +113,21 @@ protocol SSHTransport: AnyObject, Sendable {
 /// (for example a probe-only test double). The real and general fake transports
 /// override this; callers receive an explicit disabled/error state, never fake success.
 extension SSHTransport {
+    func transferFile(_ data: Data, to path: String, isWindows: Bool) async throws {
+        if isWindows { try await writeFile(data, to: path) }
+        else { try await SSHFileTransfer.upload(data, to: path, using: self) }
+    }
+
+    func receiveFile(at path: String, isWindows: Bool) async throws -> Data {
+        if isWindows { return try await readFile(at: path) }
+        return try await SSHFileTransfer.download(at: path, using: self)
+    }
+
+    func transferFileSize(at path: String, isWindows: Bool) async throws -> Int {
+        if isWindows { return try await fileSize(at: path) }
+        return try await SSHFileTransfer.size(at: path, using: self)
+    }
+
     func writeSetupFile(_ data: Data, to path: String, permissions: UInt16, isWindows: Bool) async throws {
         if isWindows {
             try await writeFile(data, to: path)

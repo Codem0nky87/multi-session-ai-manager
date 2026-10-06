@@ -16,6 +16,10 @@ The **paperclip** button offers three sources:
 - **Photos** — the photo library picker
 - **Files** — any file, of any type
 
+On Linux and macOS, binary files travel over bounded native SSH commands;
+no SFTP subsystem is required. Uploads use a private temporary file and rename
+it after all chunks are confirmed. Windows retains SFTP.
+
 The file is written to `~/.msam/uploads/` on the host, named for the timestamp,
 and its **absolute path is typed into the pane**.
 
@@ -138,7 +142,8 @@ watch. That is not a session failure and never touches the tab's status.
 Only the **selected** tab downloads. A background tab filling the screen with
 someone's file would be a surprise.
 
-The file is fetched over that tab's own connection and presented in a sheet —
+The file is fetched over that tab's own connection using bounded SSH commands
+on Linux and macOS (SFTP on Windows) and presented in a sheet —
 preview, share, or save. Anything queued while a sheet is open follows
 immediately after it closes. Downloads are capped at **50 MB**: the whole file
 is held in memory to hand to the share sheet, and an iPad is not the place for a

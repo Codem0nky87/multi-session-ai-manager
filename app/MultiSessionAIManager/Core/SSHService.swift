@@ -105,10 +105,10 @@ final class SSHService: @unchecked Sendable {
 
 
     /// Upload bytes to an absolute remote path on this connection. Used by
-    /// `RemoteImageUpload`; deliberately takes an absolute path, because the
+    /// `RemoteFileUpload`; deliberately takes an absolute path, because the
     /// caller also types that path into a pane whose cwd it cannot see.
     func writeFile(_ data: Data, to path: String) async throws {
-        try await transport.writeFile(data, to: path)
+        try await transport.transferFile(data, to: path, isWindows: isWindows)
     }
 
     func writeSetupFile(_ data: Data, to path: String, permissions: UInt16 = 0o600) async throws {
@@ -117,12 +117,12 @@ final class SSHService: @unchecked Sendable {
 
     /// Download a file from an absolute remote path on this connection.
     func readFile(at path: String) async throws -> Data {
-        try await transport.readFile(at: path)
+        try await transport.receiveFile(at: path, isWindows: isWindows)
     }
 
     /// Size of a remote file without reading it.
     func fileSize(at path: String) async throws -> Int {
-        try await transport.fileSize(at: path)
+        try await transport.transferFileSize(at: path, isWindows: isWindows)
     }
 
     func openPTY(

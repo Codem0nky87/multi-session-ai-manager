@@ -24,6 +24,30 @@ struct ServiceSetupLiveTests {
         return (service, fixture.root)
     }
 
+    @Test func fileTransfersWorkWithoutSFTP() async throws {
+        let (service, root) = try await connect()
+        defer { Task { await service.disconnect() } }
+        let path = root + "/transfer quote's $literal\nfile"
+        let bytes = Data((0..<(SSHFileTransfer.chunkSize * 3 + 17)).map { UInt8($0 % 256) })
+        try await service.writeFile(bytes, to: path)
+        #expect(try await service.fileSize(at: path) == bytes.count)
+        #expect(try await service.readFile(at: path) == bytes)
+        #expect(try Data(contentsOf: URL(fileURLWithPath: path)) == bytes)
+        try await service.writeFile(Data(), to: path)
+        #expect(try await service.readFile(at: path).isEmpty)
+        let locked = root + "/transfer-locked"
+        try FileManager.default.createDirectory(atPath: locked, withIntermediateDirectories: true)
+        let original = URL(fileURLWithPath: locked + "/original")
+        try bytes.write(to: original)
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: locked)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: locked) }
+        await #expect(throws: (any Error).self) {
+            try await service.writeFile(Data("replacement".utf8), to: original.path)
+        }
+        #expect(try Data(contentsOf: original) == bytes)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: locked) == ["original"])
+    }
+
     @Test func metricsInstallWorksWithoutSFTP() async throws {
         let (service, root) = try await connect()
         defer { Task { await service.disconnect() } }
