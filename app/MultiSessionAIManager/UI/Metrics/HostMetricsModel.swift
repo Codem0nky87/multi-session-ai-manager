@@ -1,3 +1,5 @@
+import SwiftUI
+
 struct DiskVolume: Decodable, Identifiable {
     var id: String
     var name: String
