@@ -418,35 +418,39 @@ final class NIOSSHTransport: SSHTransport, @unchecked Sendable {
         let client = try currentClient()
         return try await SSHCommandDeadline.run(timeout: request.timeout) {
             var accumulator = NIOSSHCommandAccumulator(outputLimit: request.outputLimit)
+            var streamError: (any Error)?
+            var streamDrained = false
             do {
                 try await client.withExec(request.command) { inbound, _ in
-                    for try await chunk in inbound {
-                        switch chunk {
-                        case .stdout(let buffer):
-                            try accumulator.append(.stdout, buffer: buffer)
-                        case .stderr(let buffer):
-                            try accumulator.append(.stderr, buffer: buffer)
+                    do {
+                        for try await chunk in inbound {
+                            switch chunk {
+                            case .stdout(let buffer):
+                                try accumulator.append(.stdout, buffer: buffer)
+                            case .stderr(let buffer):
+                                try accumulator.append(.stderr, buffer: buffer)
+                            }
                         }
+                        streamDrained = true
+                    } catch {
+                        // Citadel's withExec closes again in its catch block.
+                        // That close can throw alreadyClosed and hide the real
+                        // command exit, output limit, or stream failure.
+                        streamError = error
+                        throw error
                     }
                 }
                 return accumulator.result(exitStatus: 0)
-            } catch let error as ChannelError where error == .alreadyClosed {
-                // Citadel's `withExec` closes the channel after `perform` returns,
-                // but a command that ran to completion has already been closed
-                // server-side, so that redundant close throws `.alreadyClosed`.
-                // The output stream drained normally, so this IS the success
-                // path -- treating it as a failure made every bounded command
-                // surface as `.ambiguousDisconnect`.
-                return accumulator.result(exitStatus: 0)
-            } catch let error as SSHClient.CommandFailed {
-                return accumulator.result(
-                    exitStatus: Int32(exactly: error.exitCode) ?? -1
-                )
-            } catch is CancellationError {
-                throw SSHCommandExecutionError.cancelled
-            } catch let error as SSHCommandExecutionError {
-                throw error
             } catch {
+                let failure = streamError ?? error
+                if let failed = failure as? SSHClient.CommandFailed {
+                    return accumulator.result(exitStatus: Int32(exactly: failed.exitCode) ?? -1)
+                }
+                if streamDrained, let closed = failure as? ChannelError, closed == .alreadyClosed {
+                    return accumulator.result(exitStatus: 0)
+                }
+                if failure is CancellationError { throw SSHCommandExecutionError.cancelled }
+                if let executionError = failure as? SSHCommandExecutionError { throw executionError }
                 // No remote exit status arrived, so a mutating caller cannot know
                 // whether the command ran and must not retry automatically.
                 throw SSHCommandExecutionError.ambiguousDisconnect
@@ -472,8 +476,6 @@ final class NIOSSHTransport: SSHTransport, @unchecked Sendable {
         onOutput: @escaping @Sendable (Data) -> Void,
         onClose: @escaping @Sendable () -> Void
     ) async throws -> PTYChannel {
-        let client = try currentClient()
-
         let ptyRequest = SSHChannelRequestEvent.PseudoTerminalRequest(
             wantReply: true,
             term: "xterm-256color",
@@ -483,6 +485,21 @@ final class NIOSSHTransport: SSHTransport, @unchecked Sendable {
             terminalPixelHeight: 0,
             terminalModes: SSHTerminalModes([:])
         )
+
+        return try await openStreamingChannel(command: command, ptyRequest: ptyRequest, onOutput: onOutput, onClose: onClose)
+    }
+
+    func openExecStream(command: String,
+                        onOutput: @escaping @Sendable (Data) -> Void,
+                        onClose: @escaping @Sendable () -> Void) async throws -> PTYChannel {
+        try await openStreamingChannel(command: command, ptyRequest: nil, onOutput: onOutput, onClose: onClose)
+    }
+
+    private func openStreamingChannel(command: String,
+                                      ptyRequest: SSHChannelRequestEvent.PseudoTerminalRequest?,
+                                      onOutput: @escaping @Sendable (Data) -> Void,
+                                      onClose: @escaping @Sendable () -> Void) async throws -> PTYChannel {
+        let client = try currentClient()
 
         // `withPTY` owns the channel for the duration of its `perform` closure and
         // tears it down when the closure returns. The seam, however, must *return*
@@ -495,10 +512,13 @@ final class NIOSSHTransport: SSHTransport, @unchecked Sendable {
 
         let pump = Task { [weak writerBox] in
             do {
-                try await client.withPTY(ptyRequest) { inbound, outbound in
+                let perform: (TTYOutput, TTYStdinWriter) async throws -> Void = { inbound, outbound in
                     // Send the requested command into the interactive shell.
-                    if !command.isEmpty {
-                        try await outbound.write(ByteBuffer(string: command + "\n"))
+                    if ptyRequest != nil && !command.isEmpty {
+                        // Enter is CR on a terminal. Windows ConPTY leaves a
+                        // bare LF in the editable command instead of running it;
+                        // POSIX terminal input maps CR to its newline as usual.
+                        try await outbound.write(ByteBuffer(string: command + "\r"))
                     }
 
                     // Publish only AFTER the attach command has been written. This
@@ -511,8 +531,10 @@ final class NIOSSHTransport: SSHTransport, @unchecked Sendable {
                         group.addTask {
                             for try await chunk in inbound {
                                 switch chunk {
-                                case .stdout(let buffer), .stderr(let buffer):
+                                case .stdout(let buffer):
                                     onOutput(Data(buffer.readableBytesView))
+                                case .stderr(let buffer):
+                                    if ptyRequest != nil { onOutput(Data(buffer.readableBytesView)) }
                                 }
                             }
                         }
@@ -523,6 +545,11 @@ final class NIOSSHTransport: SSHTransport, @unchecked Sendable {
                         _ = try await group.next()
                         group.cancelAll()
                     }
+                }
+                if let ptyRequest {
+                    try await client.withPTY(ptyRequest, perform: perform)
+                } else {
+                    try await client.withExec(command, perform: perform)
                 }
             } catch {
                 // Stream ended (EOF, error, or cancellation). Nothing to surface here;

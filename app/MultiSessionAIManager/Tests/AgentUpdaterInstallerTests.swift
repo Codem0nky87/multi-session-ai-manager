@@ -3,6 +3,13 @@ import Testing
 @testable import MultiSessionAIManager
 
 @Suite struct AgentUpdaterInstallerTemplateTests {
+    @Test func windowsContextAndVerificationAcceptCRLF() throws {
+        #expect(try AgentUpdaterInstaller.parseHostContext("MSAM_HOME=C:\\Users\\Administrator\r\nMSAM_OS=Windows_NT\r\nMSAM_UID=0\r\n")
+            == AgentUpdaterHostContext(home: "C:\\Users\\Administrator", platform: .windows, uid: 0))
+        let output = "MSAM_VERIFY_BEGIN\r\nprotocol=1\r\nservice=active\r\nwritable=yes\r\nselftest=yes\r\nplatform=Windows_NT\r\nlinger=n/a\r\nMSAM_VERIFY_END\r\n"
+        #expect(try AgentUpdaterInstaller.parseVerification(output, platform: .windows).isReady)
+    }
+
     @Test func platformProbeParsesDarwinLinuxAndUnknown() throws {
         #expect(try AgentUpdaterInstaller.parseHostContext("MSAM_HOME=/Users/alice\nMSAM_OS=Darwin\nMSAM_UID=501")
             == AgentUpdaterHostContext(home: "/Users/alice", platform: .macOS, uid: 501))
@@ -23,7 +30,7 @@ import Testing
         )
         let combined = (mac + linux).lowercased()
 
-        #expect(mac.contains("com.codem0nky87.msam-agent-updater"))
+        #expect(mac.contains("com.codem0nky87.msam-host-agent"))
         #expect(linux.contains("ExecStart=/home/alice/.local/libexec/msam-agent-updater service"))
         #expect(!combined.contains("sudo"))
         #expect(!combined.contains("password"))
@@ -36,11 +43,11 @@ import Testing
         #expect(AgentUpdaterInstaller.helperPath(for: context)
             == "/Users/alice/.local/libexec/msam-agent-updater")
         #expect(AgentUpdaterInstaller.servicePath(for: context)
-            == "/Users/alice/Library/LaunchAgents/com.codem0nky87.msam-agent-updater.plist")
+            == "/Users/alice/Library/LaunchAgents/com.codem0nky87.msam-host-agent.plist")
 
         let linux = AgentUpdaterHostContext(home: "/home/alice", platform: .linux, uid: 1000)
         #expect(AgentUpdaterInstaller.servicePath(for: linux)
-            == "/home/alice/.config/systemd/user/msam-agent-updater.service")
+            == "/home/alice/.config/systemd/user/msam-host-agent.service")
     }
 }
 
@@ -51,8 +58,10 @@ import Testing
         stub(transport, [
             "MSAM_HOME=/Users/alice\nMSAM_OS=Darwin\nMSAM_UID=501",
             "login domain ready",
+            "MSAM_HOME=/Users/alice",
             "prepared",
-            "bootstrapped",
+            hostStatus,
+            "cleaned",
             readyVerification(platform: "Darwin", linger: "n/a")
         ])
 
@@ -62,14 +71,10 @@ import Testing
             platform: .macOS, helperProtocol: 1, serviceActive: true,
             stateWritable: true, selfTestPassed: true, lingerEnabled: nil
         )))
-        #expect(transport.writtenFiles["/Users/alice/.local/libexec/msam-agent-updater"]
-            == Data("#!/bin/sh\nprintf ok\n".utf8))
-        let plist = try #require(transport.writtenFiles[
-            "/Users/alice/Library/LaunchAgents/com.codem0nky87.msam-agent-updater.plist"
-        ])
-        #expect(String(decoding: plist, as: UTF8.self).contains("LimitLoadToSessionType"))
+        #expect(transport.writtenFiles.keys.contains { $0.hasSuffix("/msam-host-agent.py") })
+        #expect(transport.writtenFiles.keys.contains { $0.hasSuffix("/manifest.json") })
         #expect(transport.structuredCommandsRun.dropFirst(connectionCommandCount).allSatisfy {
-            $0.timeout > .zero && $0.outputLimit == AgentUpdaterInstaller.outputLimit
+            $0.timeout > .zero && $0.outputLimit > 0
         })
     }
 
@@ -77,8 +82,10 @@ import Testing
         let (installer, transport) = try await makeInstaller()
         stub(transport, [
             "MSAM_HOME=/home/alice\nMSAM_OS=Linux\nMSAM_UID=1000",
+            "MSAM_HOME=/home/alice",
             "prepared",
-            "started",
+            hostStatus,
+            "cleaned",
             readyVerification(platform: "Linux", linger: "no")
         ])
 
@@ -89,10 +96,7 @@ import Testing
             return
         }
         #expect(instructions.joined(separator: " ").contains("loginctl enable-linger alice"))
-        #expect(transport.writtenFiles[
-            "/home/alice/.config/systemd/user/msam-agent-updater.service"
-        ] != nil)
-        #expect(transport.commandsRun.contains { $0.contains("systemctl --user enable --now") })
+        #expect(transport.writtenFiles.keys.contains { $0.hasSuffix("/msam-host-agent-install.py") })
     }
 
     @Test func unsupportedPlatformProducesInstructionsWithoutWritingFiles() async throws {
@@ -114,8 +118,10 @@ import Testing
         stub(transport, [
             "MSAM_HOME=/Users/alice\nMSAM_OS=Darwin\nMSAM_UID=501",
             "login domain ready",
+            "MSAM_HOME=/Users/alice",
             "prepared",
-            "bootstrapped",
+            hostStatus,
+            "cleaned",
             "MSAM_VERIFY_BEGIN\nprotocol=1\nservice=active\nwritable=yes\nselftest=no\nplatform=Darwin\nlinger=n/a\nMSAM_VERIFY_END"
         ])
 
@@ -128,24 +134,26 @@ import Testing
         #expect(message.contains("self-test"))
     }
 
-    @Test func ambiguousDisconnectStillRunsFinalVerification() async throws {
-        let (installer, transport) = try await makeInstaller()
-        let connectionCommandCount = transport.structuredCommandsRun.count
-        transport.structuredCommandResults = [
-            result("MSAM_HOME=/Users/alice\nMSAM_OS=Darwin\nMSAM_UID=501"),
-            result("login domain ready"),
-            result("prepared"),
-            .failure(.ambiguousDisconnect),
-            result(readyVerification(platform: "Darwin", linger: "n/a"))
-        ]
-
-        await installer.installOrRepair(policy: .manualApproval)
-
-        guard case .ready = installer.state else {
-            Issue.record("final verification should be authoritative, got \(installer.state)")
-            return
+    @Test func ambiguousDisconnectDoesNotClaimAnUnverifiedInstallationSucceeded() async throws {
+        for failure in [SSHCommandExecutionError.ambiguousDisconnect, .timedOut, .cancelled] {
+            let (installer, transport) = try await makeInstaller()
+            let priorCommands = transport.structuredCommandsRun.count
+            transport.structuredCommandResults = [
+                result("MSAM_HOME=/Users/alice\nMSAM_OS=Darwin\nMSAM_UID=501"),
+                result("login domain ready"),
+                result("MSAM_HOME=/Users/alice"),
+                result("prepared"),
+                .failure(failure),
+                result(hostStatus)
+            ]
+            await installer.installOrRepair(policy: .manualApproval)
+            guard case .failed = installer.state else {
+                Issue.record("An old/mismatched service must not count as a successful replacement")
+                return
+            }
+            // Leave staging intact while activation may still be running remotely.
+            #expect(transport.structuredCommandsRun.count - priorCommands == 6)
         }
-        #expect(transport.structuredCommandsRun.count - connectionCommandCount == 5)
     }
 
     @Test func macOSWithoutALoginDomainExplainsHowToApproveAndWritesNothing() async throws {
@@ -176,6 +184,10 @@ import Testing
         await installer.probe()
 
         #expect(installer.state == .absent(.init(home: "/home/alice", platform: .linux, uid: 1000)))
+    }
+
+    private var hostStatus: String {
+        #"MSAM_HOST_STATUS={"installed":true,"running":true,"disabled":false,"version":"1.0.0","metrics":true,"updates":true,"agents":true}"#
     }
 
     private func makeInstaller() async throws -> (AgentUpdaterInstaller, FakeSSHTransport) {

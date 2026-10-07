@@ -88,12 +88,18 @@ turn terminal output into a stored transcript.
   used for that single connection and is **never stored**. Copying the exported
   public key in by hand gives an identical result.
 - **Plugin manager** — browse Herdr plugins from GitHub's `herdr-plugin` topic,
-  install by `owner/repo`, and uninstall what is on the host. A plugin that
-  builds from source will say which toolchain the host is missing and offer to
-  install it (under `$HOME`, no root), then retry — or hand you a live terminal
-  if something needs a `sudo` password. The topic is self-applied, so a listing
+  install by `owner/repo`, and uninstall what is on the host. Installation checks
+  the selected revision's dependencies, installs supported missing tools, and
+  verifies activation. Setup actions such as Ferry's keybinding are offered only
+  when host checks show they are missing; configured or conflicting bindings
+  cannot be installed again. The topic is self-applied, so a listing
   is a search result rather than a review — see
   [docs/security.md](docs/security.md).
+- **AI CLI installers** — host settings can install and verify Codex, Claude
+  Code, and Antigravity with their official native installers. Existing working
+  installations are retained; account sign-in remains in the host terminal.
+- **Function keys** — the **fn** button beside Attach sends F1–F12 to the
+  currently selected session and its focused terminal split.
 - **Direct SSH** — SwiftNIO SSH + [Citadel](https://github.com/orlandos-nl/Citadel),
   with on-device key generation and import, OpenSSH public-key export, and
   trust-on-first-use known-hosts pinning.
@@ -101,7 +107,7 @@ turn terminal output into a stored transcript.
 ## Requirements
 
 - iPadOS 17 or newer
-- Xcode 16+ (Swift 6)
+- Xcode 26+ (Swift 6; required for current TestFlight uploads)
 - A host reachable over SSH with [Herdr](https://herdr.dev) **0.8.2 or newer**
   (the app can install it for you)
 

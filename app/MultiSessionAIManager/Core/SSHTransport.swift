@@ -81,6 +81,10 @@ protocol SSHTransport: AnyObject, Sendable {
     func openPTY(command: String, cols: Int, rows: Int,
                  onOutput: @escaping @Sendable (Data) -> Void,
                  onClose: @escaping @Sendable () -> Void) async throws -> PTYChannel
+    /// Stream stdout without a terminal adding wrapping or console escapes.
+    func openExecStream(command: String,
+                        onOutput: @escaping @Sendable (Data) -> Void,
+                        onClose: @escaping @Sendable () -> Void) async throws -> PTYChannel
     /// Open a raw TCP connection FROM the SSH server to `targetHost:targetPort`
     /// on this already-authenticated SSH connection.
     func openDirectTCPIP(
@@ -113,6 +117,11 @@ protocol SSHTransport: AnyObject, Sendable {
 /// (for example a probe-only test double). The real and general fake transports
 /// override this; callers receive an explicit disabled/error state, never fake success.
 extension SSHTransport {
+    func openExecStream(command: String,
+                        onOutput: @escaping @Sendable (Data) -> Void,
+                        onClose: @escaping @Sendable () -> Void) async throws -> PTYChannel {
+        try await openPTY(command: command, cols: 200, rows: 24, onOutput: onOutput, onClose: onClose)
+    }
     func transferFile(_ data: Data, to path: String, isWindows: Bool) async throws {
         if isWindows { try await writeFile(data, to: path) }
         else { try await SSHFileTransfer.upload(data, to: path, using: self) }

@@ -171,16 +171,16 @@ following checks are read-only:
 On macOS, also verify the per-user LaunchAgent and logs:
 
 ```sh
-launchctl print gui/$(id -u)/com.codem0nky87.msam-agent-updater
-tail -n 100 "$HOME/.local/state/msam-agent-updater/service.stderr.log"
+launchctl print gui/$(id -u)/com.codem0nky87.msam-host-agent
+tail -n 100 "$HOME/.local/state/msam-host-agent/service.stderr.log"
 ```
 
 On Linux, verify the user service, linger, and logs:
 
 ```sh
-systemctl --user is-active msam-agent-updater.service
+systemctl --user is-active msam-host-agent.service
 loginctl show-user "$(id -u)" -p Linger --value
-journalctl --user -u msam-agent-updater.service -n 100 --no-pager
+journalctl --user -u msam-host-agent.service -n 100 --no-pager
 ```
 
 Create a dedicated named Herdr session containing:
@@ -225,13 +225,13 @@ While the batch is active, perform exactly one service restart. This is
 macOS:
 
 ```sh
-launchctl kickstart -k gui/$(id -u)/com.codem0nky87.msam-agent-updater
+launchctl kickstart -k gui/$(id -u)/com.codem0nky87.msam-host-agent
 ```
 
 Linux:
 
 ```sh
-systemctl --user restart msam-agent-updater.service
+systemctl --user restart msam-host-agent.service
 ```
 
 The same batch ID and per-target attempts must remain in `status`, completed
@@ -281,6 +281,16 @@ team — delete the app first when switching signing identity.
 
 ## TestFlight
 
+Build and export a signed IPA without uploading:
+
+```sh
+cd app/MultiSessionAIManager
+fastlane build_testflight
+```
+
+The IPA and dSYMs are written to `app/MultiSessionAIManager/build/`.
+To build and upload to internal TestFlight:
+
 ```sh
 cd app/MultiSessionAIManager
 fastlane beta
@@ -290,24 +300,177 @@ The lane stamps a unique build number, mints the distribution certificate via
 the App Store Connect API key, archives, and uploads to internal testing (no App
 Review).
 
-One-time setup:
+### Fresh Mac setup
+
+Install the full release version of Xcode from the Mac App Store. Command Line
+Tools alone cannot build this iPad app. App Store Connect requires Xcode 26 or
+later and the iOS 26 SDK or later for uploads since April 28, 2026
+([Apple's SDK requirements](https://developer.apple.com/news/upcoming-requirements/?id=04282026a)).
+
+Select Xcode and complete its first-launch setup:
+
+```sh
+sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
+sudo xcodebuild -license accept
+sudo xcodebuild -runFirstLaunch
+xcodebuild -downloadComponent MetalToolchain
+xcodebuild -version
+xcodebuild -showsdks
+```
+
+The Metal Toolchain compiles SwiftTerm's shaders. Without it, an archive fails
+with `cannot execute tool 'metal' due to missing Metal Toolchain`.
+
+Install [Homebrew](https://brew.sh), then the build tools:
 
 ```sh
 brew install fastlane xcodegen
+```
 
+Restore the App Store Connect API key from a secure backup. Apple only allows
+the `.p8` to be downloaded once; if it was lost during a reinstall, create a new
+key in App Store Connect. Save the following variables in
+`~/.appstoreconnect/env`, outside the repository, using the actual key details:
+
+```sh
 # App Store Connect API key, App Manager role, from Users and Access → Integrations.
-# The .p8 downloads exactly once.
 export ASC_KEY_ID=XXXXXXXXXX
 export ASC_ISSUER_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 export ASC_KEY_PATH="$HOME/.appstoreconnect/private_keys/AuthKey_XXXXXXXXXX.p8"
+```
+
+Protect the files and load the environment before running Fastlane:
+
+```sh
+chmod 700 ~/.appstoreconnect ~/.appstoreconnect/private_keys
+chmod 600 ~/.appstoreconnect/env ~/.appstoreconnect/private_keys/*.p8
+source ~/.appstoreconnect/env
 ```
 
 The `.p8` is gitignored (`**/*.p8`) and must never be committed. `fastlane`
 needs `cert(api_key:)` for the distribution certificate; the auth flags belong
 in `xcargs`, not `export_xcargs`.
 
+For signing, restore the organization's Apple Distribution certificate **and
+its private key** from a secure backup, or let Fastlane create a new certificate
+if the account has capacity. A downloaded `.cer` alone does not restore its
+private key. Do not revoke another machine's certificate to make room without
+checking which builds use it. Confirm the restored identity with
+`security find-identity -v -p codesigning`.
+
+The current distribution certificate chains through Apple's WWDR G3
+intermediate certificate. If the certificate and private key are imported but
+no valid identity is found on a fresh Mac, install that intermediate from
+[Apple PKI](https://www.apple.com/certificateauthority/) into the signing
+keychain as well. Keep Apple's default trust settings.
+
+For unit tests, also install the iOS simulator runtime with
+`xcodebuild -downloadPlatform iOS`, then use an available iPad simulator from
+`xcrun simctl list devices available` in the test command above.
+
 Uploaded builds cannot be un-expired — expiring one in App Store Connect is
 irreversible.
+
+## Unified host service
+
+**Manage Hosts → host → Host Service** installs, updates, starts, stops, and
+removes one per-user service for shared hardware metrics, Herdr agent inventory,
+and durable agent updates. Linux uses `msam-host-agent.service` under the user's
+systemd manager with linger enabled. macOS uses the logged-in user's
+`com.codem0nky87.msam-host-agent` LaunchAgent; that account must remain logged in.
+Windows uses the native `MSAMHostAgent` Windows service under the account that
+owns the agents. Python 3.9 or newer and Herdr must be installed on the host.
+
+The app stages a complete checksummed bundle, validates it before activation,
+and keeps releases under `~/.local/libexec/msam-host-agent/releases`. The
+`current` release is restored if a replacement fails its health check. After a
+successful migration, the separate updater service and old standalone metrics
+collectors are removed. Existing agent conversations and the durable queues in
+`~/.local/state/msam-agent-updater` are preserved. Service changes are refused
+while an agent update is active. The old `msam-agent-updater` command remains a
+compatibility shim into the unified service, with no separate updater daemon.
+
+Connections only read shared metrics snapshots; reconnecting does not install
+or replace code. Stop and Remove persist until an explicit Start or Install.
+Older app builds still use the old collector installer, so update the app when
+migrating hosts. Metrics channels briefly reconnect during maintenance; terminal
+sessions continue running. Logs and snapshots live in
+`~/.local/state/msam-host-agent`.
+
+Read-only checks on Linux and macOS:
+
+```sh
+~/.local/bin/msam-host-agent status
+~/.local/bin/msam-host-agent metrics
+~/.local/bin/msam-host-agent agents
+~/.local/bin/msam-host-agent updates status
+```
+
+On macOS the installer compiles a small native `msam-host-agent` launcher with
+Apple's command-line tools. It loads the existing Python runtime in that process,
+so Activity Monitor and `ps` identify the service as `msam-host-agent`. It needs
+no pip packages or Python headers. Compilation and runtime checks finish before
+the old service is stopped; a failed update retains the previous service.
+
+Windows requires a one-time elevated service registration with the agent user's
+account password and **Log on as a service** right. The installer reports the
+exact registration command if the service is absent; its password prompt uses
+`getpass`, never command-line arguments or an MSAM credential file. Subsequent
+Manage Hosts actions require permission to configure/start/stop that service.
+See Microsoft's [service account requirements](https://learn.microsoft.com/en-us/windows/win32/services/service-user-accounts).
+Native Windows updates currently support verified npm/pnpm installations of
+Claude Code and Codex. Other installation methods are reported as unavailable;
+use their original installer. WSL should be added as a separate Linux SSH host.
+Live validation on 2026-10-06 used Windows OpenSSH at 192.168.1.47 and an
+iOS 27 iPad simulator on the Mac. Password onboarding, SSH key verification,
+service Stop/Start/Update from Manage Hosts, native Herdr terminals, NVIDIA GPU
+metrics, disks, and physical-network rates were exercised. Codex updated from
+0.148.0 to 0.160.1 through the durable queue while the app was backgrounded.
+The saved Codex login had expired: the resumed CLI requires sign-in, so native
+conversation restoration remains an outstanding live check.
+
+`UITests/WindowsHostLiveUITests.swift` is opt-in. Pass
+`TEST_RUNNER_MSAM_WINDOWS_IT=1` and `TEST_RUNNER_MSAM_WINDOWS_FIXTURE` pointing to
+a local JSON object with `address`, `username`, and `passwordFile`. The password
+file stays outside the repository. Agent updates additionally require
+`TEST_RUNNER_MSAM_WINDOWS_UPDATE_IT=1` and a working native agent login.
+Simulator tests involving the keychain use ad hoc signing
+(`CODE_SIGN_IDENTITY=- CODE_SIGNING_ALLOWED=YES`).
+
+Run collector regressions from the repository root:
+
+```sh
+python3 -B -m unittest discover -s tests -v
+```
+
+Linux CPU, process CPU, and physical-interface throughput share a 0.5-second
+initial sample. Loop iterations reuse the previous counters; the first JSON
+record includes network rates. CPU utilization is a 0–100 percentage across
+the detected logical cores (respecting CPU affinity). The collector's process
+CPU percentage is relative to **one core** and may exceed 100%; the app divides
+it by the reported logical-core count to display each process's share of total
+CPU capacity on the same 0–100 scale as the main gauge. For example, one fully
+busy core on an eight-core host is 12.5%. A missing core count displays an
+unavailable value instead of assuming a single-core host.
+Load average is displayed separately and the load gauge uses the core count.
+
+Linux `free` means `MemFree`; `available` is `MemAvailable`, while used memory
+remains total minus available. `app` is anonymous pages and `cache` is cached
+pages plus buffers. Disk totals sum listed local device volumes, deduplicating
+bind mounts. The aggregate percentage uses used / (used + available), matching
+`df`'s treatment of reserved blocks. Complete mapper device names are retained.
+
+macOS GPU readings use unprivileged IORegistry counters; missing temperature
+or dedicated VRAM capacity stays zero. Disk collection uses local-only `df`
+with a timeout and preserves the APFS container summary. The optional Intel
+CPU temperature probe uses noninteractive sudo with a timeout; the existing
+macOS `top -l 1` CPU calculation is unchanged and already represents total CPU
+capacity. The collector also reports the logical-core count for normalizing
+process CPU and load average.
+
+`HostMetricsModelTests` checks decoding and model updates for both extended
+Linux payloads and older/macOS payloads. New model fields are optional so an
+older collector still decodes.
 
 ## CI
 

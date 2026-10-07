@@ -43,7 +43,11 @@ enum InstallPhase: Equatable {
         }
         phase = .installing
         do {
-            _ = try await installer.runCommand(KeyInstallerScript.authorizedKeysInstallScript(publicKey: publicKey))
+            let platform = try await installer.runCommand(KeyInstallerScript.platformProbe)
+            let command = platform.contains("Windows_NT")
+                ? KeyInstallerScript.windowsAuthorizedKeysInstallScript(publicKey: publicKey)
+                : KeyInstallerScript.authorizedKeysInstallScript(publicKey: publicKey)
+            _ = try await installer.runCommand(command)
         } catch {
             await installer.disconnect()
             phase = .failed(step: .install, message: "Couldn't write the key on the host (permissions?)."); return

@@ -29,7 +29,7 @@ struct AgentUpdateRequest: Equatable, Codable, Sendable {
             guard Self.isLineField(target.herdrSession, maximumBytes: 128) else {
                 throw AgentUpdateRequestValidationError.invalidSession
             }
-            guard target.socketPath.hasPrefix("/"),
+            guard (target.socketPath.hasPrefix("/") || target.socketPath.hasPrefix(#"\\"#) || target.socketPath.range(of: #"^[A-Za-z]:[\\/]"#, options: .regularExpression) != nil),
                   Self.isLineField(target.socketPath, maximumBytes: 1_024) else {
                 throw AgentUpdateRequestValidationError.invalidSocketPath
             }

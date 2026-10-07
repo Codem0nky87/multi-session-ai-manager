@@ -99,15 +99,30 @@ func realSSHTransportRunsCommandAndOpensPTY() async throws {
 
     // Interactive PTY: send a command, give the server a moment, read some bytes.
     let box = OutputBox()
-    let channel = try await transport.openPTY(command: "", cols: 80, rows: 24) { data in
+    let channel = try await transport.openPTY(command: "printf 'MSAM_%s\\n' 'PTY_ENTER_OK'", cols: 80, rows: 24) { data in
         box.append(data)
     }
-    channel.send(Data("echo hi\n".utf8))
+    channel.send(Data("echo hi\r".utf8))
     try await Task.sleep(nanoseconds: 1_500_000_000) // 1.5s for the shell to echo back
     channel.close()
 
     let ptyText = String(decoding: box.value, as: UTF8.self)
     #expect(ptyText.contains("hi"))
+    #expect(ptyText.contains("MSAM_PTY_ENTER_OK"))
+
+    // A JSON-sized record must arrive without terminal wrapping or stderr.
+    let streamBox = OutputBox()
+    let payload = String(repeating: "x", count: 4096)
+    let stream = try await transport.openExecStream(
+        command: "printf '%s\\n' '\(payload)'; printf 'stderr-only\\n' >&2",
+        onOutput: { streamBox.append($0) }, onClose: {})
+    for _ in 0..<50 {
+        if !stream.isOpen { break }
+        try await Task.sleep(for: .milliseconds(100))
+    }
+    #expect(String(decoding: streamBox.value, as: UTF8.self) == payload + "\n")
+    #expect(!stream.isOpen)
+    stream.close()
 
     await transport.disconnect()
 }

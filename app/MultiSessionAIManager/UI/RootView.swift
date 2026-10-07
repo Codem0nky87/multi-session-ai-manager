@@ -66,6 +66,14 @@ final class HostTabsModel {
         await session.stop()
     }
 
+    /// Resolve the selected tab at the instant a key is tapped. Herdr routes
+    /// normal keyboard input from this PTY to its currently focused split.
+    func sendFunctionKey(_ number: Int) {
+        guard let tabID = tabStore.selectedTabID, let session = sessions[tabID],
+              session.status == .live, let bytes = TerminalFunctionKey.bytes(for: number) else { return }
+        session.terminal.feedInputToPTY(bytes)
+    }
+
     /// Retire sessions whose tab is gone, so closing a tab from the strip's
     /// context menu does not leave an SSH channel and its terminal running.
     ///
@@ -94,6 +102,7 @@ struct RootView: View {
     @State private var showingPicker = false
     @State private var showingSettings = false
     @State private var showingFileSend = false
+    @State private var showingFunctionKeys = false
     /// The downloaded file awaiting the user, if any. Set by the watch pipeline.
     @State private var incomingFile: IncomingFile?
     @State private var isFetchingIncoming = false
@@ -177,6 +186,26 @@ struct RootView: View {
                     .accessibilityLabel("Send a file to host")
                     .accessibilityIdentifier("msam.send.file")
                     .background(HerdrTheme.panel, ignoresSafeAreaEdges: [])
+
+                    Button { showingFunctionKeys.toggle() } label: {
+                        Text("fn")
+                            .font(.system(.body, design: .monospaced, weight: .semibold))
+                            .foregroundStyle(isSelectedTabLive ? HerdrTheme.subtext : HerdrTheme.muted)
+                            .frame(width: HerdrChromeMetrics.hostTabBarHeight, height: HerdrChromeMetrics.hostTabBarHeight)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!isSelectedTabLive)
+                    .accessibilityLabel("Function keys")
+                    .accessibilityIdentifier("msam.function-keys")
+                    .background(HerdrTheme.panel, ignoresSafeAreaEdges: [])
+                    .popover(isPresented: $showingFunctionKeys) {
+                        FunctionKeyPalette { number in
+                            tabs.sendFunctionKey(number)
+                            showingFunctionKeys = false
+                        }
+                        .presentationCompactAdaptation(.popover)
+                    }
 
                     Menu {
                         Section("Tab Theme") {

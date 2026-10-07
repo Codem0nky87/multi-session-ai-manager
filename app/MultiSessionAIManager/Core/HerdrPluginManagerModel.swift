@@ -25,6 +25,9 @@ final class HerdrPluginManagerModel {
     private let catalogue: any PluginCatalogueFetching
 
     private(set) var installed: [InstalledPlugin] = []
+    private(set) var setupStatus: [String: [PluginSetupActionStatus]] = [:]
+    private(set) var setupCheckError: String?
+    private var setupGeneration: UInt64 = 0
     private(set) var listState: ListState = .idle
 
     private(set) var results: [CataloguePlugin] = []
@@ -57,7 +60,7 @@ final class HerdrPluginManagerModel {
     /// Set when an install failed only because the host lacks a build
     /// toolchain, so the UI can offer to fix it rather than leaving the user to
     /// go and do it by hand on a machine the app already has a shell on.
-    private(set) var missingToolchain: (tool: BuildToolchainInstaller.Tool, source: String)?
+    private(set) var missingToolchain: (tool: BuildToolchainInstaller.Tool, source: String, ref: String?)?
     /// Populated only when the automatic install has actually failed, so the
     /// manual steps appear as a fallback rather than as noise beside a button
     /// that usually works.
@@ -87,6 +90,7 @@ final class HerdrPluginManagerModel {
         listState = .loading
         do {
             installed = try await HerdrPluginManagement.list(using: service)
+            await refreshSetup(using: service)
             listState = .loaded
         } catch {
             listState = .failed(Self.message(for: error))
@@ -94,6 +98,39 @@ final class HerdrPluginManagerModel {
         // Best-effort: the sheet still works with no update row, so a failed
         // probe stays silent rather than burying the plugin list in an error.
         updateStatus = try? await HerdrUpdate.probe(using: service)
+    }
+
+    func actionStatus(_ actionID: String, pluginID: String) -> PluginSetupActionStatus? {
+        setupStatus[pluginID]?.first { $0.id == actionID }
+    }
+
+    func setupActions(for plugin: InstalledPlugin) -> [PluginAction] {
+        plugin.actions.filter { action in
+            action.contexts.isEmpty && (plugin.keybindingInstallers.contains(action)
+                || actionStatus(action.id, pluginID: plugin.pluginID) != nil)
+        }
+    }
+
+    private func refreshSetup(using service: SSHService) async {
+        setupGeneration &+= 1
+        let generation = setupGeneration
+        setupStatus = [:]
+        setupCheckError = nil
+        do {
+            let statuses = try await HostSoftwareProvisioning.pluginStatus(using: service)
+            guard generation == setupGeneration else { return }
+            for status in statuses {
+                setupStatus[status.pluginID] = status.actions
+            }
+        } catch {
+            guard generation == setupGeneration else { return }
+            setupCheckError = "Setup checks failed: \(error.localizedDescription)"
+        }
+    }
+
+    func refreshSetupIfIdle() async {
+        guard !isBusy, listState == .loaded, let service = connection.provisioningCommandRunner else { return }
+        await refreshSetup(using: service)
     }
 
     // MARK: - Catalogue
@@ -116,6 +153,7 @@ final class HerdrPluginManagerModel {
     /// make a repository a plugin (plenty of unrelated projects wear the tag),
     /// and unauthenticated GitHub allows only a handful of requests a minute.
     func verifyThenInstall(_ plugin: CataloguePlugin) async {
+        guard !isBusy else { return }
         busyIdentifier = plugin.fullName
         operation = Operation(title: plugin.repositoryName, step: "Checking the repository…")
         defer { busyIdentifier = nil; operation = nil }
@@ -141,6 +179,7 @@ final class HerdrPluginManagerModel {
     // MARK: - Operations
 
     func install(source: String, ref: String?) async {
+        guard !isBusy else { return }
         let trimmed = source.trimmingCharacters(in: .whitespacesAndNewlines)
         guard HerdrPluginManagement.isValidSource(trimmed) else {
             errorMessage = "\"\(trimmed)\" is not an owner/repo path."
@@ -160,19 +199,28 @@ final class HerdrPluginManagerModel {
         }
         // A plugin with no prebuilt binary is compiled on the host, so this step
         // is minutes rather than seconds and has to say so.
-        operation = Operation(title: source, step: "Installing on the host…", isSlow: true)
+        operation = Operation(title: source, step: "Checking and installing required dependencies…", isSlow: true)
+        missingToolchain = nil
+        manualSteps = []
         do {
+            if let ref, !ref.isEmpty, !HerdrPluginManagement.isValidRef(ref) {
+                throw HerdrPluginManagement.Failure.invalidSource(ref)
+            }
+            let plan = try await HostSoftwareProvisioning.preparePlugin(source: source, ref: ref, using: service)
+            operation?.step = "Dependencies verified. Installing and activating the plugin…"
             installed = try await HerdrPluginManagement.install(
-                source: source, ref: ref, using: service
+                source: source, ref: plan.ref, expectedPluginID: plan.pluginID, using: service
             )
             listState = .loaded
-            noticeMessage = "Installed \(source)."
+            operation?.step = "Verifying setup actions on this host…"
+            await refreshSetup(using: service)
+            noticeMessage = "Installed and activated \(source). Dependencies verified."
             missingToolchain = nil
         } catch let failure as HerdrPluginManagement.Failure {
             errorMessage = Self.message(for: failure)
             if case .buildToolchainMissing(let tool, _) = failure,
                let known = BuildToolchainInstaller.Tool(rawValue: tool) {
-                missingToolchain = (known, source)
+                missingToolchain = (known, source, ref)
             }
             await refresh()
         } catch {
@@ -181,6 +229,7 @@ final class HerdrPluginManagerModel {
     }
 
     func uninstall(_ plugin: InstalledPlugin) async {
+        guard !isBusy else { return }
         guard let service = connection.provisioningCommandRunner else {
             errorMessage = "Not connected to this host."
             return
@@ -195,6 +244,7 @@ final class HerdrPluginManagerModel {
                 pluginID: plugin.pluginID, using: service
             )
             noticeMessage = "Removed \(plugin.name)."
+            setupStatus.removeValue(forKey: plugin.pluginID)
         } catch {
             errorMessage = Self.message(for: error)
         }
@@ -247,7 +297,7 @@ final class HerdrPluginManagerModel {
         manualSteps = []
         missingToolchain = nil
         operation?.step = "Installed \(pending.tool.rawValue). Retrying the plugin…"
-        await performInstall(source: pending.source, ref: nil, identifier: pending.source)
+        await performInstall(source: pending.source, ref: pending.ref, identifier: pending.source)
     }
 
     // MARK: - File transfer wiring
@@ -292,6 +342,7 @@ final class HerdrPluginManagerModel {
     }
 
     func installKeybinding(_ action: PluginAction, for plugin: InstalledPlugin) async {
+        guard !isBusy else { return }
         guard let service = connection.provisioningCommandRunner else {
             errorMessage = "Not connected to this host."
             return
@@ -303,17 +354,32 @@ final class HerdrPluginManagerModel {
         noticeMessage = nil
 
         do {
+            await refreshSetup(using: service)
+            guard actionStatus(action.id, pluginID: plugin.pluginID)?.canInstall == true else {
+                errorMessage = actionStatus(action.id, pluginID: plugin.pluginID)?.detail
+                    ?? setupCheckError ?? "This action's setup state could not be verified."
+                return
+            }
             // The action's own output is the report: each plugin binds
             // different keys, so only it can say what it did.
             noticeMessage = try await HerdrPluginManagement.invokeAction(
                 pluginID: plugin.pluginID, actionID: action.id, using: service
             )
+            await refreshSetup(using: service)
+            guard actionStatus(action.id, pluginID: plugin.pluginID)?.isReady == true else {
+                noticeMessage = nil
+                errorMessage = "The action completed, but its setup did not verify. "
+                    + (actionStatus(action.id, pluginID: plugin.pluginID)?.detail ?? setupCheckError ?? "Refresh and check the host configuration.")
+                return
+            }
+            noticeMessage = "\(action.title): verified on this host."
         } catch {
             errorMessage = Self.message(for: error)
         }
     }
 
     func configureFileTransfer(for plugin: InstalledPlugin) async {
+        guard !isBusy else { return }
         guard let service = connection.provisioningCommandRunner else {
             errorMessage = "Not connected to this host."
             return
@@ -326,6 +392,11 @@ final class HerdrPluginManagerModel {
 
         var notes: [String] = []
         do {
+            await refreshSetup(using: service)
+            guard actionStatus("msam-file-transfer", pluginID: plugin.pluginID)?.canInstall == true else {
+                errorMessage = actionStatus("msam-file-transfer", pluginID: plugin.pluginID)?.detail ?? setupCheckError
+                return
+            }
             let keys = try await HerdrPluginInstaller.bindKeys(using: service)
             if keys.keybind == .conflict {
                 notes.append("`prefix+f` was already bound, so it was left alone.")
@@ -337,6 +408,11 @@ final class HerdrPluginManagerModel {
             }
         } catch {
             errorMessage = Self.message(for: error)
+            return
+        }
+        await refreshSetup(using: service)
+        guard actionStatus("msam-file-transfer", pluginID: plugin.pluginID)?.isReady == true else {
+            errorMessage = "File transfer setup did not verify. " + notes.joined(separator: " ")
             return
         }
         noticeMessage = ([

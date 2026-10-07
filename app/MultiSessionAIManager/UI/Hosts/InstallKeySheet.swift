@@ -77,6 +77,7 @@ struct InstallKeySheet: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .scrollDismissesKeyboard(.interactively)
+                .accessibilityIdentifier("install.form")
             }
             .navigationTitle("Install key")
             .navigationBarTitleDisplayMode(.inline)

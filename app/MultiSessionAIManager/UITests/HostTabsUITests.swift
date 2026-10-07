@@ -29,6 +29,7 @@ final class HostTabsUITests: XCTestCase {
         )
         XCTAssertTrue(app.buttons["host.tab.add"].exists, "the add-tab button is missing from the strip")
         XCTAssertTrue(app.buttons["msam.settings"].exists, "the MSAM settings cog is missing")
+        XCTAssertFalse(app.buttons["msam.function-keys"].exists, "terminal controls require a selected host tab")
         // Type-agnostic: the deleted shell's identifier must not reappear on any
         // element kind, not just the one its old container happened to use.
         XCTAssertFalse(

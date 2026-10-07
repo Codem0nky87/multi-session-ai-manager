@@ -153,7 +153,7 @@ final class TerminalKeyInputView: UIView, UIKeyInput {
         case .keyboardF1, .keyboardF2, .keyboardF3, .keyboardF4, .keyboardF5, .keyboardF6,
              .keyboardF7, .keyboardF8, .keyboardF9, .keyboardF10, .keyboardF11, .keyboardF12:
             let index = key.keyCode.rawValue - UIKeyboardHIDUsage.keyboardF1.rawValue
-            keyData = index >= 0 && index < EscapeSequences.fn.count ? EscapeSequences.fn[index] : []
+            keyData = TerminalFunctionKey.bytes(for: index + 1) ?? []
 
         default:
             keyData = Array(key.characters.utf8)

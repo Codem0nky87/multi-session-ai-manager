@@ -97,6 +97,14 @@ struct HostListView: View {
                         }
                     )
                     .preferredColorScheme(.dark)
+                case .service(let host):
+                    HostServiceSheet(host: host, keyStore: keyStore, knownHosts: knownHosts,
+                                     onSetupChanged: { setup, policy in
+                        store.update(HostAgentUpdaterPresentation.applying(
+                            setup: setup, policy: policy,
+                            to: store.hosts.first(where: { $0.id == host.id }) ?? host
+                        ))
+                    })
                 case .info(let host):
                     HostInfoSheet(
                         host: host,
@@ -173,6 +181,9 @@ struct HostListView: View {
                     }
                 }
                 .contextMenu {
+                    Button { sheetRoute = .service(host) } label: {
+                        Label("Manage Host Service", systemImage: "server.rack")
+                    }
                     Button {
                         sheetRoute = .edit(host)
                     } label: {
@@ -295,12 +306,14 @@ private enum HostSheetRoute: Identifiable {
     case edit(Host)
     case setup(Host)
     case info(Host)
+    case service(Host)
 
     var id: String {
         switch self {
         case .new: return "new"
         case .edit(let host): return host.id.uuidString
         case .setup(let host): return "setup-\(host.id.uuidString)"
+        case .service(let host): return "service-\(host.id.uuidString)"
         case .info(let host): return "info-\(host.id.uuidString)"
         }
     }
@@ -310,7 +323,7 @@ private enum HostSheetRoute: Identifiable {
         case .new: return nil
         case .edit(let host): return host
         case .setup(let host): return host
-        case .info(let host): return host
+        case .info(let host), .service(let host): return host
         }
     }
 }

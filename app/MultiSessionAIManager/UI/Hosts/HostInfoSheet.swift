@@ -67,22 +67,14 @@ struct HostInfoSheet: View {
             switch context.platform {
             case .macOS: self.osVersion = "macOS"
             case .linux: self.osVersion = "Linux"
+            case .windows: self.osVersion = "Windows"
             case .unsupported(let os): self.osVersion = os
             }
             
-            if service.isWindows {
-                self.serviceVersion = "N/A"
-                self.isRunning = false
-            } else {
-                let verifyResult = try await service.run(
-                    AgentUpdaterInstaller.verificationCommand(for: context),
-                    timeout: .seconds(10),
-                    outputLimit: 65536
-                )
-                let status = try AgentUpdaterInstaller.parseVerification(verifyResult.stdoutString, platform: context.platform)
-                self.serviceVersion = status.helperProtocol == 1 ? "v1 (Installed)" : "Unknown"
-                self.isRunning = status.serviceActive
-            }
+            let status = try await HostServiceInstaller.status(using: service)
+            self.serviceVersion = status.installed ? status.version : "Not installed"
+            self.isRunning = status.running
+
         } catch {
             self.error = error.localizedDescription
         }

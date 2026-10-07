@@ -36,6 +36,10 @@ final class HerdrInstaller {
     /// Shown in the UI *and* sent to the host — one constant so the promise and
     /// the action cannot drift apart.
     static let installCommand = "curl -fsSL https://herdr.dev/install.sh | sh"
+    static let windowsInstallCommand = "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"irm https://herdr.dev/install.ps1 | iex\""
+    var platformInstallCommand: String {
+        connection.provisioningCommandRunner?.isWindows == true ? Self.windowsInstallCommand : Self.installCommand
+    }
     static let updateCommand = "herdr update --handoff"
 
     private static let probeTimeout = Duration.seconds(15)
@@ -105,14 +109,17 @@ final class HerdrInstaller {
         state = .probing
         do {
             let herdr = try await run(
-                "command -v herdr >/dev/null 2>&1 && herdr --version",
+                connection.provisioningCommandRunner?.isWindows == true
+                    ? "if (Get-Command herdr -ErrorAction SilentlyContinue) { herdr --version }"
+                    : "command -v herdr >/dev/null 2>&1 && herdr --version",
                 timeout: Self.probeTimeout
             )
             if let version = Self.parseVersion(herdr.stdoutString) {
                 state = .present(version: version)
                 return
             }
-            let curl = try await run("command -v curl", timeout: Self.probeTimeout)
+            let curl = try await run(connection.provisioningCommandRunner?.isWindows == true
+                                     ? "(Get-Command powershell.exe).Source" : "command -v curl", timeout: Self.probeTimeout)
             let curlAvailable = !curl.stdoutString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             state = .absent(curlAvailable: curlAvailable)
         } catch {
@@ -121,7 +128,7 @@ final class HerdrInstaller {
     }
 
     func install() async {
-        await perform(Self.installCommand)
+        await perform(platformInstallCommand)
     }
 
     func update() async {

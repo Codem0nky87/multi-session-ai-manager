@@ -4,19 +4,26 @@
 # this lands as the next build of the SAME App Store Connect app and supersedes the
 # 1.x hub version for testers.
 #
-# One-time setup (already done on this Mac):
+# One-time setup:
 #   brew install fastlane xcodegen
 #   App Store Connect API key (role: App Manager) exported in the shell:
 #     export ASC_KEY_ID=...; export ASC_ISSUER_ID=...; export ASC_KEY_PATH=...AuthKey_*.p8
 #
-# Ship a build:
+# Build a signed IPA without uploading:
+#   cd app/MultiSessionAIManager && fastlane build_testflight
+#
+# Build and upload:
 #   cd app/MultiSessionAIManager && fastlane beta
+#
+# Upload the already validated IPA without rebuilding it:
+#   cd app/MultiSessionAIManager && fastlane upload_testflight
 # (In this sandbox, prefix with: env -u GIT_CONFIG_COUNT -u GIT_CONFIG_KEY_0 -u GIT_CONFIG_VALUE_0
 #  so SwiftPM can resolve the Citadel / swift-nio-ssh fork.)
 
 require "fileutils"
 require "open3"
 require "securerandom"
+require "digest"
 
 default_platform(:ios)
 
@@ -68,9 +75,26 @@ def install_local_distribution_identity
   UI.message("Using local distribution identity from #{LOCAL_DISTRIBUTION_CERT}")
 end
 
+def verify_host_resources(ipa_path)
+  entries = run_command("unzip", "-Z1", ipa_path).lines.map(&:strip)
+  app_plists = entries.grep(%r{\APayload/[^/]+\.app/Info\.plist\z})
+  UI.user_error!("IPA must contain exactly one main app") unless app_plists.length == 1
+  app_root = File.dirname(app_plists.first)
+  resources = Dir.glob(File.join(PROJECT_ROOT, "Resources", "msam-*")).select { |path| File.file?(path) }
+  missing = resources.reject { |path| entries.include?("#{app_root}/#{File.basename(path)}") }
+  UI.user_error!("IPA is missing host service resources: #{missing.map { |path| File.basename(path) }.join(', ')}") unless missing.empty?
+  resources.each do |path|
+    bundled = run_command("unzip", "-p", ipa_path, "#{app_root}/#{File.basename(path)}")
+    unless Digest::SHA256.hexdigest(bundled) == Digest::SHA256.file(path).hexdigest
+      UI.user_error!("IPA host resource differs from the source: #{File.basename(path)}")
+    end
+  end
+  UI.success("Verified all #{resources.length} bundled host service resources")
+end
+
 platform :ios do
-  desc "Archive and upload a build to TestFlight (internal)"
-  lane :beta do
+  desc "Archive and export a signed IPA for TestFlight without uploading"
+  lane :build_testflight do
     api_key = app_store_connect_api_key(
       key_id: ENV.fetch("ASC_KEY_ID"),
       issuer_id: ENV.fetch("ASC_ISSUER_ID"),
@@ -123,14 +147,9 @@ platform :ios do
       bundle_identifier: APP_IDENTIFIER
     )
 
-    # Pass the App Store Connect API key straight to xcodebuild so
-    # -allowProvisioningUpdates can mint the distribution cert + app-store profile
-    # with no Apple ID signed into Xcode. gym applies xcargs to BOTH archive and
-    # export, so set them here only (not export_xcargs → would double the flags).
-    auth = %(-authenticationKeyPath "#{ENV.fetch('ASC_KEY_PATH')}" ) +
-           %(-authenticationKeyID #{ENV.fetch('ASC_KEY_ID')} ) +
-           %(-authenticationKeyIssuerID #{ENV.fetch('ASC_ISSUER_ID')} ) +
-           %(-allowProvisioningUpdates)
+    # The API-backed steps above install the identity/profile before building.
+    # Export with those explicit manual-signing assets; asking Xcode to refresh
+    # provisioning again can break noninteractive exports on a restored Mac.
 
     build_app(
       project: PROJECT,
@@ -138,7 +157,6 @@ platform :ios do
       configuration: "Release",
       output_directory: "build",
       export_method: "app-store",
-      xcargs: auth,
       export_options: {
         method: "app-store",
         teamID: TEAM_ID,
@@ -149,12 +167,45 @@ platform :ios do
       }
     )
 
+    UI.success("Exported TestFlight build #{build_number} to #{lane_context[SharedValues::IPA_OUTPUT_PATH]}")
+  end
+
+  desc "Upload the existing signed IPA and wait for TestFlight processing (internal)"
+  lane :upload_testflight do |options|
+    ipa_path = File.expand_path(options[:ipa] || "build/MultiSessionAIManager.ipa", PROJECT_ROOT)
+    UI.user_error!("Signed IPA not found: #{ipa_path}") unless File.file?(ipa_path)
+    verify_host_resources(ipa_path)
+
+    api_key = app_store_connect_api_key(
+      key_id: ENV.fetch("ASC_KEY_ID"),
+      issuer_id: ENV.fetch("ASC_ISSUER_ID"),
+      key_filepath: ENV.fetch("ASC_KEY_PATH")
+    )
+
     upload_to_testflight(
       api_key: api_key,
+      app_identifier: APP_IDENTIFIER,
+      ipa: ipa_path,
+      changelog: options[:changelog],
+      skip_waiting_for_build_processing: false,
+      wait_processing_timeout_duration: 1800,
+      distribute_external: false
+    )
+
+    UI.success("Uploaded IPA and completed TestFlight processing")
+  end
+
+  desc "Archive and upload a build to TestFlight (internal)"
+  lane :beta do
+    build_testflight
+    verify_host_resources(lane_context[SharedValues::IPA_OUTPUT_PATH])
+
+    upload_to_testflight(
+      api_key: lane_context[SharedValues::APP_STORE_CONNECT_API_KEY],
       skip_waiting_for_build_processing: true,
       distribute_external: false
     )
 
-    UI.success("Uploaded build #{build_number} to TestFlight ✈️")
+    UI.success("Uploaded build to TestFlight ✈️")
   end
 end

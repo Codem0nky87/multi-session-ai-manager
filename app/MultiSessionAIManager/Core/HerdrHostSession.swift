@@ -152,6 +152,7 @@ final class HerdrHostSession {
         self.terminal = terminal
         self.liveness = liveness
         self.recovery = recovery
+        HostMetricsLifecycle.shared.register(self)
     }
 
     /// Whether the heartbeat should spend a round trip: only when the link has
@@ -359,6 +360,7 @@ final class HerdrHostSession {
 
     func ensureMetricsStream() async {
         guard status == .live, let service = connection.provisioningCommandRunner else { return }
+        guard !HostMetricsLifecycle.shared.isUpdating(connection.host) else { return }
         guard metricsChannel?.isOpen != true else { return }
         if let metricsTask {
             await metricsTask.value
@@ -394,15 +396,15 @@ final class HerdrHostSession {
         sessionGeneration: UInt64
     ) async {
         do {
-            try await MSAMMetricsInstaller.install(using: service)
+            guard try await MSAMMetricsInstaller.ensureInstalled(using: service) else { return }
+            guard metricsGeneration == metricsAttemptGeneration,
+                  !HostMetricsLifecycle.shared.isUpdating(connection.host),
+                  !Task.isCancelled else { return }
             
-            let isWindows = service.isWindows
-            let cmd = isWindows ? "powershell -ExecutionPolicy Bypass -Command \"& \\\"$env:USERPROFILE\\.local\\bin\\msam-metrics.ps1\\\" -loop\"" : "$HOME/.local/bin/msam-metrics --loop"
+            let cmd = HostServiceInstaller.metricsCommand(isWindows: service.isWindows)
             
-            let candidate = try await service.openPTY(
+            let candidate = try await service.openExecStream(
                 command: cmd,
-                cols: 200,
-                rows: 24,
                 onOutput: { [weak self] data in
                     let lines = accumulator.withLockedValue { $0.consume(data) }
                     guard !lines.isEmpty else { return }
@@ -435,6 +437,12 @@ final class HerdrHostSession {
         metricsTask = nil
         metricsChannel?.close()
         metricsChannel = nil
+    }
+
+    func pauseMetricsStream() async {
+        let pending = metricsTask
+        retireMetrics()
+        await pending?.value
     }
     
     private func processMetrics(

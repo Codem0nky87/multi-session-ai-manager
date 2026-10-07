@@ -103,7 +103,7 @@ struct AddHostWizardView: View {
             Text("Herdr is not installed.")
                 .foregroundStyle(Theme.warning)
             if curlAvailable {
-                command(HerdrInstaller.installCommand)
+                command(model.herdr.platformInstallCommand)
                 NeonButton(title: "Install Herdr", systemImage: "arrow.down.circle", enabled: !isWorking) {
                     run { await model.installHerdr() }
                 }
@@ -135,19 +135,19 @@ struct AddHostWizardView: View {
             VStack(alignment: .leading, spacing: Theme.Space.md) {
                 SectionLabel(text: "2 · Host services")
                 if !model.herdrReady {
-                    Text("Verify Herdr first, then install hardware metrics and the background agent updater.")
+                    Text("Verify Herdr first, then install the host service for agents, updates, and hardware metrics.")
                         .foregroundStyle(Theme.textSecondary)
                 } else {
                     switch model.metricsState {
                     case .idle:
-                        Text("Hardware metrics: ready to install")
+                        Text("Host service: ready to install")
                     case .installing:
-                        progress("Installing hardware metrics…")
+                        progress("Installing the host service…")
                     case .ready:
-                        Label("Hardware metrics installed", systemImage: "checkmark.circle.fill")
+                        Label("Host service and metrics installed", systemImage: "checkmark.circle.fill")
                             .foregroundStyle(Theme.success)
                     case .failed(let message):
-                        problem("Hardware metrics: \(message)")
+                        problem("Host service: \(message)")
                     }
                     updaterStatus(model.updater)
                     if let warning = HostAgentUpdaterPresentation.warning(for: model.updaterSetup),

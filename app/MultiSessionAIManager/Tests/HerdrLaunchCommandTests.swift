@@ -3,6 +3,14 @@ import Testing
 @testable import MultiSessionAIManager
 
 @Suite struct HerdrLaunchCommandTests {
+    @Test func windowsLaunchUsesHerdrAndQuotesTheNamedSession() throws {
+        let command = HerdrLaunchCommand.windowsLaunch(sessionName: " build's window ")
+        let encoded = try #require(command.split(separator: " ").last)
+        let bytes = try #require(Data(base64Encoded: String(encoded)))
+        let script = try #require(String(data: bytes, encoding: .utf16LittleEndian))
+        #expect(script.contains("& herdr --session 'build''s window'"))
+        #expect(script.contains("GetEnvironmentVariable('Path','User')"))
+    }
     @Test func defaultSessionLaunchesPlainHerdrThroughALoginShell() {
         let command = HerdrLaunchCommand.launch(sessionName: nil)
         #expect(command.hasPrefix("$SHELL -lc "))

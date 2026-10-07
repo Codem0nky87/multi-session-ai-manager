@@ -48,17 +48,34 @@ struct ServiceSetupLiveTests {
         #expect(try FileManager.default.contentsOfDirectory(atPath: locked) == ["original"])
     }
 
-    @Test func metricsInstallWorksWithoutSFTP() async throws {
+    @Test func hostServiceBundleUploadsWithoutSFTP() async throws {
         let (service, root) = try await connect()
         defer { Task { await service.disconnect() } }
-        try await SSHCommandDeadline.run(timeout: .seconds(10)) {
-            try await MSAMMetricsInstaller.install(using: service)
+        let directory = root + "/.host-service-upload-test"
+        _ = try await service.run("mkdir -p \(POSIXShell.quote(directory))", timeout: .seconds(10), outputLimit: 1024)
+        for name in HostServiceInstaller.resources {
+            let bundled = try HostServiceInstaller.resource(name)
+            let destination = directory + "/" + name
+            try await service.writeSetupFile(bundled, to: destination, permissions: 0o700)
+            #expect(try Data(contentsOf: URL(fileURLWithPath: destination)) == bundled)
+            #expect(FileManager.default.isExecutableFile(atPath: destination))
         }
-        let destination = root + "/.local/bin/msam-metrics"
-        let installed = try Data(contentsOf: URL(fileURLWithPath: destination))
-        let bundled = try Data(contentsOf: #require(Bundle.main.url(forResource: "msam-metrics", withExtension: "py")))
-        #expect(installed == bundled)
-        #expect(FileManager.default.isExecutableFile(atPath: destination))
+    }
+
+    @Test func boundedCommandsPreserveExitStatusAndDiagnostics() async throws {
+        let (service, _) = try await connect()
+        defer { Task { await service.disconnect() } }
+        for status in [0, 7, 127] {
+            let result = try await service.runRaw(
+                "printf 'before-exit'; printf 'installer diagnostic' >&2; exit \(status)",
+                timeout: .seconds(10), outputLimit: 4096)
+            #expect(result.exitStatus == Int32(status))
+            #expect(result.stdoutString == "before-exit")
+            #expect(result.stderrString == "installer diagnostic")
+        }
+        await #expect(throws: SSHCommandExecutionError.outputLimitExceeded(limit: 16)) {
+            _ = try await service.runRaw("printf 'output larger than the requested limit'", timeout: .seconds(10), outputLimit: 16)
+        }
     }
 
     @Test func execUploadPreservesBytesAndOriginalFileOnFailure() async throws {
@@ -112,8 +129,8 @@ struct ServiceSetupLiveTests {
         [ "$XDG_RUNTIME_DIR" = /run/user/4242 ] || exit 1
         [ "$DBUS_SESSION_BUS_ADDRESS" = unix:path=/run/user/4242/bus ] || exit 1
         case "$*" in
-          '--user enable --now msam-agent-updater.service') touch "$HOME/service-started" ;;
-          '--user is-active --quiet msam-agent-updater.service') test -f "$HOME/service-started" ;;
+          '--user enable --now msam-host-agent.service') touch "$HOME/service-started" ;;
+          '--user is-active --quiet msam-host-agent.service') test -f "$HOME/service-started" ;;
           '--user daemon-reload') exit 0 ;;
           *) exit 1 ;;
         esac

@@ -25,6 +25,21 @@ private func makeModel(installer: FakeKeyInstaller,
     #expect(inst.commandsRun.contains { $0.contains("authorized_keys") })
 }
 
+@Test @MainActor func windowsAdministratorKeyUsesOpenSSHAccountPolicy() async throws {
+    let installer = FakeKeyInstaller()
+    installer.responses[KeyInstallerScript.platformProbe] = "Windows_NT $env:OS"
+    let model = makeModel(installer: installer, verify: { _ in true })
+    await model.run(username: "Administrator", password: "test-only")
+    #expect(model.phase == .success)
+    let command = try #require(installer.commandsRun.last)
+    let encoded = try #require(command.split(separator: " ").last)
+    let bytes = try #require(Data(base64Encoded: String(encoded)))
+    let script = try #require(String(data: bytes, encoding: .utf16LittleEndian))
+    #expect(script.contains("administrators_authorized_keys"))
+    #expect(script.contains("S-1-5-32-544:F"))
+    #expect(!script.contains("chmod"))
+}
+
 @Test @MainActor func connectFailureStopsAtConnect() async {
     let inst = FakeKeyInstaller(); inst.connectError = KeyInstallError.authFailed
     let m = makeModel(installer: inst, verify: { _ in true })

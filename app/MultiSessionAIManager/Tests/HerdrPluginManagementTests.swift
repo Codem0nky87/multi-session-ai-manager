@@ -240,6 +240,32 @@ import Testing
         #expect(transport.commandsRun == connectedCommands)
     }
 
+    @Test func anUnrelatedPluginAppearingCannotVerifyTheRequestedInstall() async throws {
+        let (service, transport) = try await makeService()
+        stub(transport, [listJSON([]), "Install failed", listJSON(["other"])])
+        await #expect(throws: HerdrPluginManagement.Failure.self) {
+            try await HerdrPluginManagement.install(source: "owner/thing", using: service)
+        }
+    }
+
+    @Test func aStaleInstalledRevisionCannotVerifyANewInstall() async throws {
+        let (service, transport) = try await makeService()
+        stub(transport, [listJSON(["thing"]), "Build failed", listJSON(["thing"])])
+        await #expect(throws: HerdrPluginManagement.Failure.self) {
+            try await HerdrPluginManagement.install(source: "owner/thing", ref: "new-commit",
+                                                    expectedPluginID: "thing", using: service)
+        }
+    }
+
+    @Test func aDisabledInstalledPluginIsEnabledAndCheckedAgain() async throws {
+        let (service, transport) = try await makeService()
+        let disabled = listJSON(["thing"]).replacingOccurrences(of: "\"enabled\":true", with: "\"enabled\":false")
+        stub(transport, [listJSON([]), "Installed", disabled, "Enabled", listJSON(["thing"])])
+        let result = try await HerdrPluginManagement.install(source: "owner/thing", using: service)
+        #expect(result.first?.enabled == true)
+        #expect(transport.commandsRun.contains { $0.contains("herdr plugin enable thing") })
+    }
+
     private func ackJSON(logID: String) -> String {
         """
         {"id":"cli:plugin","result":{"action":{"action_id":"install-keybindings",\
@@ -371,11 +397,18 @@ private final class StubCatalogue: PluginCatalogueFetching, @unchecked Sendable 
         let (model, transport) = makeModel(StubCatalogue())
         await model.connection.connect()
         let empty = "{\"result\":{\"plugins\":[]}}"
-        let installed = "{\"result\":{\"plugins\":[{\"plugin_id\":\"thing\",\"name\":\"thing\",\"source\":{\"kind\":\"github\",\"owner\":\"owner\",\"repo\":\"thing\"}}]}}"
+        let installed = "{\"result\":{\"plugins\":[{\"plugin_id\":\"thing\",\"name\":\"thing\",\"source\":{\"kind\":\"github\",\"owner\":\"owner\",\"repo\":\"thing\",\"resolved_commit\":\"abc123\"}}]}}"
+        let location = #"MSAM_SOFTWARE={"path":"/home/alice/.local/libexec/msam-host-software/test/software.py","present":true}"#
+        let setup = #"MSAM_SOFTWARE={"plugins":[]}"#
         let outputs: [Result<String, SSHCommandExecutionError>] = [
+            .success(location),
+            .success(#"MSAM_SOFTWARE={"source":"owner/thing","ref":"abc123","pluginID":"thing","dependencies":[]}"#),
             .success(empty),
             succeeds ? .success("Installed") : .failure(.ambiguousDisconnect),
             .success(succeeds ? installed : empty),
+            .success(succeeds ? location : empty),
+            .success(succeeds ? setup : location),
+            .success(setup),
             .success(empty),
             .success("{}")
         ]
@@ -424,6 +457,25 @@ private final class StubCatalogue: PluginCatalogueFetching, @unchecked Sendable 
         await model.installKeybinding(action, for: ferry)
         #expect(model.errorMessage == "Not connected to this host.")
         #expect(!transport.commandsRun.contains { $0.contains("action invoke") })
+    }
+
+    @Test func anAlreadyConfiguredActionCannotRunAgain() async {
+        let (model, transport) = makeModel(StubCatalogue())
+        await model.connection.connect()
+        let outputs = [
+            #"MSAM_SOFTWARE={"path":"/home/alice/software.py","present":true}"#,
+            #"MSAM_SOFTWARE={"plugins":[{"pluginID":"shadowfax.ferry","actions":[{"id":"install-keybindings","state":"ready","detail":"Key bindings verified."}]}]}"#
+        ]
+        transport.structuredCommandResults = outputs.map {
+            .success(SSHCommandResult(exitStatus: 0, stdout: Data($0.utf8), stderr: Data()))
+        }
+        let action = PluginAction(id: "install-keybindings", title: "Install keybinding", description: "", contexts: [])
+        let plugin = InstalledPlugin(pluginID: "shadowfax.ferry", name: "Ferry", version: "1", description: "", enabled: true, originRepository: nil, actions: [action])
+        await model.installKeybinding(action, for: plugin)
+        #expect(!transport.commandsRun.contains { $0.contains("action invoke") })
+        #expect(model.actionStatus(action.id, pluginID: plugin.pluginID)?.isReady == true)
+        #expect(!model.isBusy)
+        await model.connection.disconnect()
     }
 
     @Test func aRepoWithoutAManifestIsRefusedBeforeAnyInstallRuns() async {

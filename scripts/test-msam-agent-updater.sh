@@ -123,14 +123,14 @@ ARCHITECTURE_DOC="$ROOT/docs/architecture.md"
 for document in "$HOST_SETUP_DOC" "$DEVELOPMENT_DOC" "$ARCHITECTURE_DOC"; do
   [ -f "$document" ] || fail "missing updater documentation: $document"
 done
-assert_file_contains "$HOST_SETUP_DOC" 'com.codem0nky87.msam-agent-updater'
-assert_file_contains "$HOST_SETUP_DOC" 'msam-agent-updater.service'
+assert_file_contains "$HOST_SETUP_DOC" 'com.codem0nky87.msam-host-agent'
+assert_file_contains "$HOST_SETUP_DOC" 'msam-host-agent.service'
 # These are literal copy/paste contracts in documentation, not shell expansion.
 # shellcheck disable=SC2088
 assert_file_contains "$HOST_SETUP_DOC" '~/.local/libexec/msam-agent-updater status'
 # shellcheck disable=SC2016
-assert_file_contains "$DEVELOPMENT_DOC" 'launchctl print gui/$(id -u)/com.codem0nky87.msam-agent-updater'
-assert_file_contains "$DEVELOPMENT_DOC" 'systemctl --user is-active msam-agent-updater.service'
+assert_file_contains "$DEVELOPMENT_DOC" 'launchctl print gui/$(id -u)/com.codem0nky87.msam-host-agent'
+assert_file_contains "$DEVELOPMENT_DOC" 'systemctl --user is-active msam-host-agent.service'
 # shellcheck disable=SC2088
 assert_file_contains "$DEVELOPMENT_DOC" '~/.local/libexec/msam-agent-updater verify-service'
 assert_file_contains "$ARCHITECTURE_DOC" 'Core/AgentUpdateManager.swift'

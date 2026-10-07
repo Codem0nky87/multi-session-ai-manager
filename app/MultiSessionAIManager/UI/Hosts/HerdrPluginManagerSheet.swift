@@ -58,6 +58,10 @@ struct HerdrPluginManagerSheet: View {
         .task {
             await model.refresh()
             if case .idle = model.catalogueState { await model.search("") }
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(15)) } catch { return }
+                await model.refreshSetupIfIdle()
+            }
         }
         .sheet(item: Binding(
             get: { interactive.map { InteractiveCommandBox(session: $0) } },
@@ -77,6 +81,9 @@ struct HerdrPluginManagerSheet: View {
     // MARK: - Messages
 
     @ViewBuilder private var messages: some View {
+        if let error = model.setupCheckError {
+            noticeRow(error, icon: "exclamationmark.triangle", tint: Theme.warning)
+        }
         if let error = model.errorMessage {
             noticeRow(error, icon: "exclamationmark.triangle.fill", tint: Theme.danger)
                 .accessibilityIdentifier("host.plugins.error")
@@ -221,6 +228,7 @@ struct HerdrPluginManagerSheet: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Refresh installed plugins")
+                    .disabled(model.isBusy)
                     .accessibilityIdentifier("host.plugins.refresh")
                 }
 
@@ -293,31 +301,42 @@ struct HerdrPluginManagerSheet: View {
                 // touch-only iPad the keybinding is how the plugin is opened,
                 // since no touch gesture produces the right-click that raises
                 // Herdr's pane menu.
-                ForEach(plugin.keybindingInstallers, id: \.id) { action in
-                    Button {
-                        Task { await model.installKeybinding(action, for: plugin) }
-                    } label: {
-                        Text(action.title)
-                            .font(.system(.footnote, design: .rounded, weight: .semibold))
-                            .foregroundStyle(Theme.accent)
-                            .frame(minHeight: 44)
+                ForEach(model.setupActions(for: plugin), id: \.id) { action in
+                    let status = model.actionStatus(action.id, pluginID: plugin.pluginID)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Button {
+                            Task { await model.installKeybinding(action, for: plugin) }
+                        } label: {
+                            Label(status?.isReady == true ? "Configured" : action.title,
+                                  systemImage: status?.isReady == true ? "checkmark.seal.fill" : "keyboard")
+                                .font(.system(.footnote, design: .rounded, weight: .semibold))
+                                .frame(minHeight: 44)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(model.isBusy || status?.canInstall != true)
+                        .accessibilityIdentifier("host.plugins.keybinding.\(plugin.pluginID).\(action.id)")
+                        Text(status?.detail ?? "Setup not yet verified.")
+                            .font(.caption).foregroundStyle(Theme.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    .buttonStyle(.plain)
-                    .disabled(model.isBusy)
-                    .accessibilityIdentifier("host.plugins.keybinding.\(plugin.pluginID).\(action.id)")
                 }
                 if model.isFileViewer(plugin) {
-                    Button {
-                        Task { await model.configureFileTransfer(for: plugin) }
-                    } label: {
-                        Text("Send files here")
-                            .font(.system(.footnote, design: .rounded, weight: .semibold))
-                            .foregroundStyle(Theme.accent)
-                            .frame(minHeight: 44)
+                    let status = model.actionStatus("msam-file-transfer", pluginID: plugin.pluginID)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Button {
+                            Task { await model.configureFileTransfer(for: plugin) }
+                        } label: {
+                            Text(status?.isReady == true ? "File transfer configured" : "Send files here")
+                                .font(.system(.footnote, design: .rounded, weight: .semibold))
+                                .frame(minHeight: 44)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(model.isBusy || status?.canInstall != true)
+                        .accessibilityIdentifier("host.plugins.filetransfer")
+                        Text(status?.detail ?? "Setup not yet verified.")
+                            .font(.caption).foregroundStyle(Theme.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    .buttonStyle(.plain)
-                    .disabled(model.isBusy)
-                    .accessibilityIdentifier("host.plugins.filetransfer")
                 }
                 Button(role: .destructive) {
                     Task { await model.uninstall(plugin) }

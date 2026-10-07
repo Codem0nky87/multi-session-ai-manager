@@ -674,7 +674,7 @@ struct HostSetupHelpSheet: View {
                 if curlAvailable {
                     commandRow(
                         title: "Will run on the host",
-                        command: HerdrInstaller.installCommand,
+                        command: installer.platformInstallCommand,
                         identifier: "host.setup.herdr.command"
                     )
                     herdrActionButton("Install Herdr", id: "host.setup.herdr.install") {

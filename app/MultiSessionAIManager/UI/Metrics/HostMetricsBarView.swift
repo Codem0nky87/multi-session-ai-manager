@@ -17,7 +17,7 @@ struct HostMetricsBarView: View {
                 VStack(spacing: 0) {
                     Text("CPU")
                         .font(HerdrTheme.mono(.caption2, weight: .bold))
-                    Text("\(Int(metricsModel.cpu.utilization))%")
+                    Text(metricsModel.cpu.utilizationText)
                         .font(HerdrTheme.mono(.caption, weight: .bold))
                 }
                 .foregroundStyle(HerdrTheme.subtext)
@@ -25,6 +25,7 @@ struct HostMetricsBarView: View {
             .buttonStyle(.plain)
             .popover(isPresented: $showingCPUDetail, arrowEdge: .top) {
                 CPUMetricsDetailView(metrics: metricsModel.cpu)
+                    .metricsPopoverBody(width: 320)
                     .presentationCompactAdaptation(.popover)
             }
             
@@ -41,30 +42,13 @@ struct HostMetricsBarView: View {
             }
             .buttonStyle(.plain)
             .disabled(metricsModel.gpu.modelName.isEmpty)
+            .accessibilityIdentifier("metrics.gpu")
             .popover(isPresented: $showingGPUDetail, arrowEdge: .top) {
                 GPUMetricsDetailView(metrics: metricsModel.gpu)
+                    .metricsPopoverBody(width: 320)
                     .presentationCompactAdaptation(.popover)
             }
             
-
-            Button {
-                showingDiskDetail.toggle()
-            } label: {
-                VStack(spacing: 0) {
-                    Text("DSK")
-                        .font(HerdrTheme.mono(.caption2, weight: .bold))
-                    Text("\(Int(metricsModel.disk.usagePercent))%")
-                        .font(HerdrTheme.mono(.caption, weight: .bold))
-                }
-                .foregroundStyle(metricsModel.disk.totalGB > 0 ? HerdrTheme.subtext : HerdrTheme.muted)
-            }
-            .buttonStyle(.plain)
-            .disabled(metricsModel.disk.totalGB == 0)
-            .popover(isPresented: $showingDiskDetail, arrowEdge: .top) {
-                DiskMetricsDetailView(metrics: metricsModel.disk)
-                    .presentationCompactAdaptation(.popover)
-            }
-
             Button {
                 showingMemoryDetail.toggle()
             } label: {
@@ -79,9 +63,38 @@ struct HostMetricsBarView: View {
             .buttonStyle(.plain)
             .popover(isPresented: $showingMemoryDetail, arrowEdge: .top) {
                 MemoryMetricsDetailView(metrics: metricsModel.memory)
+                    .metricsPopoverBody(width: 320)
                     .presentationCompactAdaptation(.popover)
             }
-            
+
+            Button {
+                showingDiskDetail.toggle()
+            } label: {
+                VStack(spacing: 0) {
+                    Text("DSK")
+                        .font(HerdrTheme.mono(.caption2, weight: .bold))
+                    Text("\(Int(metricsModel.disk.usagePercent))%")
+                        .font(HerdrTheme.mono(.caption, weight: .bold))
+                    if let hottest = metricsModel.disk.hottestTemperature,
+                       hottest >= DiskMetrics.hotTemperatureThreshold {
+                        // Only surface heat in the bar when it is actually hot;
+                        // the popover carries the per-disk detail.
+                        Text("\(Int(hottest))°C")
+                            .font(HerdrTheme.mono(.caption2, weight: .bold))
+                            .foregroundStyle(.red)
+                    }
+                }
+                .foregroundStyle(metricsModel.disk.totalGB > 0 ? HerdrTheme.subtext : HerdrTheme.muted)
+            }
+            .buttonStyle(.plain)
+            .disabled(metricsModel.disk.totalGB == 0)
+            .accessibilityIdentifier("metrics.disk")
+            .popover(isPresented: $showingDiskDetail, arrowEdge: .top) {
+                DiskMetricsDetailView(metrics: metricsModel.disk)
+                    .metricsPopoverBody(width: 340)
+                    .presentationCompactAdaptation(.popover)
+            }
+
             Button {
                 showingNetworkDetail.toggle()
             } label: {
@@ -102,6 +115,7 @@ struct HostMetricsBarView: View {
             .buttonStyle(.plain)
             .popover(isPresented: $showingNetworkDetail, arrowEdge: .top) {
                 NetworkMetricsDetailView(metrics: metricsModel.network)
+                    .metricsPopoverBody(width: 320)
                     .presentationCompactAdaptation(.popover)
             }
 

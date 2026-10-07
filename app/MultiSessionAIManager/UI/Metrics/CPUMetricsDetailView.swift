@@ -13,7 +13,7 @@ struct CircularGaugeView: View {
                 Circle()
                     .stroke(HerdrTheme.panel, lineWidth: 8)
                 Circle()
-                    .trim(from: 0, to: CGFloat(value / max))
+                    .trim(from: 0, to: CGFloat(Swift.min(1, Swift.max(0, value / Swift.max(1, max)))))
                     .stroke(color, style: StrokeStyle(lineWidth: 8, lineCap: .round))
                     .rotationEffect(.degrees(-90))
                 Text(title)
@@ -47,9 +47,11 @@ struct CPUMetricsDetailView: View {
             // Gauges
             HStack(spacing: 24) {
                 CircularGaugeView(value: metrics.temperature, max: 100, title: "\(Int(metrics.temperature))°C", color: .blue)
-                CircularGaugeView(value: metrics.utilization, max: 100, title: "\(Int(metrics.utilization))%", color: .blue)
+                CircularGaugeView(value: metrics.utilization, max: 100, title: metrics.utilizationText, color: .blue)
                     .scaleEffect(1.2) // Make the center one slightly larger
-                CircularGaugeView(value: metrics.loadAverage1m, max: 10, title: String(format: "%.2f", metrics.loadAverage1m), color: .blue)
+                if let coreCount = metrics.coreCount, coreCount > 0 {
+                    CircularGaugeView(value: metrics.loadAverage1m, max: Double(coreCount), title: String(format: "%.2f", metrics.loadAverage1m), color: .blue)
+                }
             }
             .padding(.bottom, 8)
             
@@ -87,11 +89,11 @@ struct CPUMetricsDetailView: View {
             
             // Details List
             VStack(spacing: 8) {
-                detailRow(label: "System:", value: "\(Int(metrics.systemUsage))%", color: .red)
-                detailRow(label: "User:", value: "\(Int(metrics.userUsage))%", color: .blue)
-                detailRow(label: "Idle:", value: "\(Int(metrics.idleUsage))%", color: .gray)
-                if metrics.efficiencyCoreUsage > 0 || metrics.performanceCoreUsage > 0 { detailRow(label: "Efficiency cores:", value: "\(Int(metrics.efficiencyCoreUsage))%", color: .cyan) }
-                if metrics.efficiencyCoreUsage > 0 || metrics.performanceCoreUsage > 0 { detailRow(label: "Performance cores:", value: "\(Int(metrics.performanceCoreUsage))%", color: .indigo) }
+                detailRow(label: "System:", value: CPUMetrics.formatPercent(metrics.systemUsage), color: .red)
+                detailRow(label: "User:", value: CPUMetrics.formatPercent(metrics.userUsage), color: .blue)
+                detailRow(label: "Idle:", value: CPUMetrics.formatPercent(metrics.idleUsage), color: .gray)
+                if metrics.efficiencyCoreUsage > 0 || metrics.performanceCoreUsage > 0 { detailRow(label: "Efficiency cores:", value: CPUMetrics.formatPercent(metrics.efficiencyCoreUsage), color: .cyan) }
+                if metrics.efficiencyCoreUsage > 0 || metrics.performanceCoreUsage > 0 { detailRow(label: "Performance cores:", value: CPUMetrics.formatPercent(metrics.performanceCoreUsage), color: .indigo) }
                 
                 HStack {
                     Text("Uptime:")
@@ -113,6 +115,12 @@ struct CPUMetricsDetailView: View {
                 detailRow(label: "1 minute:", value: String(format: "%.2f", metrics.loadAverage1m))
                 detailRow(label: "5 minutes:", value: String(format: "%.2f", metrics.loadAverage5m))
                 detailRow(label: "15 minutes:", value: String(format: "%.2f", metrics.loadAverage15m))
+                if let coreCount = metrics.coreCount, coreCount > 0 {
+                    detailRow(label: "Logical cores:", value: String(coreCount))
+                }
+                if let loadPerCore = metrics.loadPerCore {
+                    detailRow(label: "Load per core:", value: String(format: "%.2f", loadPerCore))
+                }
             }
             
             Divider().background(HerdrTheme.selection)
@@ -126,7 +134,7 @@ struct CPUMetricsDetailView: View {
                         .font(HerdrTheme.mono(.caption, weight: .bold))
                         .foregroundStyle(HerdrTheme.subtext)
                     Spacer()
-                    Text("Usage")
+                    Text("CPU usage")
                         .font(HerdrTheme.mono(.caption, weight: .bold))
                         .foregroundStyle(HerdrTheme.subtext)
                 }
@@ -140,16 +148,29 @@ struct CPUMetricsDetailView: View {
                             .font(HerdrTheme.mono(.subheadline))
                             .foregroundStyle(HerdrTheme.text)
                         Spacer()
-                        Text(String(format: "%.1f%%", process.usage))
+                        Text(metrics.totalUsagePercent(for: process).map(CPUMetrics.formatPercent) ?? "—")
                             .font(HerdrTheme.mono(.subheadline, weight: .bold))
                             .foregroundStyle(HerdrTheme.text)
                     }
                 }
+
+                Text(processUsageExplanation)
+                    .font(HerdrTheme.mono(.caption))
+                    .foregroundStyle(HerdrTheme.subtext)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding()
         .frame(width: 320)
         .background(HerdrTheme.background)
+    }
+
+    private var processUsageExplanation: String {
+        guard let coreCount = metrics.coreCount, coreCount > 0 else {
+            return "CPU core count unavailable. Update the host service to show total CPU usage."
+        }
+        return "Percentage of total CPU capacity (\(coreCount) logical \(coreCount == 1 ? "core" : "cores"))."
     }
     
     private func detailRow(label: String, value: String, color: Color? = nil) -> some View {

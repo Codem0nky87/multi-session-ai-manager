@@ -25,6 +25,7 @@ struct InstalledPlugin: Identifiable, Equatable, Sendable {
     /// plugin, so nothing could ever be recognised as already installed.
     let originRepository: String?
     var actions: [PluginAction] = []
+    var resolvedCommit: String? = nil
 
     var id: String { pluginID }
 
@@ -85,7 +86,7 @@ enum HerdrPluginManagement {
     }
 
     /// How often and how long to ask the log for a still-running action.
-    static let actionVerdictPolls = 5
+    static let actionVerdictPolls = 30
     static let actionVerdictPollDelay = Duration.milliseconds(400)
 
     /// Runs one manifest action and returns a human-readable outcome.
@@ -141,7 +142,7 @@ enum HerdrPluginManagement {
                 continue
             }
         }
-        return "The action started; it is still running on the host."
+        throw Failure.actionFailed("The action is still running. Refresh to verify its result before retrying.")
     }
 
     /// The `log_id` out of a `plugin_action_invoked` ack, or nil for anything
@@ -187,14 +188,16 @@ enum HerdrPluginManagement {
         let allowed = CharacterSet(charactersIn:
             "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
         return parts.allSatisfy { part in
-            !part.isEmpty && part.unicodeScalars.allSatisfy { allowed.contains($0) }
+            !part.isEmpty && part != "." && part != ".." && !part.hasPrefix("-")
+                && part.unicodeScalars.allSatisfy { allowed.contains($0) }
         }
     }
 
     /// A git ref: branch, tag or sha. Same reasoning as `isValidSource`.
     static func isValidRef(_ ref: String) -> Bool {
         let trimmed = ref.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed.count <= 100 else { return false }
+        guard !trimmed.isEmpty, trimmed.count <= 100, !trimmed.hasPrefix("-"),
+              !trimmed.split(separator: "/").contains("..") else { return false }
         let allowed = CharacterSet(charactersIn:
             "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-/")
         return trimmed.unicodeScalars.allSatisfy { allowed.contains($0) }
@@ -203,7 +206,7 @@ enum HerdrPluginManagement {
     /// A plugin id, for uninstall.
     static func isValidPluginID(_ pluginID: String) -> Bool {
         let trimmed = pluginID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed.count <= 128 else { return false }
+        guard !trimmed.isEmpty, trimmed.count <= 128, !trimmed.hasPrefix("-") else { return false }
         // The manifest spec allows letters, digits, dot, colon, underscore, hyphen.
         let allowed = CharacterSet(charactersIn:
             "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-")
@@ -244,6 +247,7 @@ enum HerdrPluginManagement {
     static func install(
         source: String,
         ref: String? = nil,
+        expectedPluginID: String? = nil,
         using service: SSHService
     ) async throws -> [InstalledPlugin] {
         let trimmedSource = source.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -253,7 +257,9 @@ enum HerdrPluginManagement {
             throw Failure.invalidSource(trimmedRef)
         }
 
-        let before = (try? await list(using: service)) ?? []
+        // Refuse to start a mutation when the host's plugin inventory cannot
+        // be read. The post-install check below verifies the exact plugin.
+        _ = try await list(using: service)
 
         // A throw here is NOT conclusive. A plugin install downloads a prebuilt
         // binary and falls back to a cargo build, so it can run for minutes; over
@@ -268,7 +274,8 @@ enum HerdrPluginManagement {
         var installOutput = ""
         do {
             let result = try await service.run(
-                installCommand(source: trimmedSource, ref: trimmedRef),
+                (service.isWindows ? "" : "PATH=\"$HOME/.cargo/bin:$HOME/.local/bin:$HOME/.bun/bin:/opt/homebrew/bin:$PATH\"; export PATH; ")
+                    + installCommand(source: trimmedSource, ref: trimmedRef),
                 timeout: installTimeout,
                 outputLimit: outputLimit
             )
@@ -277,7 +284,7 @@ enum HerdrPluginManagement {
             installFailure = error
         }
 
-        let after: [InstalledPlugin]
+        var after: [InstalledPlugin]
         do {
             after = try await list(using: service)
         } catch {
@@ -290,8 +297,11 @@ enum HerdrPluginManagement {
         // enough: reinstalling an existing plugin REPLACES it, so the count is
         // unchanged even though the install succeeded.
         let wanted = repositoryComponent(of: trimmedSource).lowercased()
-        let present = after.contains { $0.originRepository?.lowercased() == wanted }
-        guard present || after.count > before.count else {
+        let matching = after.first {
+            $0.originRepository?.lowercased() == wanted && (expectedPluginID == nil || $0.pluginID == expectedPluginID)
+                && (expectedPluginID == nil || $0.resolvedCommit == trimmedRef)
+        }
+        guard let matching else {
             // A missing build toolchain has a specific, actionable fix, so it is
             // told apart rather than buried in installer output.
             if let tool = missingBuildTool(in: installOutput) {
@@ -303,6 +313,14 @@ enum HerdrPluginManagement {
             throw Failure.installFailed(
                 Self.tail(of: installOutput, fallback: "the plugin did not appear in `herdr plugin list`")
             )
+        }
+        if !matching.enabled {
+            guard isValidPluginID(matching.pluginID) else { throw Failure.invalidSource(matching.pluginID) }
+            _ = try await service.run("herdr plugin enable \(matching.pluginID)", timeout: listTimeout, outputLimit: outputLimit)
+            after = try await list(using: service)
+            guard after.contains(where: { $0.pluginID == matching.pluginID && $0.enabled }) else {
+                throw Failure.installFailed("The plugin was installed but could not be activated.")
+            }
         }
         return after
     }
@@ -421,7 +439,8 @@ enum HerdrPluginManagement {
                 // Herdr: the key records a deliberate disable.
                 enabled: entry["enabled"] as? Bool ?? true,
                 originRepository: Self.originRepository(from: entry["source"]),
-                actions: Self.parseActions(entry["actions"])
+                actions: Self.parseActions(entry["actions"]),
+                resolvedCommit: (entry["source"] as? [String: Any])?["resolved_commit"] as? String
             )
         }
     }

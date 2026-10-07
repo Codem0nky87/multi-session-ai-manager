@@ -170,6 +170,7 @@ import Testing
         """
 
         let version = try AgentToolVersionProbe.parse(output, tool: .claude)
+        #expect(try AgentToolVersionProbe.parse(output.replacingOccurrences(of: "\n", with: "\r\n"), tool: .claude) == version)
 
         #expect(version == AgentToolVersion(
             tool: .claude,

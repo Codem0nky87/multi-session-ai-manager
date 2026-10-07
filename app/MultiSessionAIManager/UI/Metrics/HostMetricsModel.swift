@@ -10,6 +10,9 @@ struct PhysicalDisk: Decodable, Identifiable {
     var id: String
     var model: String
     var volumes: [DiskVolume]
+    /// SMART temperature in °C when the host service can report it (Linux
+    /// hwmon). Optional so payloads from older collectors still decode.
+    var temperature: Double?
 }
 
 struct DiskMetrics: Decodable {
@@ -17,6 +20,23 @@ struct DiskMetrics: Decodable {
     var totalGB: Double = 0.0
     var usedGB: Double = 0.0
     var disks: [PhysicalDisk] = []
+
+    /// Hottest physical disk, or nil when no disk reports a temperature.
+    var hottestTemperature: Double? {
+        let values = disks.compactMap(\.temperature)
+        return values.max()
+    }
+
+    /// Above this the disk tile and gauges turn red; between warm and hot, amber.
+    static let hotTemperatureThreshold: Double = 50.0
+    static let warmTemperatureThreshold: Double = 40.0
+
+    static func temperatureColor(_ temperature: Double?) -> Color {
+        guard let temperature, temperature.isFinite else { return .gray }
+        if temperature >= hotTemperatureThreshold { return .red }
+        if temperature >= warmTemperatureThreshold { return .orange }
+        return .green
+    }
 }
 
 import Foundation
@@ -34,10 +54,16 @@ struct ProcessStat: Identifiable, Decodable {
 
 struct CPUMetrics: Decodable {
     var temperature: Double = 0.0
+    // Collectors already report aggregate usage on a 0...100 scale across all
+    // logical cores. Only per-process usage needs normalization by core count.
     var utilization: Double = 0.0
     var loadAverage1m: Double = 0.0
     var loadAverage5m: Double = 0.0
     var loadAverage15m: Double = 0.0
+    // Optional so collectors shipped with older apps and macOS still decode.
+    var coreCount: Int?
+    var loadPerCore: Double?
+    var perCoreUsage: [Double]?
     
     var systemUsage: Double = 0.0
     var userUsage: Double = 0.0
@@ -52,6 +78,21 @@ struct CPUMetrics: Decodable {
     
     var history: [Double] = []
     var topProcesses: [ProcessStat] = []
+
+    var utilizationText: String { Self.formatPercent(utilization) }
+
+    static func formatPercent(_ value: Double) -> String {
+        guard value.isFinite else { return "—" }
+        let percent = min(100, max(0, value))
+        // Keep real activity visible instead of truncating sub-1% usage to zero.
+        if percent > 0 && percent < 0.1 { return "<0.1%" }
+        return String(format: "%.1f%%", percent)
+    }
+
+    func totalUsagePercent(for process: ProcessStat) -> Double? {
+        guard let coreCount, coreCount > 0, process.usage.isFinite else { return nil }
+        return min(100, max(0, process.usage / Double(coreCount)))
+    }
 }
 
 struct MemoryMetrics: Decodable {
@@ -63,6 +104,8 @@ struct MemoryMetrics: Decodable {
     var compressed: Double = 0.0
     var free: Double = 0.0
     var swap: Double = 0.0
+    var available: Double?
+    var cache: Double?
 }
 
 struct GPUMetrics: Decodable {
@@ -109,6 +152,9 @@ struct MetricsPayload: Decodable {
             cpu.loadAverage1m = newCPU.loadAverage1m
             cpu.loadAverage5m = newCPU.loadAverage5m
             cpu.loadAverage15m = newCPU.loadAverage15m
+            cpu.coreCount = newCPU.coreCount
+            cpu.loadPerCore = newCPU.loadPerCore
+            cpu.perCoreUsage = newCPU.perCoreUsage
             cpu.systemUsage = newCPU.systemUsage
             cpu.userUsage = newCPU.userUsage
             cpu.idleUsage = newCPU.idleUsage
@@ -124,6 +170,8 @@ struct MetricsPayload: Decodable {
             memory.compressed = newMem.compressed
             memory.free = newMem.free
             memory.swap = newMem.swap
+            memory.available = newMem.available
+            memory.cache = newMem.cache
         }
         
         if let newDisk = payload.disk {
@@ -149,4 +197,3 @@ struct MetricsPayload: Decodable {
         }
     }
 }
-

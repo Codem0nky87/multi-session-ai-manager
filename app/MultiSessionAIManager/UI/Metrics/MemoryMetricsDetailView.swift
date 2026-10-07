@@ -47,7 +47,7 @@ struct MemoryMetricsDetailView: View {
                             .fill(HerdrTheme.panel)
                             
                         HStack(spacing: 0) {
-                            if metrics.app > 0 || metrics.wired > 0 || metrics.compressed > 0 {
+                            if metrics.available == nil && (metrics.app > 0 || metrics.wired > 0 || metrics.compressed > 0) {
                                 Rectangle().fill(.blue).frame(width: geo.size.width * (metrics.app / safeTotal))
                                 Rectangle().fill(.orange).frame(width: geo.size.width * (metrics.wired / safeTotal))
                                 Rectangle().fill(.red).frame(width: geo.size.width * (metrics.compressed / safeTotal))
@@ -66,6 +66,12 @@ struct MemoryMetricsDetailView: View {
                 if metrics.wired > 0 { detailRow(label: "Wired:", value: String(format: "%.2f GB", metrics.wired), color: .orange) }
                 if metrics.compressed > 0 { detailRow(label: "Compressed:", value: String(format: "%.2f GB", metrics.compressed), color: .red) }
                 detailRow(label: "Free:", value: String(format: "%.2f GB", metrics.free), color: .gray.opacity(0.3))
+                if let available = metrics.available {
+                    detailRow(label: "Available:", value: String(format: "%.2f GB", available), color: .clear)
+                }
+                if let cache = metrics.cache {
+                    detailRow(label: "Cache:", value: String(format: "%.2f GB", cache), color: .clear)
+                }
                 if metrics.swap > 0 { detailRow(label: "Swap:", value: String(format: "%.2f GB", metrics.swap), color: .clear) }
             }
         }
@@ -100,4 +106,3 @@ struct MemoryMetricsDetailView: View {
         }
     }
 }
-

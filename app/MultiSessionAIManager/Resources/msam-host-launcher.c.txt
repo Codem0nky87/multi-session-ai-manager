@@ -1,0 +1,28 @@
+// Run the host agent in a named native process, keeping Python in-process.
+// Py_BytesMain is part of Python's stable ABI (Python 3.8 and later).
+#include <dlfcn.h>
+#include <stdio.h>
+
+int main(int argc, char **argv) {
+    if (argc < 4) {
+        fprintf(stderr, "Usage: msam-host-agent <python-library> <python-executable> <script> [args...]\n");
+        return 64;
+    }
+
+    void *runtime = dlopen(argv[1], RTLD_NOW | RTLD_GLOBAL);
+    if (!runtime) {
+        fprintf(stderr, "MSAM could not load its Python runtime: %s\n", dlerror());
+        return 78;
+    }
+
+    int (*python_main)(int, char **) = (int (*)(int, char **))dlsym(runtime, "Py_BytesMain");
+    if (!python_main) {
+        fprintf(stderr, "MSAM requires Python 3.8 or later: %s\n", dlerror());
+        return 78;
+    }
+
+    // Keep the original Python executable in argv so Python can locate its
+    // standard library and launch subprocesses normally. The OS executable
+    // remains msam-host-agent for Activity Monitor and process listings.
+    return python_main(argc - 2, argv + 2);
+}

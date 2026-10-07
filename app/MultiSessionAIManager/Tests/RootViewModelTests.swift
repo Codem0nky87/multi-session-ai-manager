@@ -102,6 +102,31 @@ private actor RestoreOperationStartGate {
         #expect(first === second)
     }
 
+    @Test func functionKeysFollowTheSelectedSessionAndIgnoreDisconnectedTabs() async throws {
+        let (model, _, store, host) = try makeModel()
+        let first = store.open(hostID: host.id, sessionName: "first")
+        let second = store.open(hostID: host.id, sessionName: "second")
+        let firstSession = model.session(for: first)
+        let secondSession = model.session(for: second)
+        await firstSession.start()
+        await secondSession.start()
+        let firstPTY = try #require(firstSession.terminal.pty as? FakePTYChannel)
+        let secondPTY = try #require(secondSession.terminal.pty as? FakePTYChannel)
+        let firstBefore = firstPTY.sent
+        let secondBefore = secondPTY.sent
+        model.sendFunctionKey(1)
+        #expect(firstPTY.sent == firstBefore)
+        #expect(secondPTY.sent == secondBefore + Data(TerminalFunctionKey.bytes(for: 1)!))
+        store.select(first.id)
+        model.sendFunctionKey(12)
+        #expect(firstPTY.sent == firstBefore + Data(TerminalFunctionKey.bytes(for: 12)!))
+        await firstSession.stop()
+        let afterStop = firstPTY.sent
+        model.sendFunctionKey(3)
+        #expect(firstPTY.sent == afterStop)
+        await secondSession.stop()
+    }
+
     @Test func twoTabsOnTheSameHostGetIndependentSessions() throws {
         let (model, _, _, host) = try makeModel()
         let a = HostTab(hostID: host.id, sessionName: nil)

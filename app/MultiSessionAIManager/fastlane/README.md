@@ -15,6 +15,22 @@ For _fastlane_ installation instructions, see [Installing _fastlane_](https://do
 
 ## iOS
 
+### ios build_testflight
+
+```sh
+[bundle exec] fastlane ios build_testflight
+```
+
+Archive and export a signed IPA for TestFlight without uploading
+
+### ios upload_testflight
+
+```sh
+[bundle exec] fastlane ios upload_testflight
+```
+
+Upload the existing signed IPA and wait for TestFlight processing (internal)
+
 ### ios beta
 
 ```sh

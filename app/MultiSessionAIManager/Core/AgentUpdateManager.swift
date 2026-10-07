@@ -552,7 +552,7 @@ final class AgentUpdateManager {
         context: AgentUpdaterHostContext,
         batchID: UUID
     ) -> String {
-        "\(POSIXShell.quote(AgentUpdaterInstaller.helperPath(for: context))) submit \(batchID.uuidString)"
+        AgentUpdaterInstaller.helperCommand(for: context, arguments: ["submit", batchID.uuidString])
     }
 
     nonisolated private static func validateAcceptance(
@@ -600,9 +600,8 @@ final class AgentUpdateManager {
         context: AgentUpdaterHostContext,
         using service: SSHService
     ) async throws -> AgentUpdateBatchStatus {
-        let helper = POSIXShell.quote(AgentUpdaterInstaller.helperPath(for: context))
         let result = try await service.run(
-            "\(helper) status",
+            AgentUpdaterInstaller.helperCommand(for: context, arguments: ["status"]),
             timeout: commandTimeout,
             outputLimit: outputLimit
         )

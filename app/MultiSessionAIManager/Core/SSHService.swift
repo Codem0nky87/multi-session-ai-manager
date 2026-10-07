@@ -68,7 +68,7 @@ final class SSHService: @unchecked Sendable {
         self.isWindows = probe?.stdoutString.contains("Windows_NT") ?? false
     }
     func runCommand(_ command: String) async throws -> String {
-        let shellCmd = isWindows ? command : Self.loginShellCommand(command)
+        let shellCmd = isWindows ? WindowsShell.wrapping(command) : Self.loginShellCommand(command)
         return try await transport.runCommand(shellCmd)
     }
 
@@ -89,7 +89,7 @@ final class SSHService: @unchecked Sendable {
         timeout: Duration,
         outputLimit: Int
     ) async throws -> SSHCommandResult {
-        let shellCmd = isWindows ? command : Self.provisioningShellCommand(command)
+        let shellCmd = isWindows ? WindowsShell.wrapping(command) : Self.provisioningShellCommand(command)
         return try await transport.runCommand(.init(
             command: shellCmd,
             timeout: timeout,
@@ -139,6 +139,11 @@ final class SSHService: @unchecked Sendable {
             onOutput: onOutput,
             onClose: onClose
         )
+    }
+
+    func openExecStream(command: String,
+                        onOutput: @escaping @Sendable (Data) -> Void) async throws -> PTYChannel {
+        try await transport.openExecStream(command: command, onOutput: onOutput, onClose: {})
     }
 
     func openPTY(

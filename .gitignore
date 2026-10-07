@@ -34,6 +34,10 @@ build/
 # Logs
 *.log
 
+# Python metrics collector tests
+__pycache__/
+*.pyc
+
 # Editor / OS
 .idea/
 .vscode/

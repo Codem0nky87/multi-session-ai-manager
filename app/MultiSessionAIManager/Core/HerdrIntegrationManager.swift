@@ -141,6 +141,11 @@ final class HerdrIntegrationManager {
         return "if \(probes); then printf '%s\\n' \(marker); fi"
     }.joined(separator: "\n")
 
+    nonisolated static let windowsDetectionCommand: String = targets.map { target in
+        let probes = target.executableAliases.map { "(Get-Command \(WindowsShell.quote($0)) -ErrorAction SilentlyContinue)" }.joined(separator: " -or ")
+        return "if (\(probes)) { Write-Output \(WindowsShell.quote("MSAM_AGENT:\(target.herdrTarget)")) }"
+    }.joined(separator: "; ")
+
     let connection: HostConnection
     private(set) var state: State = .idle
     private(set) var agents: [HerdrAgentIntegration] = []
@@ -442,7 +447,7 @@ final class HerdrIntegrationManager {
         -> [HerdrAgentIntegration]
     {
         let detection = try await checkedRun(
-            detectionCommand,
+            service.isWindows ? windowsDetectionCommand : detectionCommand,
             timeout: detectionTimeout,
             using: service
         )

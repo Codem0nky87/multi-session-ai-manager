@@ -211,7 +211,7 @@ enum HerdrAgentInventory {
         for session in sessions {
             try Task.checkCancellation()
             let list = try await checkedRun(
-                scopedCommand("herdr agent list", session: session),
+                scopedCommand("herdr agent list", session: session, isWindows: service.isWindows),
                 using: service
             )
             try addOutput(list, total: &totalOutput)
@@ -226,12 +226,12 @@ enum HerdrAgentInventory {
             for snapshot in snapshots {
                 let pane = POSIXShell.quote(snapshot.paneID)
                 let agent = try await checkedRun(
-                    scopedCommand("herdr agent get \(pane)", session: session),
+                    scopedCommand("herdr agent get \(pane)", session: session, isWindows: service.isWindows),
                     using: service
                 )
                 try addOutput(agent, total: &totalOutput)
                 let process = try await checkedRun(
-                    scopedCommand("herdr pane process-info --pane \(pane)", session: session),
+                    scopedCommand("herdr pane process-info --pane \(pane)", session: session, isWindows: service.isWindows),
                     using: service
                 )
                 try addOutput(process, total: &totalOutput)
@@ -279,9 +279,14 @@ enum HerdrAgentInventory {
 
     private static func scopedCommand(
         _ command: String,
-        session: HerdrSessionEndpoint
+        session: HerdrSessionEndpoint,
+        isWindows: Bool = false
     ) -> String {
-        "HERDR_SOCKET_PATH=\(POSIXShell.quote(session.socketPath)) \(command)"
+        if isWindows {
+            let socket = session.socketPath.replacingOccurrences(of: "'", with: "''")
+            return HostServiceInstaller.powershell("$env:HERDR_SOCKET_PATH='\(socket)'; \(command); exit $LASTEXITCODE")
+        }
+        return "HERDR_SOCKET_PATH=\(POSIXShell.quote(session.socketPath)) \(command)"
     }
 
     private static func parseAgent(
@@ -355,7 +360,7 @@ enum HerdrAgentInventory {
     }
 
     private static func isSafeAbsolutePath(_ value: String) -> Bool {
-        value.hasPrefix("/") && isSafeField(value, maximumBytes: 1_024)
+        (value.hasPrefix("/") || value.hasPrefix(#"\\"#) || value.range(of: #"^[A-Za-z]:[\\/]"#, options: .regularExpression) != nil) && isSafeField(value, maximumBytes: 1_024)
     }
 
     private static func isSafeField(_ value: String, maximumBytes: Int) -> Bool {

@@ -393,8 +393,7 @@ enum AgentToolVersionProbe {
     static func parse(_ output: String, tool: AgentToolID) throws -> AgentToolVersion {
         let begin = "MSAM_TOOL_BEGIN:\(tool.rawValue)"
         let end = "MSAM_TOOL_END:\(tool.rawValue)"
-        let lines = output.split(separator: "\n", omittingEmptySubsequences: false)
-            .map { String($0).trimmingCharacters(in: CharacterSet(charactersIn: "\r")) }
+        let lines = output.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).map(String.init)
         guard let beginIndex = lines.firstIndex(of: begin),
               let endIndex = lines[(beginIndex + 1)...].firstIndex(of: end),
               beginIndex < endIndex else {
@@ -430,6 +429,11 @@ enum AgentToolVersionProbe {
     }
 
     static func fetch(_ tool: AgentToolID, using service: SSHService) async throws -> AgentToolVersion {
+        if service.isWindows {
+            let cmd = HostServiceInstaller.powershell("& \"$env:USERPROFILE/.local/bin/msam-host-agent.cmd\" updates version \(tool.rawValue); exit $LASTEXITCODE")
+            let result = try await HostServiceInstaller.run(cmd, using: service)
+            return try JSONDecoder().decode(AgentToolVersion.self, from: result.stdout)
+        }
         let result = try await service.run(
             command(for: tool),
             timeout: timeout,

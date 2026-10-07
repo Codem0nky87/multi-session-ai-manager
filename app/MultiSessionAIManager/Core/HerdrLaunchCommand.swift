@@ -32,6 +32,12 @@ enum HerdrLaunchCommand {
     /// which is why install and verify succeeded while launching failed.
     static let pathPrefix = "PATH=\"$HOME/.local/bin:$PATH\"; export PATH"
 
+    static func windowsLaunch(sessionName: String?) -> String {
+        let name = sessionName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let arguments = name.isEmpty ? "" : " --session " + WindowsShell.quote(name)
+        return WindowsShell.command("$env:TERM='xterm-256color'; if (!(Get-Command herdr -ErrorAction SilentlyContinue)) { Write-Output ('MSAM_HERDR_'+'MISSING'); exit 127 }; & herdr\(arguments); exit $LASTEXITCODE")
+    }
+
     static func remoteScript(sessionName: String?) -> String {
         var invocation = "herdr"
         let trimmed = sessionName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""

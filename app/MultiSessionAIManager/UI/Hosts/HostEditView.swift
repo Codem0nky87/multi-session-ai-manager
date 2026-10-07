@@ -49,6 +49,8 @@ struct HostEditView: View {
     @State private var showPortForwarding = false
     @State private var showAgentUpdates = false
     @State private var showPlugins = false
+    @State private var showHostService = false
+    @State private var showHostSoftware = false
     /// Set while a key deletion is awaiting confirmation.
     @State private var pendingKeyDeletion: String?
 
@@ -115,6 +117,8 @@ struct HostEditView: View {
                     authSection
                     workdirSection
                     if onContinue == nil {
+                        hostServiceSection
+                        hostSoftwareSection
                         pluginsSection
                         portForwardingSection
                         agentUpdatesSection
@@ -195,6 +199,21 @@ struct HostEditView: View {
 
     var body: some View {
         editorWithKeySheets
+        .background(
+            Color.clear.sheet(isPresented: $showHostSoftware) {
+                if let host = pluginsHost {
+                    HostSoftwareSheet(host: host, keyStore: keyStore, knownHosts: knownHosts)
+                }
+            }
+        )
+        .background(
+            Color.clear.sheet(isPresented: $showHostService) {
+                if let host = pluginsHost {
+                    HostServiceSheet(host: host, keyStore: keyStore, knownHosts: knownHosts,
+                                     onSetupChanged: persistUpdaterSetup)
+                }
+            }
+        )
         .background(
             Color.clear.sheet(isPresented: $showPlugins) {
                 if let host = pluginsHost {
@@ -417,6 +436,42 @@ struct HostEditView: View {
             host: candidate, isSaved: existingID != nil
         ) else { return nil }
         return try? candidate.validated()
+    }
+
+    private var hostServiceSection: some View {
+        GlassCard {
+            VStack(alignment: .leading, spacing: Theme.Space.md) {
+                SectionLabel(text: "Host Service")
+                Text("Manage the background service for LLM agents, updates, and hardware metrics.")
+                    .font(Theme.body(13))
+                    .foregroundStyle(Theme.textSecondary)
+                Button { showHostService = true } label: {
+                    Label("Manage host service", systemImage: "server.rack")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(minHeight: 44)
+                }
+                .disabled(pluginsHost == nil)
+                .accessibilityIdentifier("host.service.manage")
+            }
+        }
+    }
+
+    private var hostSoftwareSection: some View {
+        GlassCard {
+            VStack(alignment: .leading, spacing: Theme.Space.md) {
+                SectionLabel(text: "AI Agent CLIs")
+                Text("Install and verify Codex, Claude Code, and Antigravity on this host.")
+                    .font(Theme.body(13)).foregroundStyle(Theme.textSecondary)
+                Button { showHostSoftware = true } label: {
+                    Label("Manage AI agent CLIs", systemImage: "terminal")
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).tint(Theme.accent)
+                .disabled(pluginsHost == nil)
+                .accessibilityIdentifier("host.software.manage")
+            }
+        }
     }
 
     private var pluginsSection: some View {
@@ -791,11 +846,17 @@ struct HostEditView: View {
     ) {
         agentUpdaterSetup = setup
         gatekeeperPolicy = policy
-        guard existingID != nil else { return }
+        guard let existingID,
+              let saved = store.hosts.first(where: { $0.id == existingID }) else { return }
+        let checked = candidateHost
+        // A status refresh must only persist service state, not unsaved edits
+        // to the host form or a result checked against a different SSH account.
+        guard saved.address == checked.address, saved.port == checked.port,
+              saved.username == checked.username, saved.keyID == checked.keyID else { return }
         store.update(HostAgentUpdaterPresentation.applying(
             setup: setup,
             policy: policy,
-            to: candidateHost
+            to: saved
         ))
     }
 

@@ -25,14 +25,14 @@ struct AddHostProvisioningModelTests {
         await model.installHerdr()
         #expect(model.herdrReady)
         #expect(transport.writtenFiles.isEmpty)
-        stub(transport, ["/home/alice", "", context, "present", verification()])
+        stub(transport, installedMetrics + [context, "present", verification()])
         await model.installServices()
         #expect(model.canContinue)
         #expect(model.updaterSetup == .ready)
-        #expect(transport.writtenFiles["/home/alice/.local/bin/msam-metrics"] != nil)
+        #expect(transport.writtenFiles.keys.contains { $0.hasSuffix("/msam-host-agent.py") })
         let commands = transport.commandsRun
         let install = try #require(commands.firstIndex { $0.contains("herdr.dev/install.sh") })
-        let metrics = try #require(commands.firstIndex { $0.contains("mkdir -p") })
+        let metrics = try #require(commands.firstIndex { $0.contains("MSAM_HOME=") })
         #expect(install < metrics)
     }
 
@@ -99,21 +99,19 @@ struct AddHostProvisioningModelTests {
         let (model, transport) = try await fixture()
         stub(transport, ["herdr 0.8.2"])
         await model.discover()
-        transport.structuredCommandResults = [
-            result("/home/alice"), result(""), result(context), result("", exit: 1),
-            result(context), result("prepared"), result("started"), result(verification())
-        ]
+        stub(transport, installedMetrics + [context, "present", verification()])
         await model.installServices()
         #expect(model.canContinue)
-        #expect(transport.writtenFiles["/home/alice/.local/libexec/msam-agent-updater"] != nil)
-        #expect(transport.writtenFiles["/home/alice/.config/systemd/user/msam-agent-updater.service"] != nil)
+        #expect(transport.writtenFiles.keys.contains { $0.hasSuffix("/msam-host-agent-install.py") })
+        #expect(transport.writtenFiles.keys.contains { $0.hasSuffix("/manifest.json") })
+        #expect(transport.writtenFiles.count == HostServiceInstaller.resources.count + 1)
     }
 
     @Test func serviceApprovalBlocksNextAndCanBeRetested() async throws {
         let (model, transport) = try await fixture()
         stub(transport, ["herdr 0.8.2"])
         await model.discover()
-        stub(transport, ["/home/alice", "", context, "present", verification(linger: "no")])
+        stub(transport, installedMetrics + [context, "present", verification(linger: "no")])
         await model.installServices()
         #expect(!model.canContinue)
         #expect(model.updaterSetup == .failed)
@@ -131,8 +129,8 @@ struct AddHostProvisioningModelTests {
         let (model, transport) = try await fixture()
         stub(transport, ["herdr 0.8.2"])
         await model.discover()
-        stub(transport, ["/home/alice", "", context, "present", verification(selfTest: "no"),
-                         context, "prepared", "started", verification(selfTest: "no")])
+        stub(transport, installedMetrics + [context, "present", verification(selfTest: "no"), context]
+                         + installedMetrics + [verification(selfTest: "no")])
         await model.installServices()
         #expect(!model.canContinue)
         #expect(model.updaterSetup == .failed)
@@ -157,7 +155,7 @@ struct AddHostProvisioningModelTests {
         #expect(model.updaterSetup == .unchecked)
         stub(transport, ["herdr 0.8.2"])
         await model.discover()
-        stub(transport, ["/home/alice", "", context, "present", verification(linger: "no")])
+        stub(transport, installedMetrics + [context, "present", verification(linger: "no")])
         await model.installServices()
         #expect(!model.canContinue)
         model.skipUpdater()
@@ -172,7 +170,7 @@ struct AddHostProvisioningModelTests {
         let (model, transport) = try await fixture()
         stub(transport, ["herdr 0.8.2"])
         await model.discover()
-        stub(transport, ["/home/alice", "", context, "present", verification()])
+        stub(transport, installedMetrics + [context, "present", verification()])
         await model.installServices()
         #expect(model.canContinue)
         await model.connection.disconnect()
@@ -180,6 +178,12 @@ struct AddHostProvisioningModelTests {
     }
 
     private let context = "MSAM_HOME=/home/alice\nMSAM_OS=Linux\nMSAM_UID=1000"
+
+    private var installedMetrics: [String] {
+        ["MSAM_HOME=/home/alice", "prepared",
+         #"MSAM_HOST_STATUS={"installed":true,"running":true,"disabled":false,"version":"1.0.0","metrics":true,"updates":true}"#,
+         "cleaned"]
+    }
 
     private func verification(linger: String = "yes", selfTest: String = "yes") -> String {
         "MSAM_VERIFY_BEGIN\nprotocol=1\nservice=active\nwritable=yes\nselftest=\(selfTest)\nplatform=Linux\nlinger=\(linger)\nMSAM_VERIFY_END"

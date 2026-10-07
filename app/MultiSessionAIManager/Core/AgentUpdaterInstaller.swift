@@ -4,6 +4,7 @@ import Observation
 enum AgentUpdaterPlatform: Equatable, Sendable {
     case macOS
     case linux
+    case windows
     case unsupported(String)
 }
 
@@ -53,14 +54,14 @@ final class AgentUpdaterInstaller {
         case failed(String)
     }
 
-    nonisolated static let serviceLabel = "com.codem0nky87.msam-agent-updater"
-    nonisolated static let serviceFileName = "msam-agent-updater.service"
+    nonisolated static let serviceLabel = "com.codem0nky87.msam-host-agent"
+    nonisolated static let serviceFileName = "msam-host-agent.service"
     nonisolated static let commandTimeout = Duration.seconds(45)
     nonisolated static let installTimeout = Duration.seconds(120)
     nonisolated static let outputLimit = 64 * 1024
     nonisolated static func contextCommand(isWindows: Bool) -> String {
         if isWindows {
-            return "Write-Host \"MSAM_HOME=$env:USERPROFILE\"; Write-Host \"MSAM_OS=Windows_NT\"; Write-Host \"MSAM_UID=0\""
+            return HostServiceInstaller.python("from pathlib import Path; print('MSAM_HOME=' + str(Path.home())); print('MSAM_OS=Windows_NT'); print('MSAM_UID=0')", arguments: [], isWindows: true)
         } else {
             return """
             printf 'MSAM_HOME=%s\n' "$HOME"
@@ -120,60 +121,21 @@ final class AgentUpdaterInstaller {
             let context = try await discoverContext()
             self.context = context
             if case .unsupported(let os) = context.platform {
-                state = .approvalRequired(.unsupportedPlatform(
-                    "Background agent updates are not supported on \(os). No service files were changed."
-                ))
+                state = .approvalRequired(.unsupportedPlatform("Host services are not supported on \(os)."))
                 return
             }
             let service = try requireService()
-            guard try await requireMacLoginDomainIfNeeded(context, using: service) else {
-                return
-            }
-
-            let helper = try helperLoader()
-            guard !helper.isEmpty else { throw AgentUpdaterInstallerError.missingResource }
-            _ = try await service.run(
-                Self.prepareCommand(for: context),
-                timeout: Self.commandTimeout,
-                outputLimit: Self.outputLimit
-            )
-            try await service.writeSetupFile(helper, to: Self.helperPath(for: context), permissions: 0o700)
-            let serviceData: Data
-            switch context.platform {
-            case .macOS:
-                serviceData = Data(Self.launchAgent(
-                    helperPath: Self.helperPath(for: context),
-                    statePath: Self.statePath(for: context)
-                ).utf8)
-            case .linux:
-                serviceData = Data(Self.systemdUnit(
-                    helperPath: Self.helperPath(for: context),
-                    statePath: Self.statePath(for: context)
-                ).utf8)
-            case .unsupported:
-                return
-            }
-            try await service.writeSetupFile(serviceData, to: Self.servicePath(for: context))
-
-            var finaliseError: Error?
+            guard try await requireMacLoginDomainIfNeeded(context, using: service) else { return }
+            try await HostMetricsLifecycle.shared.begin(connection.host)
             do {
-                _ = try await service.run(
-                    Self.finaliseCommand(for: context),
-                    timeout: Self.installTimeout,
-                    outputLimit: Self.outputLimit
-                )
+                _ = try await HostServiceInstaller.install(using: service)
             } catch {
-                // A dropped exec channel is indeterminate. The capability probe
-                // below, not this command result, decides whether setup worked.
-                finaliseError = error
+                await HostMetricsLifecycle.shared.finish(connection.host)
+                throw error
             }
-
-            do {
-                let status = try await verify(context)
-                publish(status, context: context)
-            } catch {
-                throw finaliseError ?? error
-            }
+            await HostMetricsLifecycle.shared.finish(connection.host)
+            let verified = try await verify(context)
+            publish(verified, context: context)
         } catch {
             state = .failed(Self.message(for: error))
         }
@@ -182,7 +144,7 @@ final class AgentUpdaterInstaller {
     nonisolated static func parseHostContext(_ output: String) throws -> AgentUpdaterHostContext {
         let fields = markerFields(output, prefixes: ["MSAM_HOME", "MSAM_OS", "MSAM_UID"])
         guard let home = fields["MSAM_HOME"],
-              home.hasPrefix("/"), home.utf8.count <= 1_024,
+              (home.hasPrefix("/") || home.range(of: #"^[A-Za-z]:[\\/]"#, options: .regularExpression) != nil), home.utf8.count <= 1_024,
               !home.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
               let os = fields["MSAM_OS"],
               let uidText = fields["MSAM_UID"], let uid = Int(uidText), uid >= 0 else {
@@ -191,6 +153,7 @@ final class AgentUpdaterInstaller {
         let platform: AgentUpdaterPlatform = switch os {
         case "Darwin": .macOS
         case "Linux": .linux
+        case "Windows_NT": .windows
         default: .unsupported(os)
         }
         return AgentUpdaterHostContext(home: home, platform: platform, uid: uid)
@@ -198,6 +161,14 @@ final class AgentUpdaterInstaller {
 
     nonisolated static func helperPath(for context: AgentUpdaterHostContext) -> String {
         "\(context.home)/.local/libexec/msam-agent-updater"
+    }
+
+    nonisolated static func helperCommand(for context: AgentUpdaterHostContext, arguments: [String]) -> String {
+        if context.platform == .windows {
+            let args = arguments.map { "'" + $0.replacingOccurrences(of: "'", with: "''") + "'" }.joined(separator: " ")
+            return HostServiceInstaller.powershell("& \"$env:USERPROFILE/.local/bin/msam-host-agent.cmd\" updates \(args); exit $LASTEXITCODE")
+        }
+        return ([helperPath(for: context)] + arguments).map(POSIXShell.quote).joined(separator: " ")
     }
 
     nonisolated static func statePath(for context: AgentUpdaterHostContext) -> String {
@@ -210,7 +181,7 @@ final class AgentUpdaterInstaller {
             "\(context.home)/Library/LaunchAgents/\(serviceLabel).plist"
         case .linux:
             "\(context.home)/.config/systemd/user/\(serviceFileName)"
-        case .unsupported:
+        case .windows, .unsupported:
             ""
         }
     }
@@ -269,7 +240,7 @@ final class AgentUpdaterInstaller {
             "mkdir -p \(POSIXShell.quote(context.home + "/.local/libexec")) "
                 + "\(POSIXShell.quote(context.home + "/.local/state/msam-agent-updater")) "
                 + "\(POSIXShell.quote(context.home + "/.config/systemd/user"))"
-        case .unsupported:
+        case .windows, .unsupported:
             "false"
         }
     }
@@ -277,7 +248,10 @@ final class AgentUpdaterInstaller {
     nonisolated static func helperPresenceCommand(
         for context: AgentUpdaterHostContext
     ) -> String {
-        "test -x \(POSIXShell.quote(helperPath(for: context)))"
+        if context.platform == .windows {
+            return HostServiceInstaller.powershell("if (Test-Path \"$env:USERPROFILE/.local/bin/msam-host-agent.cmd\") { exit 0 } else { exit 1 }")
+        }
+        return "test -x \(POSIXShell.quote(helperPath(for: context)))"
     }
 
     nonisolated static func finaliseCommand(for context: AgentUpdaterHostContext) -> String {
@@ -300,12 +274,26 @@ final class AgentUpdaterInstaller {
             systemctl --user daemon-reload || exit 1
             systemctl --user enable --now \(serviceFileName) || exit 1
             """
-        case .unsupported:
+        case .windows, .unsupported:
             return "false"
         }
     }
 
     nonisolated static func verificationCommand(for context: AgentUpdaterHostContext) -> String {
+        if context.platform == .windows {
+            let script = """
+            import json,time
+            from pathlib import Path
+            home=Path.home()
+            value=json.loads((home/'.local/state/msam-host-agent/status.json').read_text())
+            active=value.get('heartbeat',0)>time.time()-15
+            print('MSAM_VERIFY_BEGIN')
+            print('protocol=1')
+            print('service=' + ('active' if active else 'inactive'))
+            print('writable=yes\\nselftest=yes\\nplatform=Windows_NT\\nlinger=n/a\\nMSAM_VERIFY_END')
+            """
+            return HostServiceInstaller.python(script, arguments: [], isWindows: true)
+        }
         let helper = POSIXShell.quote(helperPath(for: context))
         let state = POSIXShell.quote(statePath(for: context))
         let serviceProbe: String
@@ -317,7 +305,7 @@ final class AgentUpdaterInstaller {
         case .linux:
             serviceProbe = "systemctl --user is-active --quiet \(serviceFileName)"
             lingerProbe = "loginctl show-user \(context.uid) -p Linger --value 2>/dev/null || printf unknown"
-        case .unsupported:
+        case .windows, .unsupported:
             serviceProbe = "false"
             lingerProbe = "printf unknown"
         }
@@ -353,7 +341,7 @@ final class AgentUpdaterInstaller {
         _ output: String,
         platform: AgentUpdaterPlatform
     ) throws -> AgentUpdaterServiceStatus {
-        let lines = output.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let lines = output.split(whereSeparator: \.isNewline).map(String.init)
         guard let begin = lines.firstIndex(of: "MSAM_VERIFY_BEGIN"),
               let end = lines[(begin + 1)...].firstIndex(of: "MSAM_VERIFY_END") else {
             throw AgentUpdaterInstallerError.verification("The service did not return a complete verification result.")
@@ -453,7 +441,7 @@ final class AgentUpdaterInstaller {
 
     nonisolated private static func markerFields(_ output: String, prefixes: Set<String>) -> [String: String] {
         var result: [String: String] = [:]
-        for line in output.split(separator: "\n") {
+        for line in output.split(whereSeparator: \.isNewline) {
             let pair = line.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
             guard pair.count == 2 else { continue }
             let key = String(pair[0])
