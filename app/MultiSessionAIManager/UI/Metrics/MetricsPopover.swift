@@ -31,7 +31,8 @@ extension View {
                 .frame(width: width)
                 .background(HerdrTheme.background)
         }
-        .frame(width: width, maxHeight: MetricsPopoverMetrics.maxHeight)
+        .frame(width: width)
+        .frame(maxHeight: MetricsPopoverMetrics.maxHeight)
         .background(HerdrTheme.background)
     }
 }
