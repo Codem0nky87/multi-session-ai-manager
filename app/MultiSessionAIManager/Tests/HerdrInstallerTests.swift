@@ -117,14 +117,17 @@ struct HerdrInstallerTests {
         transport.structuredCommandResults = [
             ok("installed"),        // the install script
             ok("herdr 0.8.2"),      // verification
+            ok("MSAM_SIDEBAR=ADDED"), // sidebar rows default
         ]
 
         await installer.install()
 
         #expect(installer.state == .ready(version: "0.8.2"))
+        #expect(installer.sidebarOutcome == .rowsAdded)
         let ran = transport.structuredCommandsRun.map(\.command)
         #expect(ran.contains { $0.contains("herdr.dev/install.sh") })
         #expect(ran.contains { $0.contains("--version") })
+        #expect(ran.contains { $0.contains("MSAM_SIDEBAR") || $0.contains("ui.sidebar.agents") })
     }
 
     /// Guards the bug the fake could not see: Citadel's exec path reports exit 0
@@ -193,18 +196,66 @@ struct HerdrInstallerTests {
         }
     }
 
+    // MARK: - Sidebar rows
+
+    @Test func parsesEverySidebarOutcomeToken() {
+        #expect(HerdrInstaller.parseSidebarOutcome("MSAM_SIDEBAR=ADDED") == .rowsAdded)
+        #expect(HerdrInstaller.parseSidebarOutcome("MSAM_SIDEBAR=ALREADY") == .rowsAlreadyConfigured)
+        if case .failed(let message) = HerdrInstaller.parseSidebarOutcome("MSAM_SIDEBAR=CHECK_FAILED_ROLLED_BACK bad rows") {
+            #expect(message.contains("restored unchanged"))
+            #expect(message.contains("bad rows"))
+        } else { Issue.record("expected failed for rolled-back") }
+        if case .failed(let message) = HerdrInstaller.parseSidebarOutcome("MSAM_SIDEBAR=CHECK_FAILED_BEFORE existing breakage") {
+            #expect(message.contains("existing configuration"))
+        } else { Issue.record("expected failed for pre-existing breakage") }
+        // No marker at all (python3 missing, garbage output): a clear failure.
+        if case .failed(let message) = HerdrInstaller.parseSidebarOutcome("sh: python3: not found") {
+            #expect(message.contains("python3"))
+        } else { Issue.record("expected failed for missing marker") }
+    }
+
+    @Test func aSidebarFailureDoesNotFailTheInstall() async throws {
+        let transport = FakeSSHTransport()
+        let (installer, _) = try makeInstaller(transport: transport)
+        await installer.connection.connect()
+        transport.structuredCommandResults = [
+            ok("installed"),
+            ok("herdr 0.8.2"),
+            ok("MSAM_SIDEBAR=CHECK_FAILED_ROLLED_BACK unknown row token"),
+        ]
+
+        await installer.install()
+
+        #expect(installer.state == .ready(version: "0.8.2"))
+        if case .failed(let detail)? = installer.sidebarOutcome {
+            #expect(detail.contains("unknown row token"))
+        } else { Issue.record("expected sidebar failure to be recorded") }
+    }
+
+    @Test func theSidebarScriptCarriesItsOwnValidationAndRollback() {
+        // The remote script must validate with `herdr config check` before and
+        // after, restore the original on rejection, and honour both overrides.
+        let script = HerdrInstaller.sidebarConfigScript
+        #expect(script.contains("'config', 'check'"))
+        #expect(script.contains("CHECK_FAILED_ROLLED_BACK"))
+        #expect(script.contains("HERDR_CONFIG_PATH"))
+        #expect(script.contains("XDG_CONFIG_HOME"))
+        #expect(script.contains(HerdrInstaller.sidebarRowsTOML.trimmingCharacters(in: .whitespacesAndNewlines)))
+    }
+
     // MARK: - Update
 
     @Test func updateRunsHerdrUpdateThenVerifies() async throws {
         let transport = FakeSSHTransport()
         let (installer, _) = try makeInstaller(transport: transport)
         await installer.connection.connect()
-        transport.structuredCommandResults = [ok("updated"), ok("herdr 0.9.0")]
+        transport.structuredCommandResults = [ok("updated"), ok("herdr 0.9.0"), ok("MSAM_SIDEBAR=ALREADY")]
 
         #expect(HerdrInstaller.updateCommand == "herdr update --handoff")
         await installer.update()
 
         #expect(installer.state == .ready(version: "0.9.0"))
+        #expect(installer.sidebarOutcome == .rowsAlreadyConfigured)
         #expect(transport.structuredCommandsRun.map(\.command).contains { $0.contains("herdr update --handoff") })
     }
 
@@ -215,7 +266,7 @@ struct HerdrInstallerTests {
         let (installer, _) = try makeInstaller(transport: transport)
         await installer.connection.connect()
         let connectionCommandCount = transport.structuredCommandsRun.count
-        transport.structuredCommandResults = [ok("installed"), ok("herdr 0.8.2")]
+        transport.structuredCommandResults = [ok("installed"), ok("herdr 0.8.2"), ok("MSAM_SIDEBAR=ADDED")]
 
         let shown = HerdrInstaller.installCommand
         await installer.install()
@@ -253,7 +304,7 @@ struct HerdrInstallerTests {
         let transport = FakeSSHTransport()
         let (installer, _) = try makeInstaller(transport: transport)
         await installer.connection.connect()
-        transport.structuredCommandResults = [ok("installed"), ok("herdr 0.8.2")]
+        transport.structuredCommandResults = [ok("installed"), ok("herdr 0.8.2"), ok("MSAM_SIDEBAR=ADDED")]
 
         await installer.install()
 
@@ -295,7 +346,8 @@ struct HerdrInstallerTests {
         await installer.connection.connect()
         stub(transport, [
             .failure(.ambiguousDisconnect),   // install: channel died mid-download
-            .success("herdr 0.8.2\n")         // verify: it actually landed
+            .success("herdr 0.8.2\n"),        // verify: it actually landed
+            .success("MSAM_SIDEBAR=ADDED\n")  // sidebar rows default
         ])
 
         await installer.install()
@@ -326,7 +378,8 @@ struct HerdrInstallerTests {
         let transport = FakeSSHTransport()
         let installer = try makeInstaller(transport)
         await installer.connection.connect()
-        stub(transport, [.success("installed ok\n"), .success("herdr 0.8.2\n")])
+        stub(transport, [.success("installed ok\n"), .success("herdr 0.8.2\n"),
+                         .success("MSAM_SIDEBAR=ADDED\n")])
 
         await installer.install()
 

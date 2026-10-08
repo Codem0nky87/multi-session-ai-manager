@@ -42,6 +42,137 @@ final class HerdrInstaller {
     }
     static let updateCommand = "herdr update --handoff"
 
+    // MARK: - Sidebar agent status verbs
+
+    /// The default sidebar rows that show the agent's state *word* beside its
+    /// label ("idle · codex") instead of the icon alone. Applied only when the
+    /// host has not chosen its own `ui.sidebar.agents.rows`.
+    static let sidebarRowsTOML = """
+        [["state_icon", "machine", "workspace", "tab"], ["state_text", "agent"]]
+        """
+
+    /// Outcome of the post-install/update sidebar configuration, surfaced in
+    /// the setup UI. A failure here never fails the install itself: Herdr is
+    /// installed and working either way, and the rows are a cosmetic default.
+    enum SidebarOutcome: Equatable {
+        case rowsAdded
+        case rowsAlreadyConfigured
+        case failed(String)
+    }
+
+    /// Remote script that resolves the effective config file (honouring
+    /// HERDR_CONFIG_PATH and XDG_CONFIG_HOME), adds the default rows only when
+    /// unset, validates with `herdr config check`, and rolls the file back if
+    /// the edit broke it. Prints one `MSAM_SIDEBAR=<OUTCOME>[ detail]` line.
+    static let sidebarConfigScript = """
+        import os, re, subprocess, sys
+        from pathlib import Path
+
+        ROWS = '[["state_icon", "machine", "workspace", "tab"], ["state_text", "agent"]]'
+        HEADER = '[ui.sidebar.agents]'
+        home = Path(os.path.expanduser('~'))
+        override = os.environ.get('HERDR_CONFIG_PATH', '').strip()
+        xdg = os.environ.get('XDG_CONFIG_HOME', '').strip()
+        cfg = Path(override) if override else Path(xdg or str(home / '.config')) / 'herdr' / 'config.toml'
+
+        def check():
+            try:
+                r = subprocess.run(['herdr', 'config', 'check'], capture_output=True, timeout=20)
+                return r.returncode == 0, (r.stdout + r.stderr).decode('utf-8', 'replace').strip()
+            except Exception as exc:
+                return False, str(exc)
+
+        def emit(outcome, detail=''):
+            print('MSAM_SIDEBAR=' + outcome + ((' ' + detail[:400]) if detail else ''))
+
+        ok, message = check()
+        if not ok:
+            emit('CHECK_FAILED_BEFORE', message)
+            sys.exit(0)
+        try:
+            original = cfg.read_text(encoding='utf-8') if cfg.is_file() else ''
+        except OSError as exc:
+            emit('ERROR', str(exc))
+            sys.exit(0)
+
+        lines = original.splitlines(keepends=True)
+        in_table = False
+        table_index = None
+        has_rows = False
+        for index, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith('['):
+                in_table = stripped == HEADER
+                if in_table and table_index is None:
+                    table_index = index
+                continue
+            if in_table and re.match(r'^rows\\s*=', stripped):
+                has_rows = True
+        if has_rows:
+            emit('ALREADY')
+            sys.exit(0)
+
+        if table_index is not None:
+            lines.insert(table_index + 1, 'rows = ' + ROWS + '\\n')
+            updated = ''.join(lines)
+        else:
+            stanza = ('' if not original or original.endswith('\\n') else '\\n') + HEADER + '\\nrows = ' + ROWS + '\\n'
+            updated = original + stanza
+        try:
+            cfg.parent.mkdir(parents=True, exist_ok=True)
+            cfg.write_text(updated, encoding='utf-8')
+        except OSError as exc:
+            emit('ERROR', str(exc))
+            sys.exit(0)
+
+        ok, message = check()
+        if not ok:
+            try:
+                cfg.write_text(original, encoding='utf-8')
+                emit('CHECK_FAILED_ROLLED_BACK', message)
+            except OSError as exc:
+                emit('CHECK_FAILED_UNRESTORED', message + ' rollback failed: ' + str(exc))
+            sys.exit(0)
+        try:
+            subprocess.run(['herdr', 'server', 'reload-config'], capture_output=True, timeout=20)
+        except Exception:
+            pass
+        emit('ADDED')
+        """
+
+    /// Marker prefix on the script's single status line.
+    static let sidebarMarker = "MSAM_SIDEBAR="
+
+    /// Maps the remote script's outcome token onto a `SidebarOutcome`.
+    static func parseSidebarOutcome(_ output: String) -> SidebarOutcome {
+        for line in output.split(whereSeparator: \.isNewline) {
+            guard line.hasPrefix(sidebarMarker) else { continue }
+            let payload = String(line.dropFirst(sidebarMarker.count))
+            let token: String
+            let detail: String
+            if let space = payload.firstIndex(where: \.isWhitespace) {
+                token = String(payload[..<space])
+                detail = String(payload[payload.index(after: space)...])
+            } else {
+                token = payload
+                detail = ""
+            }
+            switch token {
+            case "ADDED": return .rowsAdded
+            case "ALREADY": return .rowsAlreadyConfigured
+            case "CHECK_FAILED_BEFORE":
+                return .failed("Herdr's existing configuration already fails `herdr config check`, so the sidebar rows were left alone. Fix the config first: \(detail)")
+            case "CHECK_FAILED_ROLLED_BACK":
+                return .failed("The sidebar rows were added but `herdr config check` rejected them, so the config was restored unchanged: \(detail)")
+            case "CHECK_FAILED_UNRESTORED":
+                return .failed("`herdr config check` rejected the new sidebar rows AND the rollback failed — review \(detail)")
+            default:
+                return .failed("Could not configure the sidebar rows: \(detail.isEmpty ? token : detail)")
+            }
+        }
+        return .failed("The host did not report a sidebar configuration result (python3 may be missing).")
+    }
+
     private static let probeTimeout = Duration.seconds(15)
     /// Exposed so the live diagnostic runs the same budget the app does.
     static var probeTimeoutForDiagnostics: Duration { probeTimeout }
@@ -57,6 +188,8 @@ final class HerdrInstaller {
 
     let connection: HostConnection
     private(set) var state: State = .idle
+    /// Result of the post-install/update sidebar rows configuration, if one ran.
+    private(set) var sidebarOutcome: SidebarOutcome?
 
     init(connection: HostConnection) {
         self.connection = connection
@@ -187,7 +320,27 @@ final class HerdrInstaller {
             )
             return
         }
+        // Fresh installs and updates both get the agent-status-verb sidebar
+        // default, unless the host already chose its own rows. A failure here
+        // is reported alongside success, never as a failed install: Herdr is
+        // installed and working either way.
+        sidebarOutcome = await configureSidebarRows()
         state = .ready(version: version)
+    }
+
+    /// Runs the sidebar rows script on the host and interprets its marker line.
+    private func configureSidebarRows() async -> SidebarOutcome {
+        guard let service = connection.provisioningCommandRunner else {
+            return .failed("Connect and authenticate SSH to this host first.")
+        }
+        let isWindows = service.isWindows
+        let command = HostServiceInstaller.python(Self.sidebarConfigScript, arguments: [], isWindows: isWindows)
+        do {
+            let result = try await service.run(command, timeout: Self.probeTimeout, outputLimit: Self.outputLimit)
+            return Self.parseSidebarOutcome(result.stdoutString + result.stderrString)
+        } catch {
+            return .failed(Self.message(for: error))
+        }
     }
 
     // MARK: - Plumbing

@@ -31,7 +31,11 @@ The add-host wizard has four steps:
    Required fields must be valid before **Next** becomes available.
 2. **Herdr and host services** — connect and automatically discover Herdr first.
    If absent, **Install Herdr** runs the displayed official installer and verifies
-   the result. An older unsupported version must be updated. Only then can
+   the result. An older unsupported version must be updated. After a successful
+   install or update, the agent-status-verb sidebar default (`state_text` rows)
+   is applied to the host's effective Herdr config when unset, validated with
+   `herdr config check`, and rolled back if rejected; a failure there is shown
+   as a warning and never fails the install. Only then can
    **Install or Check Services** install hardware metrics and verify or repair
    the background updater. Linux and macOS setup uploads use SSH commands and
    do not require SFTP. Errors and required host-side actions remain visible;

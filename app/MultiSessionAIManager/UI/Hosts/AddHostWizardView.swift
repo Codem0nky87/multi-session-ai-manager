@@ -115,6 +115,9 @@ struct AddHostWizardView: View {
             if model.herdrReady {
                 Label("Herdr \(version) is ready", systemImage: "checkmark.seal.fill")
                     .foregroundStyle(Theme.success)
+                if case .failed(let detail)? = model.herdr.sidebarOutcome {
+                    problem("Herdr is installed, but the agent-status sidebar default could not be applied: \(detail)")
+                }
             } else {
                 problem("Found Herdr \(version). This app needs \(HerdrInstaller.minimumVersion) or newer before setting up services.")
                 command(HerdrInstaller.updateCommand)

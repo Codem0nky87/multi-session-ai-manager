@@ -72,15 +72,22 @@ corner out.
 ## Agent status verbs
 
 Herdr's sidebar shows agent state as an icon by default. To get the word as
-well — `working  claude` — add to the host's `~/.config/herdr/config.toml`:
+well — `working  claude` — the rows need the `state_text` token:
 
 ```toml
 [ui.sidebar.agents]
-rows = [["state_icon", "workspace", "tab"], ["state_text", "agent"]]
+rows = [["state_icon", "machine", "workspace", "tab"], ["state_text", "agent"]]
 ```
 
-`state_text` is a built-in row token; the default rows simply omit it. Then
-`herdr config check` and `herdr server reload-config` — no session restart.
+**Install Herdr** and **Update to latest** in AI Manager apply this default
+automatically after a successful install: the effective config is resolved
+(honouring `HERDR_CONFIG_PATH`, then `XDG_CONFIG_HOME`), the rows are added
+only when `ui.sidebar.agents.rows` is unset — custom rows are never
+overwritten — and the result is validated with `herdr config check` and
+rolled back if the edit broke it. A config that already fails the check is
+left untouched and the sheet says so. `state_text` is a built-in row token;
+the default rows simply omit it. `herdr server reload-config` applies it
+without a session restart.
 
 ## Terminal themes
 

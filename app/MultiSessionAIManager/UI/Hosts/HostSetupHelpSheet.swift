@@ -714,6 +714,15 @@ struct HostSetupHelpSheet: View {
                     .font(.system(.callout, design: .rounded, weight: .medium))
                     .foregroundStyle(Theme.success)
                     .accessibilityIdentifier("host.setup.herdr.ready")
+                // The sidebar rows default is cosmetic; report its outcome
+                // honestly beside success rather than hiding it.
+                if case .failed(let detail)? = installer.sidebarOutcome {
+                    Label("Herdr installed, but the agent-status sidebar default could not be applied: \(detail)", systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(.subheadline, design: .rounded, weight: .regular))
+                        .foregroundStyle(Theme.warning)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("host.setup.herdr.sidebar.failed")
+                }
 
             case .failed(let message):
                 Label(message, systemImage: "xmark.octagon.fill")
