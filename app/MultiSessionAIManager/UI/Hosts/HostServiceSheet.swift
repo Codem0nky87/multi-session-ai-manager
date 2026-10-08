@@ -126,8 +126,8 @@ struct HostServiceSheet: View {
                 Text("Background metrics and agent updates will stop. Your conversations and update history will be kept.")
             }
             .sheet(isPresented: $showAgents) {
-                HostAgentUpdatesSheet(host: host, keyStore: keyStore, knownHosts: knownHosts,
-                                      onSetupChanged: onSetupChanged)
+                HostAIAgentsSheet(host: host, keyStore: keyStore, knownHosts: knownHosts,
+                                  onSetupChanged: onSetupChanged)
             }
         }
         .preferredColorScheme(.dark)

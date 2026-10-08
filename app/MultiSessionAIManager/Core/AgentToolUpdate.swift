@@ -1,6 +1,7 @@
 import Foundation
 
-enum AgentToolID: String, CaseIterable, Codable, Sendable {
+enum AgentToolID: String, CaseIterable, Codable, Sendable, Identifiable {
+    var id: Self { self }
     case claude
     case codex
     case antigravity

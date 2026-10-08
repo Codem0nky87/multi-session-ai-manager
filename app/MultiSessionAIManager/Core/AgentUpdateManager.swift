@@ -268,6 +268,77 @@ final class AgentUpdateManager {
         state = .ready
     }
 
+    /// Queue ONLY the tool upgrade on the host, with no conversation roll
+    /// attached. The host service finishes the batch as soon as the tools are
+    /// updated; the session roll becomes a separate, user-initiated step.
+    func prepareUpgradeOnly(_ tool: AgentToolID) async throws -> AgentUpdatePreview {
+        operationGeneration &+= 1
+        let generation = operationGeneration
+        state = .preparing
+        do {
+            guard let version = tools.first(where: { $0.tool == tool }),
+                  version.isUpdateAvailable,
+                  version.method != .ambiguous,
+                  version.method != .unknown else {
+                throw AgentUpdateManagerError.toolNotUpdateable(tool)
+            }
+            let service = try requireService()
+            let context = try await dependencies.fetchContext(service)
+            let status = try await dependencies.fetchServiceStatus(context, service)
+            guard status.isReady, status.lingerEnabled != false else {
+                throw AgentUpdateManagerError.serviceUnavailable(
+                    "Complete host updater setup before queueing an upgrade."
+                )
+            }
+            let currentBatch = try await dependencies.fetchBatchStatus(context, service)
+            if currentBatch.isActive {
+                guard !Task.isCancelled, operationGeneration == generation else {
+                    throw CancellationError()
+                }
+                batch = currentBatch
+                state = .ready
+                return AgentUpdatePreview(
+                    requestedTools: [tool],
+                    request: nil,
+                    existingBatch: currentBatch,
+                    totalConversations: currentBatch.total,
+                    workingConversations: currentBatch.working,
+                    attentionConversations: currentBatch.attention
+                )
+            }
+            let request = AgentUpdateRequest(
+                protocolVersion: 1,
+                batchID: UUID(),
+                requestedTools: [tool],
+                targets: [],
+                gatekeeperPolicy: gatekeeperPolicy
+            )
+            try request.validate()
+            guard !Task.isCancelled, operationGeneration == generation else {
+                throw CancellationError()
+            }
+            state = .ready
+            return AgentUpdatePreview(
+                requestedTools: [tool],
+                request: request,
+                existingBatch: nil,
+                totalConversations: 0,
+                workingConversations: 0,
+                attentionConversations: 0
+            )
+        } catch {
+            if operationGeneration == generation, !(error is CancellationError) {
+                state = .failed(Self.message(for: error))
+            }
+            throw error
+        }
+    }
+
+    /// Live agent sessions on the host, for the re-launch step of the flow.
+    func inventory() async throws -> [HerdrAgentSnapshot] {
+        try await dependencies.fetchInventory(try requireService())
+    }
+
     func prepareUpdate(_ selectedTools: Set<AgentToolID>) async throws -> AgentUpdatePreview {
         operationGeneration &+= 1
         let generation = operationGeneration
@@ -709,7 +780,7 @@ final class AgentUpdateManager {
         return String(value.prefix(maximumMessageLength - 1)) + "…"
     }
 
-    nonisolated private static func message(for error: Error) -> String {
+    nonisolated static func message(for error: Error) -> String {
         switch error {
         case AgentUpdateManagerError.notConnected:
             "Connect and authenticate SSH to this host first."
