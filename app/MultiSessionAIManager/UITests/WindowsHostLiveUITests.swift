@@ -19,29 +19,33 @@ final class WindowsHostLiveUITests: XCTestCase {
         waitLabel("host.service.status", contains: "Running", timeout: 30)
         app.buttons["Manage Agents and Updates"].tap()
         XCTAssertTrue(app.staticTexts["Codex"].waitForExistence(timeout: 60), app.debugDescription)
-        let available = app.buttons["host.agent-updates.update.codex"]
-        let update = available.exists ? available : app.buttons["host.agent-updates.relaunch.codex"]
-        XCTAssertTrue(update.exists, app.debugDescription)
-        update.tap()
-        let confirm = app.buttons["host.agent-updates.confirm"].firstMatch
-        XCTAssertTrue(confirm.waitForExistence(timeout: 60), app.debugDescription)
+        let available = app.buttons["host.ai-agents.upgrade.codex"]
+        XCTAssertTrue(available.waitForExistence(timeout: 60), app.debugDescription)
+        available.tap()
+        // Guided popup: confirm the upgrade, then skip the session roll.
+        let start = app.buttons["host.agent-upgrade.start"]
+        XCTAssertTrue(start.waitForExistence(timeout: 10), app.debugDescription)
         screenshot("07-windows-rolling-update-preview")
-        confirm.tap()
+        start.tap()
         // Leave the app to prove the host owns the durable queue.
         XCUIDevice.shared.press(.home)
         sleep(10)
         app.activate()
+        var skipped = false
         for _ in 0..<30 {
-            let refresh = app.buttons["host.agent-updates.refresh"]
-            waitEnabled(refresh, timeout: 60)
-            refresh.tap()
-            waitEnabled(refresh, timeout: 60)
-            if app.staticTexts["Update complete"].exists { break }
-            if app.staticTexts["Completed with failures"].exists { break }
+            let skip = app.buttons["host.agent-upgrade.skip"]
+            if skip.waitForExistence(timeout: 4) { skip.tap(); skipped = true; break }
+            let close = app.buttons["host.agent-upgrade.close"]
+            if close.exists { close.tap(); skipped = true; break }
             sleep(2)
         }
-        XCTAssertTrue(app.staticTexts["Update complete"].exists, app.debugDescription)
-        XCTAssertTrue(app.buttons["host.agent-updates.relaunch.codex"].exists, app.debugDescription)
+        XCTAssertTrue(skipped, "upgrade popup never reached the sessions step", app.debugDescription)
+        // The list refreshes to show Codex current after the host finished.
+        let refresh = app.buttons["host.ai-agents.refresh"]
+        waitEnabled(refresh, timeout: 60)
+        refresh.tap()
+        XCTAssertTrue(app.buttons["host.ai-agents.current.codex"].waitForExistence(timeout: 120),
+                      app.debugDescription)
         screenshot("08-windows-rolling-update-complete")
     }
 
@@ -120,7 +124,7 @@ final class WindowsHostLiveUITests: XCTestCase {
         app.buttons["Manage Agents and Updates"].tap()
         XCTAssertTrue(app.staticTexts["Codex"].waitForExistence(timeout: 60), app.debugDescription)
         screenshot("04-windows-agent-updates")
-        app.navigationBars["AI Agent Updates"].buttons["Done"].tap()
+        app.navigationBars["AI Agents on \(hostName)"].buttons["Done"].tap()
         app.navigationBars["Host Service"].buttons["Done"].tap()
         app.navigationBars["Edit Host"].buttons["Cancel"].tap()
         app.navigationBars["Hosts"].buttons["Done"].tap()
