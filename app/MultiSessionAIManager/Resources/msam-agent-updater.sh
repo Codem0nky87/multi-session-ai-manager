@@ -5,7 +5,7 @@ umask 077
 DEFAULT_PATH="$HOME/.local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:$HOME/.gemini/antigravity-cli/bin"
 export PATH="${PATH:+$PATH:}$DEFAULT_PATH"
 
-PROTOCOL_VERSION=1
+PROTOCOL_VERSION=2
 MAX_RESTORE_ATTEMPTS=3
 MAX_REQUEST_BYTES=1048576
 MAX_LOG_BYTES=131072

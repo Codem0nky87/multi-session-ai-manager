@@ -23,7 +23,8 @@ struct AgentUpdaterServiceStatus: Equatable, Sendable {
     let lingerEnabled: Bool?
 
     var isReady: Bool {
-        helperProtocol == 1 && serviceActive && stateWritable && selfTestPassed
+        // 1 = legacy status; 2 = status with per-session conversation detail.
+        (helperProtocol == 1 || helperProtocol == 2) && serviceActive && stateWritable && selfTestPassed
     }
 }
 
@@ -360,7 +361,9 @@ final class AgentUpdaterInstaller {
             selfTestPassed: fields["selftest"] == "yes",
             lingerEnabled: platform == .linux ? fields["linger"] == "yes" : nil
         )
-        guard status.helperProtocol == 1 else {
+        // Protocol 2 adds per-session conversation/tool detail to the batch
+        // status; protocol 1 batches still parse (fields are optional).
+        guard status.helperProtocol == 1 || status.helperProtocol == 2 else {
             throw AgentUpdaterInstallerError.verification("The installed helper protocol is missing or out of date.")
         }
         guard status.serviceActive else {
