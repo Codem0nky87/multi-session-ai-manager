@@ -44,6 +44,26 @@ class HostAgentTests(unittest.TestCase):
         (stage / 'manifest.json').write_text(json.dumps(manifest))
         return stage
 
+    def test_status_reports_component_versions(self):
+        import re
+        components = self.agent.COMPONENT_VERSIONS
+        self.assertEqual(components['service'], self.agent.VERSION)
+        # Real declared versions are read from the bundled scripts.
+        metrics = (RESOURCES / 'msam-metrics.py').read_text()
+        self.assertEqual(components['metrics'],
+                         re.search(r"^METRICS_VERSION = ['\"]([^'\"]+)['\"]", metrics, re.MULTILINE).group(1))
+        self.assertRegex(components['updater'], r'^\d+$')
+        # Digest-only components are short hex strings.
+        self.assertRegex(components['msam-host-software.py'], r'^[0-9a-f]{12}$')
+
+    def test_status_command_output_carries_components(self):
+        output = subprocess.run([sys.executable, str(RESOURCES / 'msam-host-agent.py'), 'status'],
+                                capture_output=True, text=True,
+                                env=dict(os.environ, MSAM_HOST_HOME=str(self.home / 'unused')), timeout=30)
+        self.assertEqual(output.returncode, 0, output.stderr)
+        payload = json.loads(output.stdout.strip().split('MSAM_HOST_STATUS=', 1)[1])
+        self.assertEqual(payload['components']['metrics'], self.agent.COMPONENT_VERSIONS['metrics'])
+
     def test_invalid_bundle_keeps_old_service_and_collectors(self):
         stage = self.stage()
         (stage / 'msam-metrics.py').write_text('broken')

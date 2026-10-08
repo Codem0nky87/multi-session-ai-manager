@@ -37,6 +37,27 @@ struct HostServiceSheet: View {
                         LabeledContent("Status", value: status.running ? "Running" : status.installed ? "Stopped" : "Not installed")
                             .accessibilityIdentifier("host.service.status")
                         if !status.version.isEmpty { LabeledContent("Version", value: status.version) }
+                        if let components = status.components, !components.isEmpty {
+                            // Friendly names first, then raw script digests.
+                            let friendly: [(String, String)] = [
+                                ("service", "Service"),
+                                ("metrics", "Metrics collector"),
+                                ("metrics_windows", "Metrics collector (Windows)"),
+                                ("updater", "Updater protocol"),
+                            ]
+                            ForEach(friendly.filter { components[$0.0] != nil }, id: \.0) { key, label in
+                                LabeledContent(label, value: components[key] ?? "")
+                            }
+                            let digests = components.keys.filter { $0.hasSuffix(".py") || $0.hasSuffix(".txt") }.sorted()
+                            if !digests.isEmpty {
+                                DisclosureGroup("Script digests") {
+                                    ForEach(digests, id: \.self) { name in
+                                        LabeledContent(name, value: components[name] ?? "")
+                                            .font(.caption.monospaced())
+                                    }
+                                }
+                            }
+                        }
                         if status.running {
                             LabeledContent("Metrics", value: status.metrics == true ? "Collecting" : "Unavailable")
                                 .accessibilityIdentifier("host.service.metrics")

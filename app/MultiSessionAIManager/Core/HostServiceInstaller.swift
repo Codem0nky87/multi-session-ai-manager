@@ -12,6 +12,10 @@ enum HostServiceInstaller {
         let agents: Bool?
         let error: String?
         let manifest: [String: String]?
+        /// Per-component versions reported by the host agent (service, metrics,
+        /// updater protocol, and content digests for the remaining scripts).
+        /// Absent from agents older than 1.1.0.
+        let components: [String: String]?
 
         var setupState: HostAgentUpdaterSetup {
             installed && running && !disabled && updates == true ? .ready : .unchecked

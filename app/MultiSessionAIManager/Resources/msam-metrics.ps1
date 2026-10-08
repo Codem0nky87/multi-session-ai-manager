@@ -1,4 +1,5 @@
 param([switch]$loop)
+$MetricsVersion = '2.1.1'
 $ProgressPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 

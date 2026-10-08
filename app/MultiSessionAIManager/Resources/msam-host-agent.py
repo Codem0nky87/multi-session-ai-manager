@@ -13,13 +13,48 @@ import sys
 import threading
 import time
 
-VERSION = '1.0.1'
+VERSION = '1.1.0'
 ROOT = Path(__file__).resolve().parent
 HOME = Path(os.environ.get('MSAM_HOST_HOME', str(Path.home())))
 STATE = HOME / '.local/state/msam-host-agent'
 UPDATER_STATE = HOME / '.local/state/msam-agent-updater'
 STOP = threading.Event()
 WINDOWS_NETWORK = None
+
+# Per-component versions for the service status. Scripts that declare one
+# report it verbatim; the rest report a short content digest so the app can
+# still tell two builds apart. Read once at startup: the service is replaced
+# (and restarted) when files change, never hot-swapped.
+COMPONENT_VERSION_SOURCES = {
+    'metrics': ('msam-metrics.py', r"^METRICS_VERSION = ['\"]([^'\"]+)['\"]"),
+    'metrics_windows': ('msam-metrics.ps1', r'^\$MetricsVersion\s*=\s*[\'"]([^\'"]+)[\'"]'),
+    'updater': ('msam-agent-updater.sh', r'^PROTOCOL_VERSION=(\S+)'),
+}
+COMPONENT_DIGEST_FILES = ['msam-host-software.py', 'msam-metrics-manage.py',
+                          'msam-host-service-windows.py', 'msam-agent-updater-windows.py',
+                          'msam-host-agent-install.py']
+
+
+def component_versions():
+    import hashlib
+    import re
+    versions = {'service': VERSION}
+    for name, (filename, pattern) in COMPONENT_VERSION_SOURCES.items():
+        try:
+            match = re.search(pattern, (ROOT / filename).read_text(encoding='utf-8'), re.MULTILINE)
+        except OSError:
+            match = None
+        versions[name] = match.group(1) if match else 'unknown'
+    for filename in COMPONENT_DIGEST_FILES:
+        try:
+            digest = hashlib.sha256((ROOT / filename).read_bytes()).hexdigest()[:12]
+        except OSError:
+            digest = 'missing'
+        versions[filename] = digest
+    return versions
+
+
+COMPONENT_VERSIONS = component_versions()
 
 
 def atomic_json(path, value):
@@ -74,6 +109,9 @@ def status():
     value = read_json(STATE / 'status.json', {})
     value['running'] = bool(value.get('heartbeat', 0) > time.time() - 15)
     value.setdefault('version', VERSION)
+    # The status command runs from the installed files, so component versions
+    # are accurate even when the daemon last wrote an older status.json.
+    value['components'] = COMPONENT_VERSIONS
     return value
 
 
@@ -179,7 +217,8 @@ def serve():
         try:
             while not STOP.is_set():
                 started = time.monotonic()
-                detail = {'version': VERSION, 'pid': os.getpid(), 'heartbeat': time.time(),
+                detail = {'version': VERSION, 'components': COMPONENT_VERSIONS,
+                          'pid': os.getpid(), 'heartbeat': time.time(),
                           'metrics': False, 'updates': not (STATE / 'updater-error.json').exists(),
                           'agents': not read_json(STATE / 'agents.json', {}).get('error')}
                 try:
@@ -190,7 +229,8 @@ def serve():
                 atomic_json(STATE / 'status.json', detail)
                 STOP.wait(max(0.1, 2 - (time.monotonic() - started)))
         finally:
-            atomic_json(STATE / 'status.json', {'version': VERSION, 'heartbeat': 0, 'pid': os.getpid(), 'metrics': False})
+            atomic_json(STATE / 'status.json', {'version': VERSION, 'components': COMPONENT_VERSIONS,
+                                                'heartbeat': 0, 'pid': os.getpid(), 'metrics': False})
 
 
 def stream_metrics(loop):

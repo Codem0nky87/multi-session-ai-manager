@@ -14,6 +14,15 @@ import Testing
         #expect(removed.disabled)
     }
 
+    @Test func componentVersionsDecodeAndOldAgentsStillParse() throws {
+        let withComponents = try HostServiceInstaller.parseStatus(
+            #"MSAM_HOST_STATUS={"installed":true,"running":true,"disabled":false,"version":"1.1.0","components":{"service":"1.1.0","metrics":"2.1.1"}}"#)
+        #expect(withComponents.components?["metrics"] == "2.1.1")
+        // Agents older than 1.1.0 send no components key at all.
+        let legacy = try HostServiceInstaller.parseStatus(ready)
+        #expect(legacy.components == nil)
+    }
+
     @Test func windowsCommandIsEncodedAndPreservesArguments() throws {
         let command = HostServiceInstaller.python("print('ok')", arguments: ["C:\\Users\\a's folder\\file"], isWindows: true)
         let encoded = try #require(command.split(separator: " ").last)
