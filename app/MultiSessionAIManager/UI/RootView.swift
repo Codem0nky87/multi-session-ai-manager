@@ -99,6 +99,7 @@ struct RootView: View {
     @Bindable var terminalSettings: TerminalSettings
 
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var showingPicker = false
     @State private var showingSettings = false
     @State private var showingFileSend = false
@@ -110,6 +111,9 @@ struct RootView: View {
     /// `InstallKeySheet` and `WorkdirPickerSheet` all read it as a non-optional
     /// `@Environment(ToastCenter.self)`, which traps at runtime if it is absent.
     @State private var toastCenter = ToastCenter()
+    /// Phone layout only: how much of the screen the software keyboard covers,
+    /// so the quick-key bar can sit above it and the grid can shrink with it.
+    @State private var keyboard = KeyboardVisibilityModel()
     /// True while a pane copy is in flight, so the button cannot be double-fired.
     /// Modal text selection, shared with the terminal so the top bar can enable
     /// Copy only when a range exists, and so a tab switch can force-exit.
@@ -124,7 +128,7 @@ struct RootView: View {
                 // Copies the focused Herdr pane's text to the iPad pasteboard.
                 // Only shown with a live tab: it asks Herdr over that tab's own
                 // authenticated SSH connection.
-                if selectedTab != nil {
+                if selectedTab != nil, !isCompact {
                     if let tab = selectedTab {
                         HostMetricsBarView(metricsModel: tabs.session(for: tab).metrics, hostID: tab.hostID)
                             .background(HerdrTheme.panel, ignoresSafeAreaEdges: [])
@@ -241,6 +245,57 @@ struct RootView: View {
                     .accessibilityIdentifier("msam.tab.theme")
                     .background(HerdrTheme.panel, ignoresSafeAreaEdges: [])
                 }
+                // Phone (compact width): the metrics bar and the five toolbar
+                // buttons cannot share 390pt with the tab strip, so every
+                // secondary action folds into one overflow menu.
+                if isCompact, selectedTab != nil {
+                    Menu {
+                        Button(selection.isSelecting ? "Exit text selection" : "Select text") {
+                            if selection.isSelecting { selection.exit() } else { selection.isSelecting = true }
+                        }
+                        Button("Copy selection") { selection.requestCopy() }
+                            .disabled(!selection.hasSelection)
+                        Button("Send a file to host") { showingFileSend = true }
+                            .disabled(!isSelectedTabLive)
+                        Section("Function keys") {
+                            ForEach(TerminalFunctionKey.numbers, id: \.self) { number in
+                                Button("F\(number)") { tabs.sendFunctionKey(number) }
+                                    .disabled(!isSelectedTabLive)
+                            }
+                        }
+                        Section("Tab Theme") {
+                            Button("Default (Global)") {
+                                tabStore.setTheme(nil, for: selectedTab?.id ?? UUID())
+                            }
+                            Divider()
+                            ForEach(TerminalTheme.all) { theme in
+                                Button {
+                                    if let id = selectedTab?.id {
+                                        tabStore.setTheme(theme.id, for: id)
+                                    }
+                                } label: {
+                                    if selectedTab?.themeID == theme.id {
+                                        Label(theme.name, systemImage: "checkmark")
+                                    } else {
+                                        Text(theme.name)
+                                    }
+                                }
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .foregroundStyle(HerdrTheme.subtext)
+                            .frame(
+                                width: HerdrChromeMetrics.hostTabBarHeight,
+                                height: HerdrChromeMetrics.hostTabBarHeight
+                            )
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Terminal actions")
+                    .accessibilityIdentifier("msam.compact.menu")
+                    .background(HerdrTheme.panel, ignoresSafeAreaEdges: [])
+                }
                 Button {
                     showingSettings = true
                 } label: {
@@ -263,7 +318,9 @@ struct RootView: View {
                 HostTerminalView(
                     session: tabs.session(for: tab),
                     selection: selection,
-                    theme: tab.themeID.map { TerminalTheme.byID($0) }
+                    theme: tab.themeID.map { TerminalTheme.byID($0) },
+                    isCompact: isCompact,
+                    keyboard: keyboard
                 )
                 .padding(.horizontal, HerdrChromeMetrics.terminalEdgeInset)
                 // The home-indicator inset is dead space under a terminal --
@@ -356,6 +413,13 @@ struct RootView: View {
         return tabStore.tabs.first(where: { $0.id == id })
     }
 
+    /// Phone layout. Compact width (iPhone portrait AND landscape) selects the
+    /// slim top bar and the quick-key strip; iPad regular width keeps the full
+    /// metrics bar and toolbar untouched.
+    private var isCompact: Bool {
+        horizontalSizeClass == .compact
+    }
+
     /// The image button needs a LIVE tab, not merely a selected one: an idle or
     /// failed tab has no authenticated connection to upload over and no PTY to
     /// type the path into.
@@ -406,40 +470,91 @@ struct HostTerminalView: View {
     @Bindable var session: HerdrHostSession
     var selection: TerminalSelectionModel? = nil
     var theme: TerminalTheme? = nil
+    /// Phone layout: the terminal gives up rows to a quick-key bar that sits
+    /// above the software keyboard, and the keyboard itself shrinks the grid
+    /// (fewer rows while typing, full height when dismissed for scrolling).
+    var isCompact = false
+    /// Owned as @State so observation tracks its notification-driven updates;
+    /// the value passed in only seeds a fresh instance (previews).
+    @State var keyboard = KeyboardVisibilityModel()
+
+    /// Shared with the emulator view so the quick-key bar can focus/blur the
+    /// keyboard and arm sticky Ctrl through the same first responder.
+    @State private var inputController = KeyInputController()
+    /// Home-indicator inset, measured from the full-screen background below.
+    /// The whole view deliberately ignores the bottom safe area (a terminal
+    /// wants every row it can get), so the quick-key bar has to lift itself
+    /// clear of the swipe-up strip explicitly.
+    @State private var homeInset: CGFloat = 0
+
+    /// Space the bar must clear at the bottom: the docked keyboard while it is
+    /// up (it covers the home indicator, so the larger figure wins), and the
+    /// home-indicator inset when it is down.
+    private var barBottomInset: CGFloat {
+        guard isCompact else { return 0 }
+        return max(homeInset, keyboard.height)
+    }
 
     var body: some View {
-        ZStack {
-            TerminalEmulatorView(
-                emulator: session.terminal,
-                // Keeps the remote's bottom row out of the window-resize grip,
-                // which swallows clicks before the app can forward them.
-                bottomInset: HerdrChromeMetrics.resizeGripClearance,
-                inputEnabled: session.status == .live,
-                onInputBytes: { session.terminal.feedInputToPTY($0) },
-                onGridChange: { cols, rows in session.resize(cols: cols, rows: rows) },
-                forwardsPointerClicks: true,
-                // Remote Herdr panes opt out so launching (or reconnecting) the
-                // session never covers its workspace with the software keyboard --
-                // and never fires the grid resize/SIGWINCH that raising it implies.
-                automaticallyFocusesInput: false,
-                selection: selection,
-                theme: theme
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            if session.status != .live {
-                HostSessionStatusOverlay(
-                    status: session.status,
-                    onRetry: { Task { await session.retry() } },
-                    onTrustChangedKey: {
-                        Task {
-                            await session.connection.trustChangedKeyAndReconnect()
-                            await session.ensureLive()
-                        }
-                    }
+        VStack(spacing: 0) {
+            ZStack {
+                TerminalEmulatorView(
+                    emulator: session.terminal,
+                    // Keeps the remote's bottom row out of the window-resize grip,
+                    // which swallows clicks before the app can forward them.
+                    bottomInset: HerdrChromeMetrics.resizeGripClearance,
+                    inputEnabled: session.status == .live,
+                    onInputBytes: { session.terminal.feedInputToPTY($0) },
+                    onGridChange: { cols, rows in session.resize(cols: cols, rows: rows) },
+                    forwardsPointerClicks: true,
+                    // Remote Herdr panes opt out so launching (or reconnecting) the
+                    // session never covers its workspace with the software keyboard --
+                    // and never fires the grid resize/SIGWINCH that raising it implies.
+                    automaticallyFocusesInput: false,
+                    inputController: inputController,
+                    selection: selection,
+                    theme: theme
                 )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                if session.status != .live {
+                    HostSessionStatusOverlay(
+                        status: session.status,
+                        onRetry: { Task { await session.retry() } },
+                        onTrustChangedKey: {
+                            Task {
+                                await session.connection.trustChangedKeyAndReconnect()
+                                await session.ensureLive()
+                            }
+                        }
+                    )
+                }
+            }
+            if isCompact {
+                TerminalQuickKeyBar(
+                    emulator: session.terminal,
+                    controller: inputController,
+                    keyboard: keyboard,
+                    onInputBytes: { session.terminal.feedInputToPTY($0) }
+                )
+                // Lift the bar clear of the keyboard (or the home-indicator
+                // strip when the keyboard is hidden); the terminal above it
+                // shrinks by the same amount, re-deriving cols/rows.
+                .padding(.bottom, barBottomInset)
             }
         }
+        .background(
+            // Measure the bottom safe-area inset (home indicator) from a layer
+            // that spans the full screen, so the quick-key bar can clear it.
+            // Preference-based rather than `onGeometryChange`, which is iOS 18+.
+            GeometryReader { proxy in
+                Color.clear
+                    .preference(key: BottomSafeAreaInsetKey.self,
+                                value: proxy.safeAreaInsets.bottom)
+            }
+            .ignoresSafeArea()
+        )
+        .onPreferenceChange(BottomSafeAreaInsetKey.self) { homeInset = $0 }
         // The terminal's OWN background, painted behind everything and allowed
         // past the safe area.
         //
@@ -514,6 +629,16 @@ struct HostSessionStatusOverlay: View {
         case .idle, .herdrMissing, .failed: true
         case .connecting, .live, .hostKeyChanged: false
         }
+    }
+}
+
+/// Carries the bottom safe-area inset (home indicator) up from a full-screen
+/// background layer to `HostTerminalView`, which needs it to lift the phone
+/// quick-key bar clear of the swipe-up strip.
+private struct BottomSafeAreaInsetKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 

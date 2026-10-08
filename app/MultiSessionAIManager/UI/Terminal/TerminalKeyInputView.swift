@@ -20,6 +20,10 @@ final class TerminalKeyInputView: UIView, UIKeyInput {
     var onInput: (([UInt8]) -> Void)?
     /// Reports whether the terminal is in application-cursor mode (DECCKM).
     var applicationCursorProvider: () -> Bool = { false }
+    /// Sticky Ctrl from the phone quick-key bar: armed, the next typed
+    /// character is sent as its control code and the latch disarms. Hardware
+    /// Ctrl combos bypass it (they already carry the modifier).
+    var ctrlLatchArmed = false
     private let hardwareRepeater = RepeatKeyPressController()
     private var repeatingHardwareKey: UIKeyboardHIDUsage?
 
@@ -77,16 +81,31 @@ final class TerminalKeyInputView: UIView, UIKeyInput {
     var hasText: Bool { true }
 
     func insertText(_ text: String) {
-        let data = text.utf8.map { character -> UInt8 in
+        var data = text.utf8.map { character -> UInt8 in
             // Convert newline to carriage return for the shell.
             character == 0x0A ? EscapeSequences.return.first! : character
+        }
+        if ctrlLatchArmed {
+            data = data.map(\.controlCharacter)
+            ctrlLatchArmed = false
+            onCtrlLatchChanged?(false)
         }
         onInput?(data)
     }
 
     func deleteBackward() {
+        if ctrlLatchArmed {
+            // Ctrl-Backspace: delete word backwards (readline convention).
+            ctrlLatchArmed = false
+            onCtrlLatchChanged?(false)
+            onInput?(EscapeSequences.meta + EscapeSequences.backspace)
+            return
+        }
         onInput?(EscapeSequences.backspace)
     }
+
+    /// Reports sticky-Ctrl state changes so the quick-key bar can light up.
+    var onCtrlLatchChanged: ((Bool) -> Void)?
 
     // MARK: - Hardware keyboard
 

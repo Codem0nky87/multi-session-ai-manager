@@ -1193,14 +1193,26 @@ private struct KeyInputRepresentable: UIViewRepresentable {
 final class KeyInputController {
     private(set) var isFocusRequested = false
     private(set) var wasFocusedBeforeDeactivation = false
+    /// Sticky-Ctrl state mirrored from the key-input view for the quick-key bar.
+    private(set) var isCtrlArmed = false
     weak var view: TerminalKeyInputView? {
         didSet {
+            guard let view else { return }
+            view.onCtrlLatchChanged = { [weak self] armed in
+                Task { @MainActor [weak self] in self?.isCtrlArmed = armed }
+            }
             guard isFocusRequested else { return }
             Task { @MainActor [weak self] in
                 await Task.yield()
                 self?.focusAttachedViewIfRequested()
             }
         }
+    }
+
+    /// Arm/disarm the sticky Ctrl used by the phone quick-key bar.
+    func toggleCtrl() {
+        isCtrlArmed.toggle()
+        view?.ctrlLatchArmed = isCtrlArmed
     }
 
     func focus() {
