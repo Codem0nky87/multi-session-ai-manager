@@ -264,6 +264,22 @@ import Testing
         )
     }
 
+    @Test func prepareUpgradeOnlyQueuesToolWithNoRollTargets() async throws {
+        let (connection, _) = try await makeConnection()
+        let manager = AgentUpdateManager(connection: connection, dependencies: dependencies(
+            versions: AgentToolID.allCases.map { version($0, "1.0.0", "2.0.0") },
+            inventory: [snapshot(.claude, pane: "w1:p1", conversation: "claude-1", lifecycle: .idle)],
+            batch: .idle
+        ))
+        await manager.refresh()
+
+        let preview = try await manager.prepareUpgradeOnly(.codex)
+
+        #expect(preview.request?.requestedTools == [.codex])
+        #expect(preview.request?.targets.isEmpty == true)
+        #expect(preview.totalConversations == 0)
+    }
+
     @Test func prepareRelaunchCapturesAllAgentsWhenVersionsAreAlreadyCurrent() async throws {
         let (connection, transport) = try await makeConnection()
         let snapshots = [

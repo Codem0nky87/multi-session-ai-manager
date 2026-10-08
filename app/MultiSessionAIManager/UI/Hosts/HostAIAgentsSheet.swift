@@ -16,6 +16,7 @@ struct HostAIAgentsSheet: View {
     @State private var operations = HostSetupRestoreOperationCoordinator()
     @State private var upgradeTool: AgentToolID?
     @State private var updaterReady = false
+    private let onSetupChanged: (HostAgentUpdaterSetup, HostGatekeeperPolicy) -> Void
     @Environment(\.dismiss) private var dismiss
 
     init(
@@ -404,16 +405,20 @@ struct AgentUpgradeFlowSheet: View {
         .padding(Theme.Space.lg)
     }
 
-    private var progressView: some View {
+    private func progressView(title: String, detail: String) -> some View {
         VStack(spacing: Theme.Space.md) {
             ProgressView().controlSize(.large).tint(Theme.accent)
-            Text(titleForProgress)
+            Text(title)
                 .font(Theme.title(17))
                 .foregroundStyle(Theme.textPrimary)
                 .multilineTextAlignment(.center)
             Text(AgentUpdatePresentation.batchTitle(manager.batch ?? .idle))
                 .font(Theme.mono(13))
                 .foregroundStyle(Theme.textSecondary)
+            Text(detail)
+                .font(Theme.body(12))
+                .foregroundStyle(Theme.textSecondary)
+                .multilineTextAlignment(.center)
             if let batch = manager.batch, batch.total > 0 {
                 ProgressView(value: Double(batch.restored + batch.failed), total: Double(max(batch.total, 1)))
                     .tint(Theme.accent)
@@ -421,13 +426,6 @@ struct AgentUpgradeFlowSheet: View {
             }
         }
         .padding(Theme.Space.lg)
-    }
-
-    private var titleForProgress: String {
-        switch stage {
-        case .rolling: "Re-launching sessions"
-        default: "Upgrading \(definition.displayName) on the host"
-        }
     }
 
     private var sessionsView: some View {
