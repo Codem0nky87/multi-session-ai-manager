@@ -47,10 +47,9 @@ struct HostEditView: View {
     @State private var errorMessage: String?
     @State private var showHostSetup = false
     @State private var showPortForwarding = false
-    @State private var showAgentUpdates = false
+    @State private var showAIAgents = false
     @State private var showPlugins = false
     @State private var showHostService = false
-    @State private var showHostSoftware = false
     @Environment(\.portForwardingManager) private var portForwarding
     /// Set while a key deletion is awaiting confirmation.
     @State private var pendingKeyDeletion: String?
@@ -119,10 +118,9 @@ struct HostEditView: View {
                     workdirSection
                     if onContinue == nil {
                         hostServiceSection
-                        hostSoftwareSection
+                        aiAgentsSection
                         pluginsSection
                         portForwardingSection
-                        agentUpdatesSection
                     }
                     validationFeedback
                 }
@@ -201,9 +199,14 @@ struct HostEditView: View {
     var body: some View {
         editorWithKeySheets
         .background(
-            Color.clear.sheet(isPresented: $showHostSoftware) {
+            Color.clear.sheet(isPresented: $showAIAgents) {
                 if let host = pluginsHost {
-                    HostSoftwareSheet(host: host, keyStore: keyStore, knownHosts: knownHosts)
+                    HostAIAgentsSheet(
+                        host: host,
+                        keyStore: keyStore,
+                        knownHosts: knownHosts,
+                        onSetupChanged: persistUpdaterSetup
+                    )
                 }
             }
         )
@@ -245,18 +248,7 @@ struct HostEditView: View {
                 }
             }
         )
-        .background(
-            Color.clear.sheet(isPresented: $showAgentUpdates) {
-                if let host = agentUpdatesHost {
-                    HostAgentUpdatesSheet(
-                        host: host,
-                        keyStore: keyStore,
-                        knownHosts: knownHosts,
-                        onSetupChanged: persistUpdaterSetup
-                    )
-                }
-            }
-        )
+
         .background(
             Color.clear.alert(
                 SSHKeyDeletion.confirmationTitle,
@@ -479,23 +471,6 @@ struct HostEditView: View {
         }
     }
 
-    private var hostSoftwareSection: some View {
-        GlassCard {
-            VStack(alignment: .leading, spacing: Theme.Space.md) {
-                SectionLabel(text: "AI Agent CLIs")
-                Text("Install and verify Codex, Claude Code, and Antigravity on this host.")
-                    .font(Theme.body(13)).foregroundStyle(Theme.textSecondary)
-                Button { showHostSoftware = true } label: {
-                    Label("Manage AI agent CLIs", systemImage: "terminal")
-                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain).tint(Theme.accent)
-                .disabled(pluginsHost == nil)
-                .accessibilityIdentifier("host.software.manage")
-            }
-        }
-    }
 
     private var pluginsSection: some View {
         GlassCard {
@@ -529,14 +504,14 @@ struct HostEditView: View {
         return try? candidateHost.validated()
     }
 
-    private var agentUpdatesSection: some View {
+    private var aiAgentsSection: some View {
         GlassCard {
             VStack(alignment: .leading, spacing: Theme.Space.md) {
-                SectionLabel(text: "AI Agent Updates")
+                SectionLabel(text: "AI Agents")
                     .accessibilityIdentifier("host.agent-updates.section")
-                Text(agentUpdatesHost == nil
+                Text(pluginsHost == nil
                      ? "Save this host and install a key first."
-                     : "Check installed Claude Code, Codex, and Antigravity versions and queue a host-owned rolling update.")
+                     : "Install and verify the agent CLIs, check versions, and queue host-owned rolling updates or re-launches on this host.")
                     .font(Theme.body(13))
                     .foregroundStyle(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -550,25 +525,20 @@ struct HostEditView: View {
                 }
 
                 Button {
-                    showAgentUpdates = true
+                    showAIAgents = true
                 } label: {
-                    Label("Manage AI agent updates", systemImage: "arrow.triangle.2.circlepath")
+                    Label("Manage AI agents", systemImage: "terminal")
                         .font(.system(.body, design: .rounded, weight: .medium))
-                        .foregroundStyle(agentUpdatesHost == nil ? Theme.textMuted : Theme.accent)
+                        .foregroundStyle(pluginsHost == nil ? Theme.textMuted : Theme.accent)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .frame(minHeight: 44, alignment: .leading)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .disabled(agentUpdatesHost == nil)
-                .accessibilityIdentifier("host.agent-updates.open")
+                .disabled(pluginsHost == nil)
+                .accessibilityIdentifier("host.ai-agents.manage")
             }
         }
-    }
-
-    private var agentUpdatesHost: Host? {
-        guard existingID != nil else { return nil }
-        return try? candidateHost.validated()
     }
 
     private var workdirSection: some View {

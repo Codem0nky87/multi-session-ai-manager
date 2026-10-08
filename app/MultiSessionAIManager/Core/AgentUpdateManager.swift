@@ -27,6 +27,11 @@ struct AgentUpdateTargetStatus: Equatable, Sendable {
     let phase: String
     let attempts: Int
     let message: String
+    /// Which conversation this session row is, so the UI can show progress
+    /// per detected session rather than anonymous numbers. Absent from
+    /// helpers older than the per-session detail protocol.
+    let conversationID: String?
+    let tool: AgentToolID?
 }
 
 struct AgentUpdateBatchStatus: Equatable, Sendable {
@@ -162,6 +167,22 @@ final class AgentUpdateManager {
 
     func setGatekeeperPolicy(_ policy: HostGatekeeperPolicy) {
         gatekeeperPolicy = policy
+    }
+
+    /// Lightweight status poll for the live progress view: refreshes only the
+    /// durable batch (the host service is the source of truth) without
+    /// re-reading every tool version. Failures are silent — the next poll or
+    /// an explicit refresh recovers, and a transient SSH hiccup must never
+    /// wipe the progress the user is watching.
+    func pollBatch() async {
+        guard let service = connection.provisioningCommandRunner else { return }
+        do {
+            let context = try await dependencies.fetchContext(service)
+            let status = try await dependencies.fetchBatchStatus(context, service)
+            batch = status
+        } catch {
+            // Intentionally silent; see above.
+        }
     }
 
     func refresh() async {
@@ -497,16 +518,23 @@ final class AgentUpdateManager {
                     id = parsed
                 }
                 phase = AgentUpdateBatchPhase(rawValue: fields[2]) ?? .unknown
-            case "TARGET" where fields.count == 5:
+            case "TARGET" where fields.count == 5 || fields.count == 7:
                 guard let index = Int(fields[1]), index > 0,
                       let attempts = Int(fields[3]), attempts >= 0 else {
                     throw AgentUpdateManagerError.invalidStatus
                 }
+                // 7-field lines carry the conversation id and tool (field 5
+                // and 6); "-" means the helper had none to report.
+                let conversation = fields.count == 7 && fields[5] != "-" ? bounded(fields[5]) : nil
+                let tool = fields.count == 7 && fields[6] != "-"
+                    ? AgentToolID(rawValue: bounded(fields[6])) : nil
                 targets.append(.init(
                     index: index,
                     phase: bounded(fields[2]),
                     attempts: attempts,
-                    message: bounded(fields[4])
+                    message: bounded(fields[4]),
+                    conversationID: conversation,
+                    tool: tool
                 ))
             case "APPROVAL" where fields.count == 2:
                 guard approvalTool == nil,

@@ -809,6 +809,10 @@ process_target() {
       current_pid=$(foreground_pid "$socket" "$pane")
       if [ -n "$snapshot" ] && snapshot_is_expected "$snapshot" "$tool" "$conversation" \
          && [ -n "$current_pid" ] && [ "$current_pid" != "$original_pid" ]; then
+        # A session killed by the roll was interrupted mid-conversation; nudge
+        # it to pick up where it left off. Best-effort: a refused or ignored
+        # prompt must never fail an otherwise-verified restore.
+        run_bounded "$INSPECT_TIMEOUT_SECONDS" env HERDR_SOCKET_PATH="$socket" herdr agent prompt "$pane" continue >/dev/null 2>&1 || :
         mark_target "$batch_dir" "$index" restored restored
         return 0
       fi
@@ -983,6 +987,7 @@ status_output() {
     target_phase=$(cat "$batch_dir/target.$index.phase")
     attempts=$(cat "$batch_dir/target.$index.attempts")
     message=$(cat "$batch_dir/target.$index.message")
+    old_ifs=$IFS; IFS=$TAB; read -r _tag _session _socket _pane _pid _tool conversation < "$batch_dir/target.$index"; IFS=$old_ifs
     case "$target_phase" in
       restored) restored=$((restored + 1)) ;;
       failed) failed=$((failed + 1)) ;;
@@ -991,7 +996,7 @@ status_output() {
         case "$message" in working) working=$((working + 1)) ;; *) attention=$((attention + 1)) ;; esac
         ;;
     esac
-    printf 'TARGET\t%s\t%s\t%s\t%s\n' "$index" "$target_phase" "$attempts" "$message"
+    printf 'TARGET\t%s\t%s\t%s\t%s\t%s\t%s\n' "$index" "$target_phase" "$attempts" "$message" "${conversation:--}" "${_tool:--}"
     index=$((index + 1))
   done
   printf 'COUNTS\t%s\t%s\t%s\t%s\t%s\t%s\n' "$count" "$restored" "$working" "$attention" "$retrying" "$failed"

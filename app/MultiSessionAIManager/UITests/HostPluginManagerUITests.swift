@@ -23,14 +23,14 @@ final class HostPluginManagerUITests: XCTestCase {
         host.tap()
         XCTAssertTrue(app.navigationBars["Edit Host"].waitForExistence(timeout: 10))
 
-        let software = app.buttons["host.software.manage"]
+        let software = app.buttons["host.ai-agents.manage"]
         reveal(software, in: app)
-        XCTAssertTrue(software.isEnabled, "AI CLI installation must be reachable from the host editor")
+        XCTAssertTrue(software.isEnabled, "AI agent management must be reachable from the host editor")
         software.tap()
-        XCTAssertTrue(app.navigationBars["AI Agent CLIs"].waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertTrue(app.navigationBars["AI Agents on \(hostName)"].waitForExistence(timeout: 10), app.debugDescription)
         XCTAssertTrue(app.buttons["Retry"].waitForExistence(timeout: 15), app.debugDescription)
         XCTAssertFalse(app.buttons["host.software.install.codex"].exists, "An unavailable host cannot offer installation")
-        app.navigationBars["AI Agent CLIs"].buttons["Done"].tap()
+        app.navigationBars["AI Agents on \(hostName)"].buttons["Done"].tap()
         XCTAssertTrue(app.navigationBars["Edit Host"].waitForExistence(timeout: 10))
 
         let manage = app.buttons["host.plugins.manage"]

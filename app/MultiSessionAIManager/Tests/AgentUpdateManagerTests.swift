@@ -169,6 +169,23 @@ import Testing
         #expect(status.targets[1].message.count <= AgentUpdateManager.maximumMessageLength)
     }
 
+    @Test func statusParserCarriesPerSessionDetailAndStillAcceptsLegacyLines() throws {
+        let batchID = UUID()
+        let status = try AgentUpdateManager.parseStatus("""
+        MSAM_AGENT_UPDATE_STATUS\t1
+        BATCH\t\(batchID.uuidString)\trolling
+        TARGET\t1\texited\t1\tready_to_restore\t11111111-2222-3333-4444-555555555555\tcodex
+        TARGET\t2\trestored\t0\trestored\t-\t-
+        COUNTS\t2\t1\t0\t0\t1\t0
+        END
+        """)
+        #expect(status.targets.count == 2)
+        #expect(status.targets[0].conversationID == "11111111-2222-3333-4444-555555555555")
+        #expect(status.targets[0].tool == .codex)
+        #expect(status.targets[1].conversationID == nil)
+        #expect(status.targets[1].tool == nil)
+    }
+
     @Test func statusParserReportsTheExactToolAwaitingGatekeeperApproval() throws {
         let batchID = UUID()
         let status = try AgentUpdateManager.parseStatus("""
