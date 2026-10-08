@@ -51,10 +51,12 @@ import Testing
             attentionConversations: 1
         )
         let copy = AgentUpdatePresentation.confirmation(for: preview)
-        #expect(copy.contains("Claude Code"))
-        #expect(copy.contains("Codex"))
-        #expect(copy.contains("Antigravity"))
-        #expect(copy.contains("all 7"))
+        // The roll is scoped to the selected tool only; other agents'
+        // sessions are explicitly untouched.
+        #expect(copy.contains("Codex will update first"))
+        #expect(!copy.contains("Claude Code"))
+        #expect(!copy.contains("Antigravity"))
+        #expect(copy.contains("7 matching conversations"))
         #expect(copy.contains("ordinary panes remain running"))
         #expect(copy.contains("working conversations wait"))
     }

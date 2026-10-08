@@ -62,6 +62,16 @@ struct AgentUpdateBatchStatus: Equatable, Sendable {
     var isActive: Bool { id != nil && phase.isActive }
 }
 
+/// A detected agent session that cannot be safely restored (no current
+/// Herdr integration or no native conversation reference).
+struct UnrestorablePane: Equatable, Sendable {
+    let herdrSession: String
+    let socketPath: String
+    let paneID: String
+
+    var label: String { "\(herdrSession)/\(paneID)" }
+}
+
 struct AgentUpdatePreview: Equatable, Sendable {
     let requestedTools: Set<AgentToolID>
     let request: AgentUpdateRequest?
@@ -70,6 +80,11 @@ struct AgentUpdatePreview: Equatable, Sendable {
     let workingConversations: Int
     let attentionConversations: Int
     let relaunchTool: AgentToolID?
+    /// Sessions in scope that do not meet the restore spec. They never block
+    /// the roll; the user chooses whether they are closed (dismissed) or left
+    /// untouched.
+    let unrestorablePanes: [UnrestorablePane]
+    let closeUnrestorablePanes: Bool
 
     init(
         requestedTools: Set<AgentToolID>,
@@ -78,7 +93,9 @@ struct AgentUpdatePreview: Equatable, Sendable {
         totalConversations: Int,
         workingConversations: Int,
         attentionConversations: Int,
-        relaunchTool: AgentToolID? = nil
+        relaunchTool: AgentToolID? = nil,
+        unrestorablePanes: [UnrestorablePane] = [],
+        closeUnrestorablePanes: Bool = false
     ) {
         self.requestedTools = requestedTools
         self.request = request
@@ -87,6 +104,17 @@ struct AgentUpdatePreview: Equatable, Sendable {
         self.workingConversations = workingConversations
         self.attentionConversations = attentionConversations
         self.relaunchTool = relaunchTool
+        self.unrestorablePanes = unrestorablePanes
+        self.closeUnrestorablePanes = closeUnrestorablePanes
+    }
+
+    func withCloseUnrestorablePanes(_ close: Bool) -> AgentUpdatePreview {
+        AgentUpdatePreview(
+            requestedTools: requestedTools, request: request, existingBatch: existingBatch,
+            totalConversations: totalConversations, workingConversations: workingConversations,
+            attentionConversations: attentionConversations, relaunchTool: relaunchTool,
+            unrestorablePanes: unrestorablePanes, closeUnrestorablePanes: close
+        )
     }
 }
 
@@ -97,7 +125,9 @@ enum AgentUpdateManagerError: Error, Equatable, Sendable {
     case toolNotUpdateable(AgentToolID)
     case serviceUnavailable(String)
     case noConversationsToRelaunch(String)
-    case unrestorableAgents([String])
+    /// Surfaced when the only sessions in scope lack a current Herdr
+    /// integration or native restore reference.
+    case onlyUnrestorableAgents([String])
     case invalidStatus
     case invalidAcceptance
     case remoteCommandFailed(Int32)
@@ -281,13 +311,13 @@ final class AgentUpdateManager {
             }
 
             let snapshots = try await dependencies.fetchInventory(service)
-            let unsafe = snapshots.filter { !$0.isRestorable }
-            guard unsafe.isEmpty else {
-                let panes = unsafe.map { "\($0.herdrSession)/\($0.paneID)" }
-                throw AgentUpdateManagerError.unrestorableAgents(panes)
-            }
+            // An update to one tool must never disturb another tool's
+            // sessions: only sessions of the selected tools are in scope.
+            let inScope = snapshots.filter { selectedTools.contains($0.tool) }
+            let restorable = inScope.filter { $0.isRestorable }
+            let unsafe = inScope.filter { !$0.isRestorable }
 
-            let targets = snapshots.map { snapshot in
+            let targets = restorable.map { snapshot in
                 AgentRollTarget(
                     herdrSession: snapshot.herdrSession,
                     socketPath: snapshot.socketPath,
@@ -314,10 +344,14 @@ final class AgentUpdateManager {
                 requestedTools: selectedTools,
                 request: request,
                 existingBatch: nil,
-                totalConversations: snapshots.count,
-                workingConversations: snapshots.count { $0.lifecycle == .working },
-                attentionConversations: snapshots.count {
+                totalConversations: restorable.count,
+                workingConversations: restorable.count { $0.lifecycle == .working },
+                attentionConversations: restorable.count {
                     $0.lifecycle == .blocked || $0.lifecycle == .unknown || $0.lifecycle == .error
+                },
+                unrestorablePanes: unsafe.map {
+                    UnrestorablePane(herdrSession: $0.herdrSession,
+                                     socketPath: $0.socketPath, paneID: $0.paneID)
                 }
             )
         } catch {
@@ -380,13 +414,17 @@ final class AgentUpdateManager {
                 }
             }
 
+            // Non-compliant sessions no longer block the roll: they are
+            // excluded from the targets and offered for dismissal instead.
+            let restorable = filteredSnapshots.filter { $0.isRestorable }
             let unsafe = filteredSnapshots.filter { !$0.isRestorable }
-            guard unsafe.isEmpty else {
+
+            guard !restorable.isEmpty else {
                 let panes = unsafe.map { "\($0.herdrSession)/\($0.paneID)" }
-                throw AgentUpdateManagerError.unrestorableAgents(panes)
+                throw AgentUpdateManagerError.onlyUnrestorableAgents(panes)
             }
 
-            let targets = filteredSnapshots.map { snapshot in
+            let targets = restorable.map { snapshot in
                 AgentRollTarget(
                     herdrSession: snapshot.herdrSession,
                     socketPath: snapshot.socketPath,
@@ -413,12 +451,16 @@ final class AgentUpdateManager {
                 requestedTools: [],
                 request: request,
                 existingBatch: nil,
-                totalConversations: filteredSnapshots.count,
-                workingConversations: filteredSnapshots.count { $0.lifecycle == .working },
-                attentionConversations: filteredSnapshots.count {
+                totalConversations: restorable.count,
+                workingConversations: restorable.count { $0.lifecycle == .working },
+                attentionConversations: restorable.count {
                     $0.lifecycle == .blocked || $0.lifecycle == .unknown || $0.lifecycle == .error
                 },
-                relaunchTool: tool
+                relaunchTool: tool,
+                unrestorablePanes: unsafe.map {
+                    UnrestorablePane(herdrSession: $0.herdrSession,
+                                     socketPath: $0.socketPath, paneID: $0.paneID)
+                }
             )
         } catch {
             if operationGeneration == generation, !(error is CancellationError) {
@@ -481,6 +523,18 @@ final class AgentUpdateManager {
             // indeterminate SSH submission.
             guard accepted || durable.id == request.batchID else {
                 throw submitError ?? AgentUpdateManagerError.invalidAcceptance
+            }
+            // The user chose to dismiss the non-compliant sessions: close
+            // their panes now that the roll is safely queued on the host.
+            // Best-effort — a pane that vanished on its own is no failure.
+            if preview.closeUnrestorablePanes {
+                for pane in preview.unrestorablePanes {
+                    try? await service.run(
+                        Self.closePaneCommand(socketPath: pane.socketPath, paneID: pane.paneID),
+                        timeout: Self.commandTimeout,
+                        outputLimit: Self.outputLimit
+                    )
+                }
             }
             guard !Task.isCancelled, operationGeneration == generation else { return }
             batch = durable
@@ -583,6 +637,10 @@ final class AgentUpdateManager {
         AgentUpdaterInstaller.helperCommand(for: context, arguments: ["submit", batchID.uuidString])
     }
 
+    nonisolated static func closePaneCommand(socketPath: String, paneID: String) -> String {
+        "HERDR_SOCKET_PATH=\(POSIXShell.quote(socketPath)) herdr pane close \(POSIXShell.quote(paneID))"
+    }
+
     nonisolated private static func validateAcceptance(
         _ output: String,
         batchID: UUID
@@ -665,8 +723,8 @@ final class AgentUpdateManager {
             bounded(detail)
         case AgentUpdateManagerError.noConversationsToRelaunch(let detail):
             bounded(detail)
-        case AgentUpdateManagerError.unrestorableAgents(let panes):
-            bounded("Every AI conversation must have a current Herdr integration and native restore reference. Check: \(panes.joined(separator: ", ")).")
+        case AgentUpdateManagerError.onlyUnrestorableAgents(let panes):
+            bounded("The only sessions in scope have no current Herdr integration or native restore reference: \(panes.joined(separator: ", ")). Close them or start fresh sessions through Herdr.")
         case AgentUpdateManagerError.invalidStatus:
             "The host updater returned an invalid or incomplete status."
         case AgentUpdateManagerError.invalidAcceptance:

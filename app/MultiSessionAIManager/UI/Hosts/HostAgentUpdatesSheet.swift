@@ -93,9 +93,18 @@ struct HostAgentUpdatesPanel: View {
         ) {
             Button(preview?.requestedTools.isEmpty == true ? "Queue Rolling Re-launch" : "Queue Rolling Update") {
                 guard let preview else { return }
-                operations.start { await manager.submit(preview) }
+                operations.start { await manager.submit(preview.withCloseUnrestorablePanes(false)) }
             }
             .accessibilityIdentifier("host.agent-updates.confirm")
+            // Sessions that cannot be restored never block the roll; the user
+            // decides whether they are dismissed alongside it.
+            if preview?.unrestorablePanes.isEmpty == false {
+                Button("Queue & close \(preview?.unrestorablePanes.count ?? 0) unrestorable session\((preview?.unrestorablePanes.count ?? 0) == 1 ? "" : "s")") {
+                    guard let preview else { return }
+                    operations.start { await manager.submit(preview.withCloseUnrestorablePanes(true)) }
+                }
+                .accessibilityIdentifier("host.agent-updates.confirm-close-unrestorable")
+            }
             Button("Cancel", role: .cancel) { preview = nil }
         } message: {
             Text(preview.map(AgentUpdatePresentation.confirmation(for:)) ?? "")

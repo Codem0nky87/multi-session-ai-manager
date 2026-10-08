@@ -27,7 +27,8 @@ import Testing
         #expect(manager.lastChecked != nil)
     }
 
-    @Test func preflightCapturesAllThreeAgentKindsForOneToolUpdate() async throws {
+    @Test func updateRollOnlyTouchesTheSelectedToolSessions() async throws {
+        // Updating codex must never disturb claude or antigravity sessions.
         let (connection, _) = try await makeConnection()
         let snapshots = [
             snapshot(.claude, pane: "w1:p1", conversation: "claude-1", lifecycle: .idle),
@@ -44,13 +45,15 @@ import Testing
         let preview = try await manager.prepareUpdate([.codex])
 
         #expect(preview.request?.requestedTools == [.codex])
-        #expect(preview.request?.targets.map(\.tool) == [.claude, .codex, .antigravity])
-        #expect(preview.totalConversations == 3)
+        #expect(preview.request?.targets.map(\.tool) == [.codex])
+        #expect(preview.totalConversations == 1)
         #expect(preview.workingConversations == 1)
-        #expect(preview.attentionConversations == 1)
+        #expect(preview.attentionConversations == 0)
     }
 
-    @Test func preflightRefusesAnyMissingNativeReferenceOrIntegration() async throws {
+    @Test func missingNativeReferenceIsOfferedForDismissalNotBlocking() async throws {
+        // A session without a restore reference no longer blocks the roll;
+        // it is excluded from targets and surfaced for optional closing.
         let (connection, _) = try await makeConnection()
         var bad = snapshot(.claude, pane: "w1:p1", conversation: "c1", lifecycle: .idle)
         bad = HerdrAgentSnapshot(
@@ -58,16 +61,30 @@ import Testing
             tool: bad.tool, lifecycle: bad.lifecycle, conversationID: nil,
             foregroundPID: bad.foregroundPID, integrationCurrent: true
         )
+        let good = snapshot(.claude, pane: "w1:p9", conversation: "c9", lifecycle: .idle)
         let manager = AgentUpdateManager(connection: connection, dependencies: dependencies(
             versions: AgentToolID.allCases.map { version($0, "1.0.0", "2.0.0") },
-            inventory: [bad],
+            inventory: [bad, good],
             batch: .idle
         ))
         await manager.refresh()
 
-        await #expect(throws: AgentUpdateManagerError.self) {
-            try await manager.prepareUpdate([.claude])
-        }
+        let preview = try await manager.prepareUpdate([.claude])
+        #expect(preview.request?.targets.map(\.paneID) == ["w1:p9"])
+        #expect(preview.unrestorablePanes.map(\.paneID) == ["w1:p1"])
+        #expect(preview.closeUnrestorablePanes == false)
+
+        // When the unrestorable session is the ONLY one in scope, the
+        // preview still succeeds (empty targets) rather than blocking.
+        let solo = AgentUpdateManager(connection: connection, dependencies: dependencies(
+            versions: AgentToolID.allCases.map { version($0, "1.0.0", "2.0.0") },
+            inventory: [bad],
+            batch: .idle
+        ))
+        await solo.refresh()
+        let soloPreview = try await solo.prepareUpdate([.claude])
+        #expect(soloPreview.request?.targets.isEmpty == true)
+        #expect(soloPreview.unrestorablePanes.count == 1)
     }
 
     @Test func multipleSelectionsCoalesceAndSubmitThroughAbsoluteIncomingPath() async throws {

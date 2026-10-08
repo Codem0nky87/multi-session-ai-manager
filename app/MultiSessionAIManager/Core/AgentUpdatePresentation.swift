@@ -102,13 +102,22 @@ enum AgentUpdatePresentation {
                 detail = "All \(count) Claude Code, Codex, and Antigravity conversations on this host will roll to restart on the current executables; ordinary panes remain running."
             }
         } else {
-            detail = "The selected tools will update first, then all \(count) Claude Code, Codex, and Antigravity conversations on this host will roll onto the new executables; ordinary panes remain running."
+            let names = preview.requestedTools.sorted { $0.rawValue < $1.rawValue }.map {
+                AgentToolRegistry.definition(for: $0).displayName
+            }
+            detail = "\(names.joined(separator: " and ")) will update first, then \(count) matching conversation\(count == 1 ? "" : "s") on this host will roll onto the new executable\(count == 1 ? "" : "s"); other agents' sessions and ordinary panes remain running."
         }
         if preview.workingConversations > 0 {
             detail += " \(preview.workingConversations) working conversations wait until their current work finishes."
         }
         if preview.attentionConversations > 0 {
             detail += " \(preview.attentionConversations) blocked or unknown conversations remain untouched and need attention."
+        }
+        if !preview.unrestorablePanes.isEmpty {
+            let panes = preview.unrestorablePanes.map { $0.label }.joined(separator: ", ")
+            detail += preview.closeUnrestorablePanes
+                ? " \(preview.unrestorablePanes.count) session(s) without a restorable reference (\(panes)) will be closed."
+                : " \(preview.unrestorablePanes.count) session(s) without a restorable reference (\(panes)) will be left untouched."
         }
         return detail
     }
