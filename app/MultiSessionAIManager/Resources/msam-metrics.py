@@ -10,7 +10,7 @@ import re
 import shutil
 from pathlib import Path
 
-METRICS_VERSION = "2.1.0"
+METRICS_VERSION = "2.1.1"
 
 _last_net_bytes_recv = 0
 _last_net_bytes_sent = 0
@@ -135,10 +135,15 @@ def linux_disk_temperatures(sys_root='/sys'):
 
 
 def disk_temperature(disk_id, temps, sys_root='/sys'):
-    # disk_id is a physical block name (sda, nvme0) or a mapper name; for LVM,
-    # resolve the dm device's slave disks and report the hottest one.
+    # disk_id is a physical block name (sda, nvme0n1) or a mapper name; for
+    # LVM, resolve the dm device's slaves and report the hottest one.
     if not temps:
         return None
+    # NVMe hwmon sensors are keyed by controller (nvme0) while block devices
+    # carry the namespace (nvme0n1); strip the namespace suffix to match.
+    match = re.match(r'(nvme\d+)n\d+$', disk_id)
+    if match:
+        disk_id = match.group(1)
     direct = temps.get(disk_id)
     if direct is not None:
         return direct

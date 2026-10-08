@@ -194,6 +194,8 @@ class CollectorTests(unittest.TestCase):
             temps = m.linux_disk_temperatures(sys_root)
         self.assertEqual(temps, {'nvme0': 39.0, 'sda': 52.0})
         self.assertEqual(m.disk_temperature('nvme0', temps, sys_root), 39.0)
+        # Block devices carry the namespace (nvme0n1); map to the controller sensor.
+        self.assertEqual(m.disk_temperature('nvme0n1', temps, sys_root), 39.0)
         self.assertEqual(m.disk_temperature('sda', temps, sys_root), 52.0)
         self.assertIsNone(m.disk_temperature('sdb', temps, sys_root))
 
