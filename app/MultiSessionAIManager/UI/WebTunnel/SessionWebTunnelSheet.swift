@@ -14,32 +14,32 @@ func prepareHopPasswordForTunnelStart(
 }
 
 struct SessionWebTunnelSheet: View {
-    let connection: HostConnection
+    /// The app-owned session: closing this sheet no longer stops a running
+    /// tunnel or drops the SSH connection — the user stops those explicitly.
+    let session: PortForwardingSession
     let onChange: ([SessionWebTunnel]) -> Void
-    let onClose: @MainActor () async -> Void
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
-    @State private var tunnels: [SessionWebTunnel]
-    @State private var model: SessionWebTunnelModel
+    private var tunnels: [SessionWebTunnel] {
+        get { session.tunnels }
+        nonmutating set { session.tunnels = newValue }
+    }
+    private var model: SessionWebTunnelModel { session.model }
+    private var hopPasswords: [UUID: String] {
+        get { session.hopPasswords }
+        nonmutating set { session.hopPasswords = newValue }
+    }
     @State private var editorRequest: TunnelEditorRequest?
     @State private var browserRequest: TunnelBrowserRequest?
     @State private var copiedLocalhostURL = false
-    @State private var hopPasswords: [UUID: String] = [:]
 
     init(
-        initialTunnels: [SessionWebTunnel],
-        connection: HostConnection,
-        onClose: @escaping @MainActor () async -> Void = {},
+        session: PortForwardingSession,
         onChange: @escaping ([SessionWebTunnel]) -> Void
     ) {
-        self.connection = connection
-        self.onClose = onClose
+        self.session = session
         self.onChange = onChange
-        _tunnels = State(initialValue: initialTunnels)
-        _model = State(initialValue: SessionWebTunnelModel(
-            server: connection.makeSessionWebTunnelServer()
-        ))
     }
 
     var body: some View {
@@ -82,14 +82,9 @@ struct SessionWebTunnelSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") {
-                        Task {
-                            await model.stop()
-                            await onClose()
-                            hopPasswords.removeAll()
-                            dismiss()
-                        }
-                    }
+                    // Closing the window leaves a started tunnel running; the
+                    // monitor bar shows it and the host editor can stop it.
+                    Button("Done") { dismiss() }
                 }
             }
             .sheet(item: $editorRequest) { request in
@@ -115,9 +110,10 @@ struct SessionWebTunnelSheet: View {
             }
         }
         .onDisappear {
+            // Deliberately does NOT stop the tunnel: the user asked for it to
+            // survive closing the manager until stopped explicitly. Hop
+            // passwords persist in the session for the same reason.
             guard editorRequest == nil, browserRequest == nil else { return }
-            hopPasswords.removeAll()
-            Task { await model.stop() }
         }
     }
 

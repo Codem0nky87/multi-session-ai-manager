@@ -51,6 +51,7 @@ struct HostEditView: View {
     @State private var showPlugins = false
     @State private var showHostService = false
     @State private var showHostSoftware = false
+    @Environment(\.portForwardingManager) private var portForwarding
     /// Set while a key deletion is awaiting confirmation.
     @State private var pendingKeyDeletion: String?
 
@@ -237,7 +238,8 @@ struct HostEditView: View {
                     HerdrPortForwardingSheet(
                         host: host,
                         keyStore: keyStore,
-                        knownHosts: knownHosts
+                        knownHosts: knownHosts,
+                        session: portForwarding?.session(for: host)
                     )
                     .preferredColorScheme(.dark)
                 }
@@ -407,7 +409,7 @@ struct HostEditView: View {
                 SectionLabel(text: "Port forwarding")
                 Text(portForwardingHost == nil
                      ? "Save this host and install a key first — a tunnel runs over an authenticated SSH connection."
-                     : "Forward a port on this host to the iPad and open it in the in-app browser.")
+                     : "Forward a port on this host to the iPad and open it in the in-app browser. A started tunnel keeps running after this window closes; stop it here or in the manager.")
                     .font(Theme.body(13))
                     .foregroundStyle(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -425,6 +427,27 @@ struct HostEditView: View {
                 .buttonStyle(.plain)
                 .disabled(portForwardingHost == nil)
                 .accessibilityIdentifier("host.port-forwarding.manage")
+
+                // Live state for this host's tunnel, if the user left one running.
+                if let host = portForwardingHost, portForwarding?.activeTunnelCount(for: host.id) ?? 0 > 0 {
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(Theme.success)
+                            .frame(width: 8, height: 8)
+                        Text("1 tunnel running on this host")
+                            .font(Theme.body(13))
+                            .foregroundStyle(Theme.textSecondary)
+                        Spacer()
+                        Button(role: .destructive) {
+                            Task { await portForwarding?.remove(hostID: host.id) }
+                        } label: {
+                            Label("Stop", systemImage: "stop.circle")
+                        }
+                        .buttonStyle(.borderless)
+                        .accessibilityIdentifier("host.port-forwarding.stop")
+                    }
+                    .accessibilityIdentifier("host.port-forwarding.running")
+                }
             }
         }
     }

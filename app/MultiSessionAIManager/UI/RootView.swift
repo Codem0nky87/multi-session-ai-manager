@@ -126,7 +126,7 @@ struct RootView: View {
                 // authenticated SSH connection.
                 if selectedTab != nil {
                     if let tab = selectedTab {
-                        HostMetricsBarView(metricsModel: tabs.session(for: tab).metrics)
+                        HostMetricsBarView(metricsModel: tabs.session(for: tab).metrics, hostID: tab.hostID)
                             .background(HerdrTheme.panel, ignoresSafeAreaEdges: [])
                     }
                     

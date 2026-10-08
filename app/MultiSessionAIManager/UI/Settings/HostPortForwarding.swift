@@ -3,43 +3,37 @@ import SwiftUI
 // Moved verbatim out of the old Herdr gateway settings section: port
 // forwarding and the SSH connection lifecycle it shares with Host Setup
 // outlive that section, which has since been retired.
+//
+// The session (connection + tunnel model) is now owned by the app-level
+// PortForwardingManager, not this sheet: closing the window leaves a started
+// tunnel running until the user stops it explicitly.
 
 @MainActor
 struct HerdrPortForwardingSheet: View {
-    @State private var connection: HostConnection
-    @State private var lifecycle: HerdrSSHConnectionLifecycle
-    @State private var tunnels: [SessionWebTunnel]
+    @State private var session: PortForwardingSession
     @State private var showingChangedKeyConfirmation = false
-    private let hostID: UUID
     @Environment(\.dismiss) private var dismiss
 
-    init(host: Host, keyStore: KeyStore, knownHosts: KnownHostsStore) {
-        let connection = HostConnection(
-            host: host,
-            keyStore: keyStore,
-            knownHosts: knownHosts
-        )
-        hostID = host.id
-        _connection = State(initialValue: connection)
-        _lifecycle = State(initialValue: HerdrSSHConnectionLifecycle(
-            connect: { await connection.connect() },
-            disconnect: { await connection.disconnect() }
-        ))
-        _tunnels = State(initialValue: Self.load(hostID: host.id))
+    init(host: Host, keyStore: KeyStore, knownHosts: KnownHostsStore,
+         session: PortForwardingSession? = nil) {
+        let resolved = session
+            ?? PortForwardingSession(host: host, keyStore: keyStore, knownHosts: knownHosts,
+                                     tunnels: PortForwardingManager.loadTunnels(hostID: host.id))
+        resolved.isManaged = true
+        _session = State(initialValue: resolved)
     }
 
     var body: some View {
         ZStack {
-            switch connection.state {
+            switch session.connection.state {
             case .connected:
                 SessionWebTunnelSheet(
-                    initialTunnels: tunnels,
-                    connection: connection,
-                    onClose: { await lifecycle.close() }
-                ) { updated in
-                    tunnels = updated
-                    Self.save(updated, hostID: hostID)
-                }
+                    session: session,
+                    onChange: { updated in
+                        session.tunnels = updated
+                        PortForwardingManager.saveTunnels(updated, hostID: session.host.id)
+                    }
+                )
             case .idle, .connecting:
                 statusScreen(
                     title: "Connecting to SSH host",
@@ -48,24 +42,20 @@ struct HerdrPortForwardingSheet: View {
                 )
             case .failed(let message):
                 statusScreen(title: "SSH connection failed", detail: message) {
-                    lifecycle.connect()
+                    Task { await session.connection.connect() }
                 }
             case .hostKeyChanged(let fingerprint):
                 hostKeyChangedScreen(fingerprint: fingerprint)
             }
         }
         .task {
-            if case .idle = connection.state {
-                lifecycle.connect()
-            }
+            session.connect()
         }
         .interactiveDismissDisabled()
         .alert("Trust changed SSH host key?", isPresented: $showingChangedKeyConfirmation) {
             Button("Cancel", role: .cancel) {}
             Button("Trust new key & reconnect", role: .destructive) {
-                lifecycle.perform {
-                    await connection.trustChangedKeyAndReconnect()
-                }
+                Task { await session.connection.trustChangedKeyAndReconnect() }
             }
         } message: {
             Text("Only trust this fingerprint if the host key change was expected. An unexpected change can mean the SSH connection is being intercepted.")
@@ -79,7 +69,7 @@ struct HerdrPortForwardingSheet: View {
     ) -> some View {
         NavigationStack {
             VStack(spacing: 14) {
-                if case .connecting = connection.state {
+                if case .connecting = session.connection.state {
                     ProgressView()
                 } else {
                     Image(systemName: "network")
@@ -101,12 +91,7 @@ struct HerdrPortForwardingSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") {
-                        Task {
-                            await lifecycle.close()
-                            dismiss()
-                        }
-                    }
+                    Button("Done") { dismiss() }
                 }
             }
         }
@@ -136,79 +121,9 @@ struct HerdrPortForwardingSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") {
-                        Task {
-                            await lifecycle.close()
-                            dismiss()
-                        }
-                    }
+                    Button("Done") { dismiss() }
                 }
             }
         }
-    }
-
-    private static func load(hostID: UUID) -> [SessionWebTunnel] {
-        guard let data = UserDefaults.standard.data(forKey: key(hostID)),
-              let decoded = try? JSONDecoder().decode([SessionWebTunnel].self, from: data) else {
-            return []
-        }
-        return decoded.filter { $0.validationError == nil }
-    }
-
-    private static func save(_ tunnels: [SessionWebTunnel], hostID: UUID) {
-        guard let data = try? JSONEncoder().encode(tunnels) else { return }
-        UserDefaults.standard.set(data, forKey: key(hostID))
-    }
-
-    private static func key(_ hostID: UUID) -> String {
-        "herdr.ssh-web-tunnels.\(hostID.uuidString.lowercased())"
-    }
-}
-
-@MainActor
-final class HerdrSSHConnectionLifecycle {
-    private let connectOperation: () async -> Void
-    private let disconnectOperation: () async -> Void
-    private var connectionTask: Task<Void, Never>?
-    private var generation: UInt64 = 0
-
-    init(
-        connect: @escaping () async -> Void,
-        disconnect: @escaping () async -> Void
-    ) {
-        connectOperation = connect
-        disconnectOperation = disconnect
-    }
-
-    deinit {
-        connectionTask?.cancel()
-    }
-
-    func connect() {
-        perform(connectOperation)
-    }
-
-    func perform(_ operation: @escaping () async -> Void) {
-        generation &+= 1
-        let operationGeneration = generation
-        connectionTask?.cancel()
-        let disconnectOperation = self.disconnectOperation
-        connectionTask = Task { [weak self] in
-            await operation()
-            guard let self else {
-                await disconnectOperation()
-                return
-            }
-            guard generation == operationGeneration else { return }
-            connectionTask = nil
-        }
-    }
-
-    func close(after stop: () async -> Void = {}) async {
-        generation &+= 1
-        connectionTask?.cancel()
-        connectionTask = nil
-        await stop()
-        await disconnectOperation()
     }
 }
