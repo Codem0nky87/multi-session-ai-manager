@@ -258,9 +258,9 @@ enum AgentToolVersionProbe {
         case .claude:
             #"curl --connect-timeout 8 --max-time 20 -fsSL "\#(AgentToolReleaseSources.claudeNativeLatest)""#
         case .codex:
-            #"curl --connect-timeout 8 --max-time 20 -fsSL "\#(AgentToolReleaseSources.codexNativeLatest)" | sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -n 1"#
+            #"curl --connect-timeout 8 --max-time 20 -fsSL "\#(AgentToolReleaseSources.codexNativeLatest)" | sed -nE 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -n 1"#
         case .antigravity:
-            #"platform=$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]'); arch=$(uname -m 2>/dev/null); case "$arch" in aarch64) arch=arm64 ;; amd64) arch=x86_64 ;; esac; curl --connect-timeout 8 --max-time 20 -fsSL "\#(AgentToolReleaseSources.antigravityManifestBase)/${platform}_${arch}.json" | sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -n 1"#
+            #"platform=$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]'); arch=$(uname -m 2>/dev/null); case "$arch" in aarch64|arm64) arch=arm64 ;; x86_64|amd64) arch=amd64 ;; esac; curl --connect-timeout 8 --max-time 20 -fsSL "\#(AgentToolReleaseSources.antigravityManifestBase)/${platform}_${arch}.json" | sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -n 1"#
         }
         let nativeOwnershipCheck = switch tool {
         case .claude:

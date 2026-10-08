@@ -133,19 +133,34 @@ struct HostAgentUpdatesPanel: View {
             // land on absent/failed after a host-side change.
             serviceAction
 
-            Picker("macOS Gatekeeper", selection: $policy) {
-                Text("Manual approval").tag(HostGatekeeperPolicy.manualApproval)
-                Text("Verified artifacts").tag(HostGatekeeperPolicy.verifiedVendorArtifacts)
+            // Gatekeeper is a macOS-only concern; showing it on a Linux host
+            // (as the merged sheet used to) is noise. Reveal it only once the
+            // probe has confirmed the host actually runs macOS.
+            if gatekeeperApplies {
+                Picker("macOS Gatekeeper", selection: $policy) {
+                    Text("Manual approval").tag(HostGatekeeperPolicy.manualApproval)
+                    Text("Verified artifacts").tag(HostGatekeeperPolicy.verifiedVendorArtifacts)
+                }
+                .pickerStyle(.segmented)
+                Text(HostAgentUpdaterPresentation.gatekeeperDetail(for: policy))
+                    .font(Theme.body(12))
+                    .foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .pickerStyle(.segmented)
-            Text(HostAgentUpdaterPresentation.gatekeeperDetail(for: policy))
-                .font(Theme.body(12))
-                .foregroundStyle(Theme.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(Theme.Space.md)
         .background(RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous)
             .fill(Theme.bgElevated.opacity(0.6)))
+    }
+
+    /// True only when the probed host is macOS; the policy still defaults to
+    /// manual approval for the request payload, it simply has no meaning to
+    /// show elsewhere.
+    private var gatekeeperApplies: Bool {
+        if case .ready(let status) = installer.state {
+            return status.platform == .macOS
+        }
+        return false
     }
 
     @ViewBuilder
