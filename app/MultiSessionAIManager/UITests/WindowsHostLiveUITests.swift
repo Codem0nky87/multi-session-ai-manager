@@ -39,7 +39,7 @@ final class WindowsHostLiveUITests: XCTestCase {
             if close.exists { close.tap(); skipped = true; break }
             sleep(2)
         }
-        XCTAssertTrue(skipped, "upgrade popup never reached the sessions step", app.debugDescription)
+        XCTAssertTrue(skipped, "upgrade popup never reached the sessions step\n\(app.debugDescription)")
         // The list refreshes to show Codex current after the host finished.
         let refresh = app.buttons["host.ai-agents.refresh"]
         waitEnabled(refresh, timeout: 60)

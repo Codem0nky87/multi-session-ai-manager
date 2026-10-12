@@ -69,6 +69,7 @@ struct SessionWebTunnelSheet: View {
                     } label: {
                         Label("Add SSH Web Tunnel", systemImage: "plus")
                     }
+                    .accessibilityIdentifier("tunnel.add")
                 } header: {
                     Text("New SSH tunnel")
                 } footer: {
@@ -154,6 +155,7 @@ struct SessionWebTunnelSheet: View {
                     editorRequest = TunnelEditorRequest(tunnel: tunnel)
                 }
                 .buttonStyle(.borderless)
+                .accessibilityIdentifier("tunnel.edit.\(tunnel.id.uuidString)")
                 if tunnel.scheme.isWeb {
                     Button {
                         openInApp(tunnel)
@@ -162,6 +164,7 @@ struct SessionWebTunnelSheet: View {
                     }
                     .buttonStyle(.bordered)
                     .disabled(model.status == .connecting)
+                    .accessibilityIdentifier("tunnel.open.inapp")
                 }
                 Button {
                     openExternally(tunnel)
@@ -175,6 +178,7 @@ struct SessionWebTunnelSheet: View {
                 .buttonStyle(.borderedProminent)
                 .tint(Theme.accent)
                 .disabled(model.status == .connecting)
+                .accessibilityIdentifier("tunnel.open.external")
             }
         }
         .padding(.vertical, 4)
@@ -187,17 +191,21 @@ struct SessionWebTunnelSheet: View {
             case .idle:
                 Label("Not running", systemImage: "circle")
                     .foregroundStyle(Theme.textSecondary)
+                    .accessibilityIdentifier("tunnel.status")
             case .connecting:
                 HStack {
                     ProgressView()
                     Text("Starting loopback tunnel…")
                 }
+                .accessibilityIdentifier("tunnel.status")
             case .listening(let port):
                 Label("Listening on 127.0.0.1:\(port)", systemImage: "network")
                     .foregroundStyle(Theme.warning)
+                    .accessibilityIdentifier("tunnel.status")
             case .open(let port):
                 Label("Open on 127.0.0.1:\(port)", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(Theme.success)
+                    .accessibilityIdentifier("tunnel.status")
             case .failed(let message):
                 Label {
                     Text(message)
@@ -205,6 +213,7 @@ struct SessionWebTunnelSheet: View {
                     Image(systemName: "exclamationmark.triangle.fill")
                 }
                 .foregroundStyle(Theme.danger)
+                .accessibilityIdentifier("tunnel.status")
             }
 
             if let localhostURL = model.localhostURL {
@@ -237,6 +246,7 @@ struct SessionWebTunnelSheet: View {
                 } label: {
                     Label("Stop Tunnel", systemImage: "stop.circle")
                 }
+                .accessibilityIdentifier("tunnel.stop")
             }
         } header: {
             Text("Status")
@@ -394,6 +404,7 @@ private struct TunnelPasswordEntrySheet: View {
                         dismiss()
                     }
                     .disabled(password.isEmpty)
+                    .accessibilityIdentifier("tunnel.password.start")
                 }
             }
         }
@@ -481,6 +492,7 @@ private struct SessionWebTunnelEditorSheet: View {
             Form {
                 Section("Display") {
                     TextField("Label", text: $label)
+                        .accessibilityIdentifier("tunnel.field.label")
                 }
                 Section("Remote target") {
                     Picker("Scheme", selection: $scheme) {
@@ -488,6 +500,7 @@ private struct SessionWebTunnelEditorSheet: View {
                             Text(scheme.rawValue.uppercased()).tag(scheme)
                         }
                     }
+                    .accessibilityIdentifier("tunnel.field.scheme")
                     .onChange(of: scheme) { _, newScheme in
                         // Adopt the scheme's standard port unless the user has
                         // typed something non-default, which we must not clobber.
@@ -499,8 +512,10 @@ private struct SessionWebTunnelEditorSheet: View {
                     TextField("Host or IP", text: $targetHost)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                        .accessibilityIdentifier("tunnel.field.targetHost")
                     TextField("Port", text: $targetPort)
                         .keyboardType(.numberPad)
+                        .accessibilityIdentifier("tunnel.field.targetPort")
                 }
                 Section {
                     Picker("Local port mode", selection: $localPortMode) {
@@ -522,15 +537,19 @@ private struct SessionWebTunnelEditorSheet: View {
                 }
                 Section {
                     Toggle("Use SSH hop", isOn: $hopEnabled)
+                        .accessibilityIdentifier("tunnel.field.hopEnabled")
                     if hopEnabled {
                         TextField("SSH username", text: $hopUsername)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
+                            .accessibilityIdentifier("tunnel.field.hopUsername")
                         TextField("SSH host or IP", text: $hopHost)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
+                            .accessibilityIdentifier("tunnel.field.hopHost")
                         TextField("SSH port", text: $hopPort)
                             .keyboardType(.numberPad)
+                            .accessibilityIdentifier("tunnel.field.hopPort")
                         HStack {
                             Group {
                                 if showsHopPassword {
@@ -545,6 +564,7 @@ private struct SessionWebTunnelEditorSheet: View {
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .textContentType(.password)
+                            .accessibilityIdentifier("tunnel.field.hopPassword")
 
                             Button {
                                 showsHopPassword.toggle()
@@ -585,6 +605,7 @@ private struct SessionWebTunnelEditorSheet: View {
                         dismiss()
                     }
                     .disabled(definition.validationError != nil)
+                    .accessibilityIdentifier("tunnel.save")
                 }
                 if onDelete != nil {
                     ToolbarItem(placement: .destructiveAction) {

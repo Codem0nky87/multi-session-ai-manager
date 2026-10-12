@@ -83,6 +83,15 @@ struct SessionWebTunnelRemoteForwardCommands: Equatable {
         ].joined(separator: "; ")
         var launch = ["test ! -e \(Self.quote(cancelPath))"]
 
+        // The ssh step must never fail the whole command: its merged output is
+        // the only diagnostic the user can act on ("permission denied",
+        // "connection timed out"), and a non-zero exit would make the transport
+        // throw away everything ssh said. Emit the ready marker only on success
+        // and report the exit status otherwise, always returning 0.
+        let sshLaunch =
+            "{ \(sshStart); rc=$?; if [ $rc -eq 0 ]; then "
+            + "printf '%s' \(Self.quote(Self.readyMarker)); "
+            + "else printf 'ssh exited with status %s' $rc; fi; }"
         if let hopPassword, hasPassword {
             let helper = """
             #!/bin/sh
@@ -95,13 +104,12 @@ struct SessionWebTunnelRemoteForwardCommands: Equatable {
                     "DISPLAY=\(Self.quote("ai-manager:0"))",
                     "SSH_ASKPASS=\(Self.quote(askpassPath))",
                     "SSH_ASKPASS_REQUIRE=\(Self.quote("force"))",
-                    sshStart
+                    sshLaunch
                 ].joined(separator: " ")
             ]
         } else {
-            launch.append(sshStart)
+            launch.append(sshLaunch)
         }
-        launch.append("printf '%s' \(Self.quote(Self.readyMarker))")
 
         start = "\(setup); \(launch.joined(separator: " && "))"
         stop = "\(sshStop); \(removeTransientFiles)"
@@ -230,15 +238,18 @@ final class NIOSessionWebTunnelServer: SessionWebTunnelServing, @unchecked Senda
                     cancellationCleanup.schedule()
                 }
                 guard output.contains(SessionWebTunnelRemoteForwardCommands.readyMarker) else {
-                    let detail = output.trimmingCharacters(in: .whitespacesAndNewlines)
-                    let suffix = Self.diagnosticSuffix(
-                        detail,
+                    let detail = Self.diagnosticSuffix(
+                        output,
                         hopPassword: hopPassword
                     )
+                    // The ssh output IS the diagnosis when we have it; the
+                    // generic guidance only fills in when nothing came back.
+                    let advice = detail.isEmpty
+                        ? Self.authenticationGuidance(hopPassword: hopPassword)
+                        : detail
                     throw SessionWebTunnelError.couldNotStart(
-                        "Could not start SSH hop \(hop.username)@\(hop.host):\(hop.port). "
-                        + Self.authenticationGuidance(hopPassword: hopPassword)
-                        + suffix
+                        "Could not start SSH hop \(hop.username)@\(hop.host):\(hop.port)."
+                        + advice
                     )
                 }
             } catch {
