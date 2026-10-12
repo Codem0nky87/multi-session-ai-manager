@@ -44,11 +44,10 @@ struct SessionWebTunnelHop: Codable, Equatable {
 struct SessionWebTunnel: Identifiable, Codable, Equatable {
     static let hopCredentialExplanation =
         "The SSH hop uses the key, SSH config, or agent available on the connected "
-        + "first host. If you enter a password, it is kept only while this SSH Web "
-        + "Tunnels sheet is open and is never saved. AI Manager sends it to a "
-        + "temporary SSH_ASKPASS helper on the connected first host; the helper is "
-        + "removed after tunnel startup. Stopping the tunnel or closing this sheet "
-        + "requires password re-entry. The final web service login is separate."
+        + "first host. If you enter a password, it is kept only in memory while AI "
+        + "Manager is running — never saved — and is reused when you restart this "
+        + "tunnel until you quit the app or delete the tunnel. The final web "
+        + "service login is separate."
 
     var id: UUID
     var label: String

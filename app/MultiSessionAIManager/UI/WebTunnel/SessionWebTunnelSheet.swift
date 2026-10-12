@@ -32,6 +32,7 @@ struct SessionWebTunnelSheet: View {
     }
     @State private var editorRequest: TunnelEditorRequest?
     @State private var browserRequest: TunnelBrowserRequest?
+    @State private var passwordPrompt: TunnelPasswordPrompt?
     @State private var copiedLocalhostURL = false
 
     init(
@@ -107,8 +108,21 @@ struct SessionWebTunnelSheet: View {
                     loopbackURL: request.loopbackURL,
                     localhostURL: request.localhostURL,
                     model: model,
-                    onStop: stopActiveTunnelAndForgetPassword
+                    onStop: stopActiveTunnel
                 )
+                .preferredColorScheme(.dark)
+            }
+            .sheet(item: $passwordPrompt) { prompt in
+                TunnelPasswordEntrySheet(tunnel: prompt.tunnel) { password in
+                    hopPasswords[prompt.tunnel.id] = password
+                    Task {
+                        await start(prompt.tunnel, hopPassword: prepareHopPasswordForTunnelStart(
+                            passwords: &hopPasswords,
+                            previousTunnelID: model.activeTunnel?.id,
+                            nextTunnelID: prompt.tunnel.id
+                        ))
+                    }
+                }
                 .preferredColorScheme(.dark)
             }
         }
@@ -219,7 +233,7 @@ struct SessionWebTunnelSheet: View {
                     )
                 }
                 Button(role: .destructive) {
-                    Task { await stopActiveTunnelAndForgetPassword() }
+                    Task { await stopActiveTunnel() }
                 } label: {
                     Label("Stop Tunnel", systemImage: "stop.circle")
                 }
@@ -300,24 +314,29 @@ struct SessionWebTunnelSheet: View {
     }
 
     private func start(_ tunnel: SessionWebTunnel) async {
-        let previousTunnelID = model.activeTunnel?.id
-        let hopPassword = prepareHopPasswordForTunnelStart(
+        // A stopped tunnel forgets its hop password (never persisted). Restarting
+        // it without re-prompting would silently drop the password and fail
+        // authentication, so ask for it again up front.
+        if tunnel.hop != nil, hopPasswords[tunnel.id] == nil {
+            passwordPrompt = TunnelPasswordPrompt(tunnel: tunnel)
+            return
+        }
+        await start(tunnel, hopPassword: prepareHopPasswordForTunnelStart(
             passwords: &hopPasswords,
-            previousTunnelID: previousTunnelID,
+            previousTunnelID: model.activeTunnel?.id,
             nextTunnelID: tunnel.id
-        )
-        await model.start(
-            tunnel,
-            hopPassword: hopPassword
-        )
+        ))
     }
 
-    private func stopActiveTunnelAndForgetPassword() async {
-        let tunnelID = model.activeTunnel?.id
+    private func start(_ tunnel: SessionWebTunnel, hopPassword: String?) async {
+        await model.start(tunnel, hopPassword: hopPassword)
+    }
+
+    private func stopActiveTunnel() async {
+        // The hop password deliberately SURVIVES the stop: the session is
+        // app-owned and memory-only, so restarting the same tunnel must not
+        // fail with a silently dropped password.
         await model.stop()
-        if let tunnelID {
-            hopPasswords.removeValue(forKey: tunnelID)
-        }
     }
 }
 
@@ -331,6 +350,54 @@ private struct TunnelBrowserRequest: Identifiable {
     let tunnel: SessionWebTunnel
     let loopbackURL: URL
     let localhostURL: URL
+}
+
+private struct TunnelPasswordPrompt: Identifiable {
+    let id = UUID()
+    let tunnel: SessionWebTunnel
+}
+
+/// Minimal re-entry sheet shown when a hop tunnel is restarted after its
+/// in-memory password was forgotten (app relaunch, or the tunnel was deleted
+/// and re-added). The password goes straight back into the session.
+private struct TunnelPasswordEntrySheet: View {
+    let tunnel: SessionWebTunnel
+    let onSubmit: (String) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var password = ""
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    SecureField("SSH password for \(tunnel.hop?.username ?? "the hop")@"
+                        + "\(tunnel.hop?.host ?? "")", text: $password)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .textContentType(.password)
+                } header: {
+                    Text("Hop password required")
+                } footer: {
+                    Text("This tunnel authenticates the SSH hop with a password that is kept only in memory while AI Manager runs. Re-enter it to start the tunnel.")
+                }
+            }
+            .navigationTitle(tunnel.label)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Start") {
+                        onSubmit(password)
+                        dismiss()
+                    }
+                    .disabled(password.isEmpty)
+                }
+            }
+        }
+    }
 }
 
 private struct SessionWebTunnelEditorSheet: View {
