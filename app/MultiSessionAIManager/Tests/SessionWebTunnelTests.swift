@@ -146,6 +146,37 @@ import Testing
         #expect(tunnel.validationError == nil)
     }
 
+    @Test func vncSchemeBuildsVNCURLsAndSkipsWebViewOpening() {
+        let tunnel = SessionWebTunnel(
+            label: "Studio desktop",
+            scheme: .vnc,
+            targetHost: "192.168.50.10",
+            targetPort: 5900
+        )
+
+        #expect(tunnel.validationError == nil)
+        #expect(tunnel.scheme.isWeb == false)
+        #expect(tunnel.loopbackURL(localPort: 5901)?.absoluteString == "vnc://127.0.0.1:5901")
+        #expect(tunnel.localhostURL(localPort: 5901)?.absoluteString == "vnc://localhost:5901")
+        #expect(SessionWebTunnelScheme.vnc.defaultPort == 5900)
+    }
+
+    @Test func vncTunnelRoundTripsThroughCodable() throws {
+        let tunnel = SessionWebTunnel(
+            label: "Studio desktop",
+            scheme: .vnc,
+            targetHost: "192.168.50.10",
+            targetPort: 5901,
+            localPort: 5901
+        )
+
+        let decoded = try JSONDecoder().decode(
+            SessionWebTunnel.self,
+            from: try JSONEncoder().encode(tunnel)
+        )
+        #expect(decoded == tunnel)
+    }
+
     @Test func preparingNewTunnelStartImmediatelyForgetsPreviousPassword() {
         let previousID = UUID()
         let nextID = UUID()
@@ -301,6 +332,11 @@ struct NIOSessionWebTunnelServerTests {
         #expect(startCommand.contains("NumberOfPasswordPrompts=1"))
         #expect(startCommand.contains("BatchMode=no"))
         #expect(!startCommand.contains("BatchMode=yes"))
+        // Password mode must offer the password before the first host's keys
+        // can burn the hop's MaxAuthTries.
+        #expect(startCommand.contains("PreferredAuthentications=password"))
+        #expect(startCommand.contains("PubkeyAuthentication=no"))
+        #expect(!startCommand.contains("PreferredAuthentications=publickey"))
 
         let socket = try connectLoopback(port: listener.localPort)
         try await waitUntil {

@@ -4,8 +4,21 @@ import Observation
 enum SessionWebTunnelScheme: String, Codable, CaseIterable, Identifiable {
     case https
     case http
+    case vnc
 
     var id: String { rawValue }
+
+    /// VNC is a binary protocol: the loopback listener still carries the bytes,
+    /// but no WebView can render it, so opening hands `vnc://` off to a client.
+    var isWeb: Bool { self != .vnc }
+
+    var defaultPort: Int {
+        switch self {
+        case .https: return 443
+        case .http: return 80
+        case .vnc: return 5900
+        }
+    }
 }
 
 enum SessionWebTunnelLocalPortMode: String, CaseIterable, Identifiable {

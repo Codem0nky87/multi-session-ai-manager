@@ -35,6 +35,13 @@ struct SessionWebTunnelRemoteForwardCommands: Equatable {
         ]
         if hasPassword {
             options.append("-o \(Self.quote("NumberOfPasswordPrompts=1"))")
+            // Password mode must not let the first host's agent or on-disk keys
+            // burn the hop's MaxAuthTries before the password is offered: ssh
+            // would then die with "Too many authentication failures" even
+            // though the entered password is correct.
+            options.append("-o \(Self.quote("PreferredAuthentications=password,keyboard-interactive"))")
+            options.append("-o \(Self.quote("PubkeyAuthentication=no"))")
+            options.append("-o \(Self.quote("GSSAPIAuthentication=no"))")
         }
         options += [
             "-M",
@@ -277,12 +284,18 @@ final class NIOSessionWebTunnelServer: SessionWebTunnelServing, @unchecked Senda
             + "or agent for that hop."
     }
 
+    /// Surfaces the remote ssh diagnostic so "verify the password" is evidence
+    /// rather than a guess: the password itself is redacted from the detail,
+    /// but everything else (permission denied, no matching key exchange,
+    /// refused connection, MFA prompts) must reach the user.
     private static func diagnosticSuffix(
         _ detail: String,
         hopPassword: String?
     ) -> String {
-        guard hopPassword?.isEmpty ?? true else { return "" }
-        let trimmed = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+        var trimmed = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let hopPassword, !hopPassword.isEmpty {
+            trimmed = trimmed.replacingOccurrences(of: hopPassword, with: "[redacted]")
+        }
         return trimmed.isEmpty ? "" : " \(trimmed)"
     }
 }

@@ -50,7 +50,7 @@ struct SessionWebTunnelSheet: View {
                         ContentUnavailableView {
                             Label("No Web Tunnels", systemImage: "network")
                         } description: {
-                            Text("Add any HTTP/HTTPS service reachable from this SSH host. The app opens it through a direct SSH tunnel, even when the iPad cannot route to the target IP itself.")
+                            Text("Add any HTTP/HTTPS/VNC service reachable from this SSH host. The app tunnels it to a local port — web pages open in the app or Safari, VNC hands off to your VNC client — even when the iPad cannot route to the target IP itself.")
                         }
                     }
                 } else {
@@ -71,7 +71,7 @@ struct SessionWebTunnelSheet: View {
                 } header: {
                     Text("New SSH tunnel")
                 } footer: {
-                    Text("Configure any HTTP/HTTPS target reachable from the connected SSH host. The listener binds only to 127.0.0.1, and HTTPS certificate exceptions apply only to the exact local tunnel WebView origin.")
+                    Text("Configure any HTTP/HTTPS/VNC target reachable from the connected SSH host. The listener binds only to 127.0.0.1, and HTTPS certificate exceptions apply only to the exact local tunnel WebView origin.")
                 }
 
                 statusSection
@@ -92,7 +92,10 @@ struct SessionWebTunnelSheet: View {
                     tunnel: request.tunnel,
                     hopPassword: request.tunnel.flatMap {
                         hopPasswords[$0.id]
-                    } ?? ""
+                    } ?? "",
+                    onDelete: request.tunnel.map { editing in
+                        { delete(id: editing.id) }
+                    }
                 ) { saved, hopPassword in
                     save(saved, hopPassword: hopPassword)
                 }
@@ -137,17 +140,23 @@ struct SessionWebTunnelSheet: View {
                     editorRequest = TunnelEditorRequest(tunnel: tunnel)
                 }
                 .buttonStyle(.borderless)
-                Button {
-                    openInApp(tunnel)
-                } label: {
-                    Label("In App", systemImage: "rectangle.inset.filled")
+                if tunnel.scheme.isWeb {
+                    Button {
+                        openInApp(tunnel)
+                    } label: {
+                        Label("In App", systemImage: "rectangle.inset.filled")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(model.status == .connecting)
                 }
-                .buttonStyle(.bordered)
-                .disabled(model.status == .connecting)
                 Button {
-                    openInSafari(tunnel)
+                    openExternally(tunnel)
                 } label: {
-                    Label("Safari", systemImage: "safari")
+                    if tunnel.scheme.isWeb {
+                        Label("Safari", systemImage: "safari")
+                    } else {
+                        Label("VNC Client", systemImage: "display")
+                    }
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(Theme.accent)
@@ -185,8 +194,9 @@ struct SessionWebTunnelSheet: View {
             }
 
             if let localhostURL = model.localhostURL {
+                let isVNC = model.activeTunnel?.scheme == .vnc
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Safari URL")
+                    Text(isVNC ? "VNC URL" : "Safari URL")
                         .font(Theme.label(13))
                     Text(localhostURL.absoluteString)
                         .font(Theme.mono(12))
@@ -196,7 +206,8 @@ struct SessionWebTunnelSheet: View {
                 Button {
                     openURL(localhostURL)
                 } label: {
-                    Label("Open in Safari", systemImage: "safari")
+                    Label(isVNC ? "Open in VNC Client" : "Open in Safari",
+                          systemImage: isVNC ? "display" : "safari")
                 }
                 Button {
                     UIPasteboard.general.string = localhostURL.absoluteString
@@ -247,6 +258,12 @@ struct SessionWebTunnelSheet: View {
         persist()
     }
 
+    private func delete(id: UUID) {
+        tunnels.removeAll { $0.id == id }
+        hopPasswords.removeValue(forKey: id)
+        persist()
+    }
+
     private func persist() {
         onChange(tunnels)
     }
@@ -273,7 +290,7 @@ struct SessionWebTunnelSheet: View {
         }
     }
 
-    private func openInSafari(_ tunnel: SessionWebTunnel) {
+    private func openExternally(_ tunnel: SessionWebTunnel) {
         Task {
             await start(tunnel)
             if let localhostURL = model.localhostURL {
@@ -319,6 +336,10 @@ private struct TunnelBrowserRequest: Identifiable {
 private struct SessionWebTunnelEditorSheet: View {
     let originalID: UUID
     let onSave: (SessionWebTunnel, String) -> Void
+    /// Present only when editing an existing tunnel: swipe-to-delete is easy to
+    /// miss on a phone row crowded with action buttons, so the editor carries an
+    /// explicit Delete command as well.
+    let onDelete: (() -> Void)?
 
     @Environment(\.dismiss) private var dismiss
     @State private var label: String
@@ -337,6 +358,7 @@ private struct SessionWebTunnelEditorSheet: View {
     init(
         tunnel: SessionWebTunnel?,
         hopPassword: String,
+        onDelete: (() -> Void)? = nil,
         onSave: @escaping (SessionWebTunnel, String) -> Void
     ) {
         let tunnel = tunnel ?? SessionWebTunnel(
@@ -346,6 +368,7 @@ private struct SessionWebTunnelEditorSheet: View {
             targetPort: 443
         )
         originalID = tunnel.id
+        self.onDelete = onDelete
         self.onSave = onSave
         _label = State(initialValue: tunnel.label)
         _scheme = State(initialValue: tunnel.scheme)
@@ -396,6 +419,14 @@ private struct SessionWebTunnelEditorSheet: View {
                     Picker("Scheme", selection: $scheme) {
                         ForEach(SessionWebTunnelScheme.allCases) { scheme in
                             Text(scheme.rawValue.uppercased()).tag(scheme)
+                        }
+                    }
+                    .onChange(of: scheme) { _, newScheme in
+                        // Adopt the scheme's standard port unless the user has
+                        // typed something non-default, which we must not clobber.
+                        let standardPorts = SessionWebTunnelScheme.allCases.map(\.defaultPort)
+                        if targetPort.isEmpty || standardPorts.contains(Int(targetPort) ?? -1) {
+                            targetPort = String(newScheme.defaultPort)
                         }
                     }
                     TextField("Host or IP", text: $targetHost)
@@ -487,6 +518,14 @@ private struct SessionWebTunnelEditorSheet: View {
                         dismiss()
                     }
                     .disabled(definition.validationError != nil)
+                }
+                if onDelete != nil {
+                    ToolbarItem(placement: .destructiveAction) {
+                        Button("Delete", role: .destructive) {
+                            onDelete?()
+                            dismiss()
+                        }
+                    }
                 }
             }
         }

@@ -13,14 +13,17 @@ anything.
 | Field | Meaning |
 |---|---|
 | Label | Display name |
-| Scheme | `http` or `https` |
+| Scheme | `http`, `https`, or `vnc` |
 | Target host / port | Where the service listens, **as seen from the SSH host** |
 | Local port | A loopback port on the iPad; automatic (ephemeral) by default |
 | Hop | Optional second SSH hop — see below |
 
 The app opens a `direct-tcpip` channel over the existing SSH connection and
 serves it from a listener bound to `127.0.0.1` on the iPad. The in-app browser
-then loads `scheme://127.0.0.1:<localPort>`.
+then loads `scheme://127.0.0.1:<localPort>`. For `vnc` the same tunnel carries
+the RFB protocol bytes; the app opens `vnc://localhost:<localPort>` so a
+registered VNC client (e.g. Jump Desktop, Screens, VNC Viewer) takes the
+connection — no WebView is involved.
 
 Nothing is published. The listener is loopback-only, and the target port is
 never opened to the network — it is reached from inside the SSH connection you
