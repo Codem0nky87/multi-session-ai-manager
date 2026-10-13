@@ -339,6 +339,26 @@ struct SessionWebTunnelSheet: View {
     }
 
     private func start(_ tunnel: SessionWebTunnel, hopPassword: String?) async {
+        // The tunnel runs over the session's SSH connection. The settings
+        // screen connects it on appear; the host-detail entry point does not,
+        // so ensure it here rather than failing with a bare "not connected".
+        if case .connected = session.connection.state {
+            // already connected
+        } else {
+            await session.connection.connect()
+        }
+        // A concurrent connect (metrics bar, sheet re-entry) can supersede the
+        // one above; give the session's connection a moment to settle.
+        for _ in 0..<60 {
+            switch session.connection.state {
+            case .connected, .failed, .hostKeyChanged:
+                break
+            default:
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                continue
+            }
+            break
+        }
         await model.start(tunnel, hopPassword: hopPassword)
     }
 
@@ -576,6 +596,7 @@ private struct SessionWebTunnelEditorSheet: View {
                                 )
                             }
                             .buttonStyle(.plain)
+                            .accessibilityIdentifier("tunnel.field.hopPasswordReveal")
                             .accessibilityLabel(
                                 showsHopPassword ? "Hide SSH password" : "Show SSH password"
                             )
@@ -613,6 +634,7 @@ private struct SessionWebTunnelEditorSheet: View {
                             onDelete?()
                             dismiss()
                         }
+                        .accessibilityIdentifier("tunnel.delete")
                     }
                 }
             }

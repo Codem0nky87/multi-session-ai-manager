@@ -460,11 +460,13 @@ final class NIOSSHTransport: SSHTransport, @unchecked Sendable {
 
     static func commandFailure(
         command _: String,
-        underlyingError _: Error
+        underlyingError: Error
     ) -> SSHTransportError {
-        // Commands may contain transient credentials (for example SSH_ASKPASS
-        // setup), so neither the command nor transport detail is retained.
-        .commandFailed("remote command failed")
+        // The command itself may contain transient credentials (for example
+        // SSH_ASKPASS setup) and is dropped; the transport-level failure is
+        // kept so "channel closed" no longer looks identical to "connection
+        // refused". Callers redact any password from the description.
+        .commandFailed("remote command failed: \(String(reflecting: underlyingError))")
     }
 
     // MARK: - Open PTY (interactive shell)

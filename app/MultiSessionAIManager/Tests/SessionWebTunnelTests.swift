@@ -114,13 +114,13 @@ import Testing
             "key, SSH config, or agent available on the connected first host"
         ))
         #expect(SessionWebTunnel.hopCredentialExplanation.contains(
-            "kept only while this SSH Web Tunnels sheet is open"
+            "kept only in memory while AI Manager is running"
         ))
         #expect(SessionWebTunnel.hopCredentialExplanation.contains(
-            "temporary SSH_ASKPASS helper on the connected first host"
+            "never saved"
         ))
         #expect(SessionWebTunnel.hopCredentialExplanation.contains(
-            "removed after tunnel startup"
+            "reused when you restart this tunnel"
         ))
     }
 
@@ -482,6 +482,38 @@ struct NIOSessionWebTunnelServerTests {
         let cleanupCommand = try #require(transport.commandsRun.last)
         #expect(cleanupCommand.contains("\(controlPath).askpass"))
         #expect(cleanupCommand.contains("rm"))
+    }
+
+    @Test func tunnelStartWithoutHostConnectionBlamesConnectionNotHopPassword() async throws {
+        // A never-connected transport throws SSHTransportError.notConnected.
+        // The user must be told the host connection is missing — not that the
+        // (perfectly correct) hop password is wrong.
+        let transport = FakeSSHTransport()
+        let host = Host(
+            name: "first-hop", address: "192.0.2.24", port: 22,
+            username: "operator", keyID: "test-key", defaultWorkdir: "/"
+        )
+        let suite = "session-web-tunnel-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defaults.removePersistentDomain(forName: suite)
+        let service = SSHService(
+            host: host, transport: transport,
+            knownHosts: KnownHostsStore(defaults: defaults)
+        )
+        let server = NIOSessionWebTunnelServer(service: service)
+        let tunnel = SessionWebTunnel(
+            label: "Dead connection", scheme: .https,
+            targetHost: "target", targetPort: 8443,
+            hop: .init(username: "root", host: "jump")
+        )
+
+        do {
+            _ = try await server.start(tunnel: tunnel, hopPassword: "correct-password") { _ in }
+            Issue.record("Expected startup over a dead connection to fail")
+        } catch {
+            #expect(error.localizedDescription.contains("first host is not established"))
+            #expect(!error.localizedDescription.contains("Verify the SSH password"))
+        }
     }
 
     @Test func passwordRemoteForwardFailureDoesNotSurfaceHopPassword() async throws {

@@ -40,7 +40,7 @@ struct SSHKeyMaterial: Equatable {
 }
 
 /// Errors surfaced by any SSHTransport implementation.
-enum SSHTransportError: Error {
+enum SSHTransportError: Error, Equatable {
     case notConnected
     case hostKeyRejected
     case commandFailed(String)

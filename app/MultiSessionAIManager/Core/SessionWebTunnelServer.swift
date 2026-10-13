@@ -52,7 +52,14 @@ struct SessionWebTunnelRemoteForwardCommands: Equatable {
             "-L \(Self.quote(forwarding))",
             Self.quote(destination)
         ]
-        let sshStart = "ssh \(options.joined(separator: " ")) 2>&1"
+        // Askpass env vars prefix the ssh simple command (inside the brace
+        // group built later): zsh rejects VAR=value prefixes before `{ ... }`,
+        // which silently killed password hops whenever the first host's login
+        // shell was zsh (macOS default).
+        let askpassEnv = hasPassword
+            ? "DISPLAY=\(Self.quote("ai-manager:0")) SSH_ASKPASS=\(Self.quote(askpassPath)) SSH_ASKPASS_REQUIRE=\(Self.quote("force")) "
+            : ""
+        let sshStart = "\(askpassEnv)ssh \(options.joined(separator: " ")) 2>&1"
 
         let sshStop = [
             "ssh",
@@ -100,12 +107,7 @@ struct SessionWebTunnelRemoteForwardCommands: Equatable {
             launch += [
                 "printf '%s' \(Self.quote(helper)) > \(Self.quote(askpassPath))",
                 "chmod 700 \(Self.quote(askpassPath))",
-                [
-                    "DISPLAY=\(Self.quote("ai-manager:0"))",
-                    "SSH_ASKPASS=\(Self.quote(askpassPath))",
-                    "SSH_ASKPASS_REQUIRE=\(Self.quote("force"))",
-                    sshLaunch
-                ].joined(separator: " ")
+                sshLaunch
             ]
         } else {
             launch.append(sshLaunch)
@@ -231,7 +233,17 @@ final class NIOSessionWebTunnelServer: SessionWebTunnelServing, @unchecked Senda
             do {
                 let output = try await withTaskCancellationHandler {
                     try Task.checkCancellation()
-                    let output = try await service.runCommand(commands.start)
+                    // A concurrent reconnect (metrics bar, sheet re-entry) can
+                    // briefly drop the client; settle and retry once before
+                    // declaring the connection dead.
+                    let output: String
+                    do {
+                        output = try await service.runCommand(commands.start)
+                    } catch SSHTransportError.notConnected {
+                        try await Task.sleep(nanoseconds: 1_500_000_000)
+                        try Task.checkCancellation()
+                        output = try await service.runCommand(commands.start)
+                    }
                     try Task.checkCancellation()
                     return output
                 } onCancel: {
@@ -258,8 +270,18 @@ final class NIOSessionWebTunnelServer: SessionWebTunnelServing, @unchecked Senda
                     throw error
                 }
                 await failureCleanup.run()
-                if let tunnelError = error as? SessionWebTunnelError,
-                   hopPassword?.isEmpty ?? true {
+                // A nil client means the host connection itself is gone —
+                // blaming the hop password there only misleads the user.
+                if error as? SSHTransportError == .notConnected {
+                    throw SessionWebTunnelError.couldNotStart(
+                        "The SSH connection to the first host is not established. "
+                        + "Reconnect the host and start the tunnel again."
+                    )
+                }
+                // The inner error already carries ssh's own diagnosis (or the
+                // right guidance); re-wrapping it here only buries the real
+                // complaint under a password accusation.
+                if let tunnelError = error as? SessionWebTunnelError {
                     throw tunnelError
                 }
                 throw SessionWebTunnelError.couldNotStart(
