@@ -118,15 +118,41 @@ final class AppStoreScreenshotsLiveUITests: XCTestCase {
             if app.buttons["host.setup.close"].waitForExistence(timeout: 4) {
                 app.buttons["host.setup.close"].tap()
             }
+            // The wizard sheet can linger; make sure the main screen is
+            // reachable before shooting.
+            let manage = app.descendants(matching: .any)
+                .matching(identifier: "settings.hosts.manage").firstMatch
+            if !manage.waitForExistence(timeout: 10) {
+                let wizardCancel = app.navigationBars.buttons["Cancel"]
+                if wizardCancel.waitForExistence(timeout: 3) { wizardCancel.tap() }
+                _ = manage.waitForExistence(timeout: 10)
+            }
         }
 
-        // 1 · Hosts list
+        // 1 · Hosts list. The Hosts sheet may already be open (wizard just
+        // closed over it); otherwise walk there via MSAM Settings.
+        let hostsNav = app.navigationBars["Hosts"]
+        if !hostsNav.waitForExistence(timeout: 5) {
+            let manageBtn = app.descendants(matching: .any)
+                .matching(identifier: "settings.hosts.manage").firstMatch
+            if !manageBtn.waitForExistence(timeout: 5) {
+                let settingsBtn = app.descendants(matching: .any)
+                    .matching(identifier: "msam.settings").firstMatch
+                if settingsBtn.waitForExistence(timeout: 5) { settingsBtn.tap() }
+                _ = manageBtn.waitForExistence(timeout: 10)
+            }
+            if manageBtn.isHittable { manageBtn.tap() }
+            _ = hostsNav.waitForExistence(timeout: 10)
+        }
         screenshot("shot-hosts")
 
-        // 2 · Host editor (shows metrics-adjacent controls + port forwarding)
+        // 2 · Host editor: tap the host row in the Hosts sheet.
         let hostRow = app.descendants(matching: .any).matching(
             NSPredicate(format: "identifier BEGINSWITH 'host.picker.host.'")).firstMatch
-        if hostRow.waitForExistence(timeout: 10) {
+        let hostButton = app.buttons[hostName].firstMatch
+        if hostButton.waitForExistence(timeout: 10) {
+            hostButton.tap()
+        } else if hostRow.waitForExistence(timeout: 3) {
             hostRow.tap()
         } else {
             app.staticTexts[hostName].firstMatch.tap()
@@ -153,14 +179,18 @@ final class AppStoreScreenshotsLiveUITests: XCTestCase {
         // 4 · The terminal: close the editor and the hosts sheet, then open a
         //    session through the tab strip's add button.
         app.navigationBars["Edit Host"].buttons["Cancel"].tap()
-        let hostsDone = app.navigationBars["Hosts"].buttons["Done"]
-        if hostsDone.waitForExistence(timeout: 5) { hostsDone.tap() }
+        // Close the Hosts sheet AND the MSAM Settings sheet beneath it; the
+        // tab strip lives on the main screen and taps die behind both.
+        for nav in ["Hosts", "MSAM Settings"] {
+            let done = app.navigationBars[nav].buttons["Done"]
+            if done.waitForExistence(timeout: 5) && done.isHittable { done.tap() }
+        }
         dismissSystemAlerts()
         // With no open tabs the strip may be absent; the empty state's
         // "Open a host" opens the same picker.
         let addTab = app.buttons["host.tab.add"]
         let openFirst = app.buttons["Open a host"]
-        let picker = app.buttons.matching(
+        let picker = app.descendants(matching: .any).matching(
             NSPredicate(format: "identifier BEGINSWITH 'host.picker.host.'")).firstMatch
         if addTab.waitForExistence(timeout: 5) {
             addTab.tap()
