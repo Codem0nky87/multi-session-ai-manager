@@ -19,7 +19,10 @@
    (Data Not Collected). Privacy policy URL already set via API.
 2. Screenshots: iPad 13" (2064x2752 portrait) and iPhone 6.9" (1320x2868
    portrait) sets from build/appstore-shots/.
-3. Optional App Preview video (1080p portrait, <=30s cut from the recorded mp4).
+3. App Preview video: READY — build/appstore-shots/msam-preview-iphone-28s.mp4
+   (28s, 1320x2868 portrait, 30fps, ~8 Mbps; tours tunnels -> settings ->
+   open-host -> live agent terminal. Upload under iPhone 6.9" preview slot;
+   Apple transcodes. Full 5m25s source kept alongside.)
 4. Then: Add for Review -> submit.
 
 ## Screenshot captions (paste above each image in ASC)
