@@ -42,16 +42,43 @@ final class AppStoreScreenshotsLiveUITests: XCTestCase {
                                 ("host.username", fixture.username)] {
                 let field = app.textFields[id]
                 XCTAssertTrue(field.waitForExistence(timeout: 10), app.debugDescription)
-                field.tap(); field.typeText(value + "\n")
+                // Phone keyboards can swallow the first tap; verify the text
+                // landed and retry once.
+                for _ in 0..<3 {
+                    field.tap()
+                    field.typeText(value + "\n")
+                    if (field.value as? String) == value { break }
+                    field.tap()
+                    field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 32) + value + "\n")
+                    if (field.value as? String) == value { break }
+                }
             }
             let install = app.buttons["Install key on host…"]
             XCTAssertTrue(install.waitForExistence(timeout: 10), app.debugDescription)
+            // The docked keyboard swallows taps on lower rows on phone width.
+            hideKeyboardIfNeeded()
+            let form = app.scrollViews["host.editor.form"]
+            for _ in 0..<10 {
+                // isHittable is true for partially-visible rows; require the
+                // whole button on-screen or the synthesized tap lands in void.
+                if install.exists && install.isHittable && install.frame.maxY < app.frame.maxY - 10 { break }
+                if form.exists { form.swipeUp() } else { app.swipeUp() }
+            }
             install.tap()
             let pw = app.secureTextFields["install.password"]
+            if !pw.waitForExistence(timeout: 10) {
+                install.tap()   // first tap can land mid-animation
+            }
             XCTAssertTrue(pw.waitForExistence(timeout: 10), app.debugDescription)
             pw.tap(); pw.typeText(password)
             hideKeyboardIfNeeded()
-            app.buttons["Install key"].firstMatch.tap()
+            let installKey = app.buttons["Install key"].firstMatch
+            let installForm = app.scrollViews["install.form"]
+            for _ in 0..<10 {
+                if installKey.exists && installKey.isHittable && installKey.frame.maxY < app.frame.maxY - 10 { break }
+                if installForm.exists { installForm.swipeUp() } else { app.swipeUp() }
+            }
+            installKey.tap()
             allowLocalNetwork()
             let done = app.scrollViews["install.form"].buttons["Done"]
             XCTAssertTrue(done.waitForExistence(timeout: 120), app.debugDescription)
@@ -74,6 +101,11 @@ final class AppStoreScreenshotsLiveUITests: XCTestCase {
                 restore.tap(); waitEnabled(next, timeout: 120)
             }
             next.tap()
+            // iOS may offer to save the typed password; decline quietly.
+            for label in ["Not Now", "Save"] {
+                let b = app.alerts.buttons[label]
+                if b.waitForExistence(timeout: 2) { b.tap(); break }
+            }
             app.buttons["Save Host"].tap()
             if app.buttons["host.setup.close"].waitForExistence(timeout: 4) {
                 app.buttons["host.setup.close"].tap()
@@ -110,12 +142,21 @@ final class AppStoreScreenshotsLiveUITests: XCTestCase {
         let hostsDone = app.navigationBars["Hosts"].buttons["Done"]
         if hostsDone.waitForExistence(timeout: 5) { hostsDone.tap() }
         dismissSystemAlerts()
+        // With no open tabs the strip may be absent; the empty state's
+        // "Open a host" opens the same picker.
         let addTab = app.buttons["host.tab.add"]
-        XCTAssertTrue(addTab.waitForExistence(timeout: 10), app.debugDescription)
-        addTab.tap()
+        let openFirst = app.buttons["Open a host"]
         let picker = app.buttons.matching(
             NSPredicate(format: "identifier BEGINSWITH 'host.picker.host.'")).firstMatch
-        XCTAssertTrue(picker.waitForExistence(timeout: 8), app.debugDescription)
+        if addTab.waitForExistence(timeout: 5) {
+            addTab.tap()
+        }
+        if !picker.waitForExistence(timeout: 8), openFirst.waitForExistence(timeout: 3) {
+            // The strip tap can be swallowed mid-animation; the empty state
+            // opens the same picker.
+            openFirst.tap()
+        }
+        XCTAssertTrue(picker.waitForExistence(timeout: 15), app.debugDescription)
         picker.tap()
         let session = app.descendants(matching: .any)
             .matching(identifier: "host.session.status").firstMatch
@@ -148,8 +189,16 @@ final class AppStoreScreenshotsLiveUITests: XCTestCase {
     }
 
     private func hideKeyboardIfNeeded() {
+        guard app.keyboards.firstMatch.exists else { return }
         let hide = app.keyboards.buttons["Hide keyboard"]
-        if hide.exists { hide.tap() }
+        if hide.exists && hide.isHittable {
+            hide.tap()
+        } else {
+            // iPhone keyboards keep the chrome button off-screen; tapping
+            // outside the text field resigns focus and drops the keyboard.
+            app.navigationBars.firstMatch.tap()
+        }
+        _ = app.keyboards.firstMatch.waitForNonExistence(timeout: 5)
     }
 
     private func allowLocalNetwork() {
@@ -158,7 +207,7 @@ final class AppStoreScreenshotsLiveUITests: XCTestCase {
 
     private func dismissSystemAlerts() {
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-        for label in ["Allow", "Save Password", "Don't Save", "OK"] {
+        for label in ["Allow", "Save Password", "Don't Save", "OK", "Not Now", "Save"] {
             let button = springboard.alerts.buttons[label]
             if button.waitForExistence(timeout: 2) { button.tap() }
         }
