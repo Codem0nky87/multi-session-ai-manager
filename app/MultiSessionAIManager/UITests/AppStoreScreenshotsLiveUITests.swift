@@ -83,30 +83,38 @@ final class AppStoreScreenshotsLiveUITests: XCTestCase {
             let done = app.scrollViews["install.form"].buttons["Done"]
             XCTAssertTrue(done.waitForExistence(timeout: 120), app.debugDescription)
             done.tap()
-            // Walk the wizard: Herdr step -> services step -> restore step -> save.
+            // Walk the wizard as a state machine: taps can be swallowed
+            // mid-animation on phone width, so re-check the step each pass
+            // until the save step appears.
             let next = app.buttons["Next"]
+            let saveHost = app.buttons["Save Host"]
             XCTAssertTrue(next.waitForExistence(timeout: 20), app.debugDescription)
-            next.tap()
             let services = app.buttons["Install or Check Services"]
-            XCTAssertTrue(services.waitForExistence(timeout: 60), app.debugDescription)
-            services.tap()
-            let ready = XCTNSPredicateExpectation(
-                predicate: NSPredicate(format: "enabled == true"), object: next)
-            XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 300), .completed,
-                           "host services never became ready: \(app.debugDescription)")
-            next.tap()
-            waitEnabled(next, timeout: 60)
-            let restore = app.buttons["Enable or Repair Session Restore"]
-            if restore.exists && restore.isEnabled {
-                restore.tap(); waitEnabled(next, timeout: 120)
+            for _ in 0..<8 {
+                if saveHost.waitForExistence(timeout: 3) && saveHost.isHittable { break }
+                dismissSystemAlerts()
+                let notNow = app.descendants(matching: .button)["Not Now"]
+                if notNow.exists && notNow.isHittable { notNow.tap(); continue }
+                if services.exists && services.isHittable && services.isEnabled {
+                    services.tap()
+                    let ready = XCTNSPredicateExpectation(
+                        predicate: NSPredicate(format: "enabled == true"), object: next)
+                    _ = XCTWaiter.wait(for: [ready], timeout: 300)
+                }
+                let restore = app.buttons["Enable or Repair Session Restore"]
+                if restore.exists && restore.isHittable && restore.isEnabled {
+                    restore.tap()
+                    waitEnabled(next, timeout: 120)
+                }
+                let nextReady = XCTNSPredicateExpectation(
+                    predicate: NSPredicate(format: "exists == true AND enabled == true AND hittable == true"),
+                    object: next)
+                if XCTWaiter.wait(for: [nextReady], timeout: 30) == .completed {
+                    next.tap()
+                }
             }
-            next.tap()
-            // iOS may offer to save the typed password; decline quietly.
-            for label in ["Not Now", "Save"] {
-                let b = app.alerts.buttons[label]
-                if b.waitForExistence(timeout: 2) { b.tap(); break }
-            }
-            app.buttons["Save Host"].tap()
+            XCTAssertTrue(saveHost.waitForExistence(timeout: 10), app.debugDescription)
+            saveHost.tap()
             if app.buttons["host.setup.close"].waitForExistence(timeout: 4) {
                 app.buttons["host.setup.close"].tap()
             }
@@ -116,7 +124,13 @@ final class AppStoreScreenshotsLiveUITests: XCTestCase {
         screenshot("shot-hosts")
 
         // 2 · Host editor (shows metrics-adjacent controls + port forwarding)
-        app.staticTexts[hostName].firstMatch.tap()
+        let hostRow = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'host.picker.host.'")).firstMatch
+        if hostRow.waitForExistence(timeout: 10) {
+            hostRow.tap()
+        } else {
+            app.staticTexts[hostName].firstMatch.tap()
+        }
         let editor = app.scrollViews["host.editor.form"]
         XCTAssertTrue(editor.waitForExistence(timeout: 15), app.debugDescription)
         screenshot("shot-editor")
