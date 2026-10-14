@@ -56,24 +56,28 @@ final class AppStoreScreenshotsLiveUITests: XCTestCase {
             let done = app.scrollViews["install.form"].buttons["Done"]
             XCTAssertTrue(done.waitForExistence(timeout: 120), app.debugDescription)
             done.tap()
-            // Walk the wizard to the end: services + restore steps.
-            for _ in 0..<3 {
-                let next = app.buttons["Next"]
-                XCTAssertTrue(next.waitForExistence(timeout: 20), app.debugDescription)
-                if !next.isEnabled {
-                    for label in ["Install or Check Services",
-                                  "Enable or Repair Session Restore"] {
-                        let step = app.buttons[label]
-                        if step.waitForExistence(timeout: 5) { step.tap() }
-                    }
-                    let ready = XCTNSPredicateExpectation(
-                        predicate: NSPredicate(format: "enabled == true"), object: next)
-                    _ = XCTWaiter.wait(for: [ready], timeout: 300)
-                }
-                next.tap()
+            // Walk the wizard: Herdr step -> services step -> restore step -> save.
+            let next = app.buttons["Next"]
+            XCTAssertTrue(next.waitForExistence(timeout: 20), app.debugDescription)
+            next.tap()
+            let services = app.buttons["Install or Check Services"]
+            XCTAssertTrue(services.waitForExistence(timeout: 60), app.debugDescription)
+            services.tap()
+            let ready = XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "enabled == true"), object: next)
+            XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 300), .completed,
+                           "host services never became ready: \(app.debugDescription)")
+            next.tap()
+            waitEnabled(next, timeout: 60)
+            let restore = app.buttons["Enable or Repair Session Restore"]
+            if restore.exists && restore.isEnabled {
+                restore.tap(); waitEnabled(next, timeout: 120)
             }
-            let finish = app.buttons["Done"]
-            if finish.waitForExistence(timeout: 10) { finish.tap() }
+            next.tap()
+            app.buttons["Save Host"].tap()
+            if app.buttons["host.setup.close"].waitForExistence(timeout: 4) {
+                app.buttons["host.setup.close"].tap()
+            }
         }
 
         // 1 · Hosts list
@@ -87,21 +91,32 @@ final class AppStoreScreenshotsLiveUITests: XCTestCase {
 
         // 3 · Port forwarding sheet
         let pf = app.buttons["host.port-forwarding.manage"]
-        if pf.waitForExistence(timeout: 5) {
+        for _ in 0..<8 {
+            if pf.exists && pf.isHittable { break }
+            editor.swipeUp()
+        }
+        if pf.waitForExistence(timeout: 5) && pf.isHittable {
             pf.tap()
             let status = app.descendants(matching: .any)
                 .matching(identifier: "tunnel.status").firstMatch
             XCTAssertTrue(status.waitForExistence(timeout: 20), app.debugDescription)
             screenshot("shot-tunnels")
-            app.navigationBars.buttons.firstMatch.tap()  // close sheet
+            app.navigationBars["SSH Web Tunnels"].buttons["Done"].tap()
         }
 
-        // 4 · The terminal itself: back out to the session, let it connect.
-        app.navigationBars.buttons.firstMatch.tap()   // leave editor
+        // 4 · The terminal: close the editor and the hosts sheet, then open a
+        //    session through the tab strip's add button.
+        app.navigationBars["Edit Host"].buttons["Cancel"].tap()
+        let hostsDone = app.navigationBars["Hosts"].buttons["Done"]
+        if hostsDone.waitForExistence(timeout: 5) { hostsDone.tap() }
         dismissSystemAlerts()
+        let addTab = app.buttons["host.tab.add"]
+        XCTAssertTrue(addTab.waitForExistence(timeout: 10), app.debugDescription)
+        addTab.tap()
         let picker = app.buttons.matching(
             NSPredicate(format: "identifier BEGINSWITH 'host.picker.host.'")).firstMatch
-        if picker.waitForExistence(timeout: 8) { picker.tap() }
+        XCTAssertTrue(picker.waitForExistence(timeout: 8), app.debugDescription)
+        picker.tap()
         let session = app.descendants(matching: .any)
             .matching(identifier: "host.session.status").firstMatch
         _ = session.waitForExistence(timeout: 30)
@@ -123,6 +138,13 @@ final class AppStoreScreenshotsLiveUITests: XCTestCase {
         let manage = app.buttons["settings.hosts.manage"]
         XCTAssertTrue(manage.waitForExistence(timeout: 10), app.debugDescription)
         manage.tap()
+    }
+
+    private func waitEnabled(_ element: XCUIElement, timeout: TimeInterval) {
+        XCTAssertTrue(element.waitForExistence(timeout: timeout), app.debugDescription)
+        let ready = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "enabled == true"), object: element)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: timeout), .completed, app.debugDescription)
     }
 
     private func hideKeyboardIfNeeded() {
