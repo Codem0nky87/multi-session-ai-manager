@@ -53,7 +53,8 @@ final class KeyboardVisibilityModel: NSObject {
             return
         }
         height = Self.dockedOverlap(bottom: Self.windowHeight,
-                                    keyboardEnd: note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect ?? .zero)
+                                    keyboardEnd: note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect ?? .zero,
+                                    isiPad: UIDevice.current.userInterfaceIdiom == .pad)
     }
 
     /// Height of the app's key window in the CURRENT orientation. The
@@ -74,13 +75,21 @@ final class KeyboardVisibilityModel: NSObject {
     /// floats. Pure so it can be unit-tested without notifications.
     /// - A floating (non-docked) keyboard does not reach the bottom edge, so
     ///   it costs no rows and reports zero overlap.
-    /// - Clamped: a bogus frame (observed on iPad around rotation) reports an
-    ///   overlap far taller than any real keyboard; unclamped it pads the
-    ///   quick-key bar past the whole window, stranding it at the top. No
-    ///   docked keyboard covers more than ~55% of the window (worst case:
-    ///   a small phone in landscape).
-    nonisolated static func dockedOverlap(bottom: CGFloat, keyboardEnd: CGRect) -> CGFloat {
+    /// - iPad (observed on 11" landscape AND 13" portrait, TestFlight
+    ///   202610150907/202610151049): the notification frame reports roughly
+    ///   DOUBLE the real keyboard overlap (~89% of the window in landscape,
+    ///   ~51% in portrait, where the true figures are ~42% and ~26%). No real
+    ///   docked iPad keyboard exceeds ~43% of the window, so on iPad an
+    ///   overlap above 45% is halved once. iPhone frames are honest (phone
+    ///   landscape legitimately reaches ~53%), so the correction is
+    ///   iPad-idiom only.
+    /// - The 60% clamp remains as a backstop against fully bogus frames.
+    nonisolated static func dockedOverlap(bottom: CGFloat, keyboardEnd: CGRect, isiPad: Bool = false) -> CGFloat {
         guard keyboardEnd.height > 0, keyboardEnd.maxY >= bottom - 1 else { return 0 }
-        return min(max(0, bottom - keyboardEnd.minY), bottom * 0.55)
+        var overlap = max(0, bottom - keyboardEnd.minY)
+        if isiPad && overlap > bottom * 0.45 {
+            overlap /= 2
+        }
+        return min(overlap, bottom * 0.6)
     }
 }
