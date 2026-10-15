@@ -57,6 +57,21 @@ enum EscapeSequences {
     static let rightApp  = "\u{1b}OC".utf8Array
     static let rightMeta = "f".utf8Array
 
+    // Shift+arrow: xterm CSI 1;2 <letter> in normal cursor mode, SS3
+    // lowercase letter in application mode. TUIs (Codex among them) bind
+    // real actions to these, so the app must be able to produce them even
+    // when the hardware shift never reaches the session.
+    static let upShift      = "\u{1b}[1;2A".utf8Array
+    static let upShiftApp   = "\u{1b}Oa".utf8Array
+    static let downShift    = "\u{1b}[1;2B".utf8Array
+    static let downShiftApp = "\u{1b}Ob".utf8Array
+    static let leftShift    = "\u{1b}[1;2D".utf8Array
+    static let leftShiftApp = "\u{1b}Od".utf8Array
+    static let rightShift   = "\u{1b}[1;2C".utf8Array
+    static let rightShiftApp = "\u{1b}Oc".utf8Array
+    /// Shift+Tab: back-tab, used by TUIs to cycle modes.
+    static let backtab     = "\u{1b}[Z".utf8Array
+
     static let home      = "\u{1b}[H".utf8Array
     static let homeApp   = "\u{1b}OH".utf8Array
     static let end       = "\u{1b}[F".utf8Array

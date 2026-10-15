@@ -139,29 +139,40 @@ final class TerminalKeyInputView: UIView, UIKeyInput {
         }
 
         let appCursor = applicationCursorProvider()
+        let shiftHeld = key.modifierFlags.contains(.shift)
         var keyData: [UInt8]
         switch key.keyCode {
         case .keyboardReturnOrEnter:     keyData = EscapeSequences.return
         case .keyboardEscape:            keyData = EscapeSequences.meta
         case .keyboardDeleteOrBackspace: keyData = EscapeSequences.backspace
         case .keyboardDeleteForward:     keyData = EscapeSequences.delete
-        case .keyboardTab:               keyData = EscapeSequences.tab
+        case .keyboardTab:               keyData = shiftHeld ? EscapeSequences.backtab : EscapeSequences.tab
 
         case .keyboardHome: keyData = appCursor ? EscapeSequences.homeApp : EscapeSequences.home
         case .keyboardEnd:  keyData = appCursor ? EscapeSequences.endApp : EscapeSequences.end
 
-        case .keyboardUpArrow:   keyData = appCursor ? EscapeSequences.upApp : EscapeSequences.up
-        case .keyboardDownArrow: keyData = appCursor ? EscapeSequences.downApp : EscapeSequences.down
+        case .keyboardUpArrow:
+            keyData = shiftHeld
+                ? (appCursor ? EscapeSequences.upShiftApp : EscapeSequences.upShift)
+                : (appCursor ? EscapeSequences.upApp : EscapeSequences.up)
+        case .keyboardDownArrow:
+            keyData = shiftHeld
+                ? (appCursor ? EscapeSequences.downShiftApp : EscapeSequences.downShift)
+                : (appCursor ? EscapeSequences.downApp : EscapeSequences.down)
 
         case .keyboardLeftArrow:
             if key.modifierFlags.contains(.alternate) {
                 keyData = EscapeSequences.leftMeta
+            } else if shiftHeld {
+                keyData = appCursor ? EscapeSequences.leftShiftApp : EscapeSequences.leftShift
             } else {
                 keyData = appCursor ? EscapeSequences.leftApp : EscapeSequences.left
             }
         case .keyboardRightArrow:
             if key.modifierFlags.contains(.alternate) {
                 keyData = EscapeSequences.rightMeta
+            } else if shiftHeld {
+                keyData = appCursor ? EscapeSequences.rightShiftApp : EscapeSequences.rightShift
             } else {
                 keyData = appCursor ? EscapeSequences.rightApp : EscapeSequences.right
             }

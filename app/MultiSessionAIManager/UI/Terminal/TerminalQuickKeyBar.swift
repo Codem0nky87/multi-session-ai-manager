@@ -27,24 +27,49 @@ struct TerminalQuickKeyBar: View {
     /// phone-height Herdr pane without flying past the prompt.
     private let pageNotches = 3
 
+    /// Sticky Shift. Neither the phone software keyboard nor the iPad
+    /// hardware shift reaches the PTY as a modifier for these keys, yet TUIs
+    /// bind real actions to Shift+arrows (Codex opens its queued-message
+    /// drawer on Shift+Left). Arming this latches the xterm Shift codings onto
+    /// the next arrow/tab press, then disarms.
+    @State private var isShiftArmed = false
+
     var body: some View {
         HStack(spacing: 4) {
-            textKey("esc", id: "esc") { send(EscapeSequences.meta) }
-            textKey("tab", id: "tab") { send(EscapeSequences.tab) }
+            textKey("esc", id: "esc") {
+                isShiftArmed = false
+                send(EscapeSequences.meta)
+            }
+            textKey("tab", id: "tab") {
+                if isShiftArmed {
+                    isShiftArmed = false
+                    send(EscapeSequences.backtab)
+                } else {
+                    send(EscapeSequences.tab)
+                }
+            }
             textKey("ctrl", id: "ctrl", active: controller.isCtrlArmed) {
                 controller.toggleCtrl()
             }
+            textKey("⇧", id: "shift", active: isShiftArmed) {
+                isShiftArmed.toggle()
+            }
+            .accessibilityLabel("shift")
             symbolKey("arrow.left", id: "left") {
-                send(emulator.applicationCursor ? EscapeSequences.leftApp : EscapeSequences.left)
+                send(shifted(emulator.applicationCursor ? EscapeSequences.leftShiftApp : EscapeSequences.leftShift,
+                             plain: emulator.applicationCursor ? EscapeSequences.leftApp : EscapeSequences.left))
             }
             symbolKey("arrow.up", id: "up") {
-                send(emulator.applicationCursor ? EscapeSequences.upApp : EscapeSequences.up)
+                send(shifted(emulator.applicationCursor ? EscapeSequences.upShiftApp : EscapeSequences.upShift,
+                             plain: emulator.applicationCursor ? EscapeSequences.upApp : EscapeSequences.up))
             }
             symbolKey("arrow.down", id: "down") {
-                send(emulator.applicationCursor ? EscapeSequences.downApp : EscapeSequences.down)
+                send(shifted(emulator.applicationCursor ? EscapeSequences.downShiftApp : EscapeSequences.downShift,
+                             plain: emulator.applicationCursor ? EscapeSequences.downApp : EscapeSequences.down))
             }
             symbolKey("arrow.right", id: "right") {
-                send(emulator.applicationCursor ? EscapeSequences.rightApp : EscapeSequences.right)
+                send(shifted(emulator.applicationCursor ? EscapeSequences.rightShiftApp : EscapeSequences.rightShift,
+                             plain: emulator.applicationCursor ? EscapeSequences.rightApp : EscapeSequences.right))
             }
             symbolKey("chevron.compact.up", id: "pageup") { page(up: true) }
             symbolKey("chevron.compact.down", id: "pagedown") { page(up: false) }
@@ -67,6 +92,16 @@ struct TerminalQuickKeyBar: View {
 
     private func send(_ bytes: [UInt8]) {
         onInputBytes(bytes)
+    }
+
+    /// If sticky Shift is armed, send the Shift coding and disarm; otherwise
+    /// the plain sequence.
+    private func shifted(_ shift: [UInt8], plain: [UInt8]) -> [UInt8] {
+        if isShiftArmed {
+            isShiftArmed = false
+            return shift
+        }
+        return plain
     }
 
     /// Scroll a page of history. On the alternate screen the remote owns the
