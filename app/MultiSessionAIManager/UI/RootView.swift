@@ -491,7 +491,6 @@ struct HostTerminalView: View {
     /// up (it covers the home indicator, so the larger figure wins), and the
     /// home-indicator inset when it is down.
     private var barBottomInset: CGFloat {
-        guard isCompact else { return 0 }
         return max(homeInset, keyboard.height)
     }
 
@@ -530,18 +529,20 @@ struct HostTerminalView: View {
                     )
                 }
             }
-            if isCompact {
-                TerminalQuickKeyBar(
-                    emulator: session.terminal,
-                    controller: inputController,
-                    keyboard: keyboard,
-                    onInputBytes: { session.terminal.feedInputToPTY($0) }
-                )
-                // Lift the bar clear of the keyboard (or the home-indicator
-                // strip when the keyboard is hidden); the terminal above it
-                // shrinks by the same amount, re-deriving cols/rows.
-                .padding(.bottom, barBottomInset)
-            }
+            // The quick-key bar shows on iPhone AND iPad: TUIs bind actions to
+            // Shift+arrows (Codex queued messages on Shift+Left) and neither
+            // the software keyboard nor every hardware case delivers shift to
+            // the PTY, so the sticky-Shift strip must always be within reach.
+            TerminalQuickKeyBar(
+                emulator: session.terminal,
+                controller: inputController,
+                keyboard: keyboard,
+                onInputBytes: { session.terminal.feedInputToPTY($0) }
+            )
+            // Lift the bar clear of the keyboard (or the home-indicator
+            // strip when the keyboard is hidden); the terminal above it
+            // shrinks by the same amount, re-deriving cols/rows.
+            .padding(.bottom, barBottomInset)
         }
         .background(
             // Measure the bottom safe-area inset (home indicator) from a layer
