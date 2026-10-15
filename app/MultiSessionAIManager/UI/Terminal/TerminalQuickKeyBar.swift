@@ -51,7 +51,7 @@ struct TerminalQuickKeyBar: View {
             textKey("ctrl", id: "ctrl", active: controller.isCtrlArmed) {
                 controller.toggleCtrl()
             }
-            textKey("⇧", id: "shift", active: isShiftArmed) {
+            symbolKey("shift", id: "shift", active: isShiftArmed) {
                 isShiftArmed.toggle()
             }
             .accessibilityLabel("shift")
