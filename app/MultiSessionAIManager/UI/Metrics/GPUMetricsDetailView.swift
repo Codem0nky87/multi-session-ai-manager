@@ -2,69 +2,39 @@ import SwiftUI
 
 struct GPUMetricsDetailView: View {
     var metrics: GPUMetrics
-    
+    var history: [Double] = []
+    private let accent = Color.purple
+
     var body: some View {
-        VStack(spacing: 16) {
-            // Header
-            HStack {
-                Image(systemName: "chart.bar.fill")
-                    .foregroundStyle(HerdrTheme.subtext)
-                Spacer()
-                Text("GPU")
-                    .font(.headline)
-                    .foregroundStyle(HerdrTheme.text)
-                Spacer()
-                Image(systemName: "command")
-                    .foregroundStyle(HerdrTheme.subtext)
-            }
-            .padding(.bottom, 8)
-            
-            HStack(spacing: 24) {
-                if metrics.temperature > 0 {
-                    CircularGaugeView(value: metrics.temperature, max: 100, title: "\(Int(metrics.temperature))°C", color: .blue)
-                }
-                
-                CircularGaugeView(value: metrics.usagePercent, max: 100, title: "\(Int(metrics.usagePercent))%", color: .blue)
-                    .scaleEffect(1.2)
-                    
-                if metrics.memoryTotal > 0 {
-                    let memPercent = (metrics.memoryUsed / metrics.memoryTotal) * 100.0
-                    CircularGaugeView(value: memPercent, max: 100, title: "\(Int(memPercent))%", color: .blue)
-                }
-            }
-            .padding(.bottom, 16)
-            
-            Divider().background(HerdrTheme.selection)
-            Text("DETAILS")
-                .font(HerdrTheme.mono(.caption, weight: .bold))
-                .foregroundStyle(HerdrTheme.subtext)
-            
-            VStack(spacing: 8) {
-                detailRow(label: "Model:", value: metrics.modelName.isEmpty ? "Unknown" : metrics.modelName)
+        VStack(alignment: .leading, spacing: 20) {
+            MetricsDetailHeader(
+                title: "GPU", symbol: "display",
+                value: metrics.modelName.isEmpty ? "—" : CPUMetrics.formatPercent(metrics.usagePercent),
+                subtitle: metrics.modelName.isEmpty ? "No GPU reported" : metrics.modelName,
+                color: accent)
+            MetricsHistoryView(values: history, color: accent)
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 12) {
+                MetricsStat(label: "GPU temperature",
+                            value: metrics.temperature > 0 ? String(format: "%.0f°C", metrics.temperature) : "Unavailable")
                 if metrics.cores > 0 {
-                    detailRow(label: "Cores:", value: "\(metrics.cores)")
+                    MetricsStat(label: "GPU cores", value: "\(metrics.cores)")
                 }
-                detailRow(label: "Utilization:", value: "\(Int(metrics.usagePercent))%")
                 if metrics.memoryTotal > 0 {
-                    detailRow(label: "VRAM Used:", value: String(format: "%.1f / %.1f GB", metrics.memoryUsed / 1024.0, metrics.memoryTotal / 1024.0))
+                    MetricsStat(label: "VRAM used", value: String(format: "%.2f GiB", metrics.memoryUsed / 1024))
+                    MetricsStat(label: "VRAM capacity", value: String(format: "%.2f GiB", metrics.memoryTotal / 1024))
+                } else if metrics.memoryUsed > 0 {
+                    MetricsStat(label: "GPU memory used", value: String(format: "%.0f MiB", metrics.memoryUsed))
+                }
+            }
+            if metrics.memoryTotal > 0 {
+                VStack(alignment: .leading, spacing: 10) {
+                    MetricsSectionTitle(title: "VIDEO MEMORY",
+                                        detail: CPUMetrics.formatPercent(100 * metrics.memoryUsed / metrics.memoryTotal))
+                    MetricsUsageTrack(percent: 100 * metrics.memoryUsed / metrics.memoryTotal, color: accent)
                 }
             }
         }
-        .padding()
-        .frame(width: 320)
-        .background(HerdrTheme.background)
-    }
-    
-    private func detailRow(label: String, value: String) -> some View {
-        HStack {
-            Text(label)
-                .font(HerdrTheme.mono(.subheadline))
-                .foregroundStyle(HerdrTheme.text)
-            Spacer()
-            Text(value)
-                .font(HerdrTheme.mono(.subheadline, weight: .semibold))
-                .foregroundStyle(HerdrTheme.text)
-        }
+        .padding(20)
+        .metricsPopoverBody(width: MetricsPopoverMetrics.detailWidth)
     }
 }
-

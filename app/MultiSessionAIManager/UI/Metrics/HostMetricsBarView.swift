@@ -95,7 +95,6 @@ struct HostMetricsBarView: View {
             .buttonStyle(.plain)
             .popover(isPresented: $showingCPUDetail, arrowEdge: .top) {
                 CPUMetricsDetailView(metrics: metricsModel.cpu)
-                    .metricsPopoverBody(width: 320)
                     .presentationCompactAdaptation(.popover)
             }
             
@@ -105,7 +104,7 @@ struct HostMetricsBarView: View {
                 VStack(spacing: 0) {
                     Text("GPU")
                         .font(HerdrTheme.mono(.caption2, weight: .bold))
-                    Text(metricsModel.gpu.modelName.isEmpty ? "--%" : "\(Int(metricsModel.gpu.usagePercent))%")
+                    Text(metricsModel.gpu.modelName.isEmpty ? "--%" : CPUMetrics.formatPercent(metricsModel.gpu.usagePercent))
                         .font(HerdrTheme.mono(.caption, weight: .bold))
                 }
                 .foregroundStyle(metricsModel.gpu.modelName.isEmpty ? HerdrTheme.muted : HerdrTheme.subtext)
@@ -114,8 +113,7 @@ struct HostMetricsBarView: View {
             .disabled(metricsModel.gpu.modelName.isEmpty)
             .accessibilityIdentifier("metrics.gpu")
             .popover(isPresented: $showingGPUDetail, arrowEdge: .top) {
-                GPUMetricsDetailView(metrics: metricsModel.gpu)
-                    .metricsPopoverBody(width: 320)
+                GPUMetricsDetailView(metrics: metricsModel.gpu, history: metricsModel.gpuHistory)
                     .presentationCompactAdaptation(.popover)
             }
             
@@ -125,15 +123,14 @@ struct HostMetricsBarView: View {
                 VStack(spacing: 0) {
                     Text("RAM")
                         .font(HerdrTheme.mono(.caption2, weight: .bold))
-                    Text("\(Int(metricsModel.memory.usagePercent))%")
+                    Text(CPUMetrics.formatPercent(metricsModel.memory.usagePercent))
                         .font(HerdrTheme.mono(.caption, weight: .bold))
                 }
                 .foregroundStyle(HerdrTheme.subtext)
             }
             .buttonStyle(.plain)
             .popover(isPresented: $showingMemoryDetail, arrowEdge: .top) {
-                MemoryMetricsDetailView(metrics: metricsModel.memory)
-                    .metricsPopoverBody(width: 320)
+                MemoryMetricsDetailView(metrics: metricsModel.memory, history: metricsModel.memoryHistory)
                     .presentationCompactAdaptation(.popover)
             }
 
@@ -143,7 +140,7 @@ struct HostMetricsBarView: View {
                 VStack(spacing: 0) {
                     Text("DSK")
                         .font(HerdrTheme.mono(.caption2, weight: .bold))
-                    Text("\(Int(metricsModel.disk.usagePercent))%")
+                    Text(CPUMetrics.formatPercent(metricsModel.disk.displayUsagePercent))
                         .font(HerdrTheme.mono(.caption, weight: .bold))
                     if let hottest = metricsModel.disk.hottestTemperature,
                        hottest >= DiskMetrics.hotTemperatureThreshold {
@@ -154,14 +151,17 @@ struct HostMetricsBarView: View {
                             .foregroundStyle(.red)
                     }
                 }
-                .foregroundStyle(metricsModel.disk.totalGB > 0 ? HerdrTheme.subtext : HerdrTheme.muted)
+                .foregroundStyle(metricsModel.disk.pressure.color)
             }
             .buttonStyle(.plain)
-            .disabled(metricsModel.disk.totalGB == 0)
+            .disabled(metricsModel.disk.totalGB == 0 && metricsModel.disk.deviceTemperatures.isEmpty)
             .accessibilityIdentifier("metrics.disk")
+            .accessibilityLabel("Disk, \(metricsModel.disk.pressure.label)")
+            .accessibilityValue(metricsModel.disk.worstVolume.map {
+                "\($0.mountPoint), \(CPUMetrics.formatPercent($0.freePercent ?? 0)) available"
+            } ?? "Capacity unavailable")
             .popover(isPresented: $showingDiskDetail, arrowEdge: .top) {
-                DiskMetricsDetailView(metrics: metricsModel.disk)
-                    .metricsPopoverBody(width: 340)
+                DiskMetricsDetailView(metrics: metricsModel.disk, volumeHistory: metricsModel.diskVolumeHistory)
                     .presentationCompactAdaptation(.popover)
             }
 

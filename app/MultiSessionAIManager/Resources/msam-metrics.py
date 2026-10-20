@@ -10,7 +10,7 @@ import re
 import shutil
 from pathlib import Path
 
-METRICS_VERSION = "2.1.1"
+METRICS_VERSION = "2.2.0"
 
 _last_net_bytes_recv = 0
 _last_net_bytes_sent = 0
@@ -30,10 +30,11 @@ def get_windows_disks():
         "usagePercent": 0.0,
         "totalGB": 0.0,
         "usedGB": 0.0,
+        "platform": "win32",
         "disks": []
     }
     try:
-        ps_script = """
+        ps_script = r"""
         $volumes = Get-Volume | Where-Object DriveType -eq 'Fixed' | Select-Object DriveLetter,FileSystemLabel,Size,SizeRemaining
         $result = @()
         foreach ($vol in $volumes) {
@@ -70,6 +71,9 @@ def get_windows_disks():
                 "totalGB": v.get("totalGB", 0.0),
                 "usedGB": v.get("usedGB", 0.0)
             })
+            disk_obj["volumes"][-1].update(
+                availableGB=max(0, v.get("totalGB", 0.0) - v.get("usedGB", 0.0)),
+                isCriticalMount=v.get("mountPoint", "").rstrip("\\/").upper() == "C:")
             total_size += v.get("totalGB", 0.0)
             total_used += v.get("usedGB", 0.0)
             
@@ -84,7 +88,12 @@ def get_windows_disks():
 def linux_disk_identity(device, sys_root='/sys'):
     # Preserve complete mapper names; partitions share their parent disk's model.
     name = device[5:]
-    block = Path(sys_root) / 'class/block' / os.path.basename(os.path.realpath(device))
+    resolved_name = os.path.basename(os.path.realpath(device))
+    controller = re.fullmatch(r'(nvme\d+)(?:n\d+)?(?:p\d+)?', resolved_name)
+    if controller:
+        name = controller.group(1)
+        return name, linux_disk_model(name, sys_root)
+    block = Path(sys_root) / 'class/block' / resolved_name
     if (block / 'partition').exists():
         block = block.resolve().parent
         if not name.startswith('mapper/'):
@@ -94,6 +103,16 @@ def linux_disk_identity(device, sys_root='/sys'):
     except OSError:
         model = 'Logical Volume' if name.startswith('mapper/') else 'Linux Disk'
     return name, model or 'Linux Disk'
+
+
+def linux_disk_model(device, sys_root='/sys'):
+    root = Path(sys_root)
+    path = (root / 'class/nvme' / device / 'model' if re.fullmatch(r'nvme\d+', device)
+            else root / 'class/block' / device / 'device/model')
+    try:
+        return path.read_text().strip() or device
+    except OSError:
+        return device
 
 
 def linux_disk_temperatures(sys_root='/sys'):
@@ -118,17 +137,24 @@ def linux_disk_temperatures(sys_root='/sys'):
             name = (monitor / 'name').read_text().strip()
             if name not in ('nvme', 'drivetemp'):
                 continue
-            device = Path(os.path.basename(os.path.realpath(str(monitor / 'device'))))
+            device_path = Path(os.path.realpath(str(monitor / 'device')))
             if name == 'nvme':
-                match = re.match(r'nvme(\d+)$', device.name)
+                # Some hwmon links point below the controller directory.
+                device = next((part for part in reversed(device_path.parts)
+                               if re.fullmatch(r'nvme\d+', part)), None)
             else:
-                match = re.match(r'[sh]d[a-z]+$', device.name)
-            if not match:
+                device = device_path.name if re.fullmatch(r'[sh]d[a-z]+', device_path.name) else None
+                # drivetemp usually links to a SCSI device (H:C:T:L), whose
+                # block/ child names the actual drive.
+                if device is None:
+                    device = next((p.name for p in sorted((device_path / 'block').glob('*'))
+                                   if re.fullmatch(r'[sh]d[a-z]+', p.name)), None)
+            if device is None:
                 continue
             values = [v for v in (read_temp(sensor) for sensor in monitor.glob('temp*_input'))
                       if v is not None]
             if values:
-                temps[device.name] = max(values)
+                temps[device] = max(temps.get(device, 0), max(values))
         except OSError:
             continue
     return temps
@@ -161,10 +187,36 @@ def disk_temperature(disk_id, temps, sys_root='/sys'):
     return None
 
 
-def get_unix_disks():
-    metrics = {'usagePercent': 0.0, 'totalGB': 0.0, 'usedGB': 0.0, 'disks': []}
+def linux_mount_types(proc_root='/proc'):
+    types = {}
+    try:
+        for line in (Path(proc_root) / 'self/mountinfo').read_text().splitlines():
+            try:
+                mount, filesystem = line.split(' - ', 1)
+                path = re.sub(r'\\([0-7]{3})', lambda m: chr(int(m.group(1), 8)), mount.split()[4])
+                types[path] = filesystem.split()[0]
+            except (ValueError, IndexError):
+                continue
+    except OSError:
+        pass
+    return types
+
+
+def get_unix_disks(sys_root='/sys', proc_root='/proc'):
+    metrics = {'usagePercent': 0.0, 'totalGB': 0.0, 'usedGB': 0.0, 'disks': [],
+               'platform': sys.platform}
     is_mac = sys.platform == 'darwin'
-    disk_temps = {} if is_mac else linux_disk_temperatures()
+    mount_types = {} if is_mac else linux_mount_types(proc_root)
+    virtual_types = {'proc', 'sysfs', 'tmpfs', 'devtmpfs', 'devpts', 'ramfs',
+                     'cgroup', 'cgroup2', 'securityfs', 'pstore', 'debugfs',
+                     'tracefs', 'configfs', 'hugetlbfs', 'mqueue', 'fusectl',
+                     'bpf', 'autofs', 'overlay', 'nsfs', 'efivarfs'}
+    disk_temps = {} if is_mac else linux_disk_temperatures(sys_root)
+    # Separate physical sensors from filesystem/LVM grouping. A disk can back
+    # several volumes or no mounted volume and must appear here only once.
+    metrics['temperatures'] = [
+        {'id': device, 'model': linux_disk_model(device, sys_root), 'temperature': value}
+        for device, value in sorted(disk_temps.items())]
     root_usage = None
     if is_mac:
         try:
@@ -187,9 +239,16 @@ def get_unix_disks():
         return metrics
     for line in output.splitlines()[1:]:
         parts = line.split(maxsplit=5)
-        if len(parts) != 6 or not parts[0].startswith('/dev/'):
+        if len(parts) != 6:
             continue
         device, mount = parts[0], parts[5]
+        filesystem = mount_types.get(mount)
+        if not device.startswith('/dev/'):
+            # ZFS datasets (tank/data), for example, are real local storage
+            # without /dev paths. df -l excludes network filesystems; mountinfo
+            # distinguishes persistent local storage from memory/pseudo mounts.
+            if is_mac or not filesystem or filesystem in virtual_types:
+                continue
         if device.startswith(('/dev/loop', '/dev/ram')):
             continue
         try:
@@ -209,10 +268,16 @@ def get_unix_disks():
                 disk_id, model = (match.group(1) if match else device), 'Apple SSD'
             else:
                 # Deduplicate bind mounts / device aliases, not distinct LVs.
-                identity = os.path.realpath(device)
+                identity = os.path.realpath(device) if device.startswith('/dev/') else device
                 if identity in seen_devices:
                     continue
-                disk_id, model = linux_disk_identity(device)
+                if device.startswith('/dev/'):
+                    disk_id, model = linux_disk_identity(device, sys_root)
+                elif filesystem == 'zfs':
+                    pool = device.split('/')[0]
+                    disk_id, model = 'zfs:' + pool, 'ZFS pool ' + pool
+                else:
+                    disk_id, model = device, filesystem.upper() + ' · ' + device
                 try:
                     stat = os.statvfs(mount)
                     total = stat.f_blocks * stat.f_frsize
@@ -222,9 +287,11 @@ def get_unix_disks():
                     pass  # df already provided usable figures.
                 seen_devices.add(identity)
             disk = disks.setdefault(disk_id, {'id': disk_id, 'model': model, 'volumes': [],
-                                              'temperature': disk_temperature(disk_id, disk_temps)})
+                                              'temperature': disk_temperature(disk_id, disk_temps, sys_root)})
             disk['volumes'].append({'id': device, 'name': name, 'mountPoint': mount,
-                                    'totalGB': total / 1024**3, 'usedGB': used / 1024**3})
+                                    'totalGB': total / 1024**3, 'usedGB': used / 1024**3,
+                                    'availableGB': max(0, available) / 1024**3,
+                                    'isCriticalMount': not is_mac or mount == '/'})
             total_used += used
             total_available += max(0, available)
         except (ValueError, OSError):
@@ -308,7 +375,8 @@ def get_mac_metrics():
             "wired": 0.0,
             "compressed": 0.0,
             "free": 0.0,
-            "swap": 0.0
+            "swap": 0.0,
+            "topProcesses": []
         },
         "disk": get_unix_disks(),
         "gpu": {
@@ -383,6 +451,26 @@ def get_mac_metrics():
             used_str = sys_swap.split("used =")[1].split("M")[0].strip()
             metrics["memory"]["swap"] = float(used_str) / 1024.0
     except Exception:
+        pass
+
+    try:
+        # RSS is KiB on both macOS ps and Linux /proc/status. Keep memory
+        # ranking independent of CPU usage and never expose command arguments.
+        output = subprocess.check_output(['ps', '-axo', 'pid=,rss=,comm='],
+                                         stderr=subprocess.DEVNULL, timeout=2).decode('utf-8', 'replace')
+        processes = []
+        for line in output.splitlines():
+            try:
+                pid, rss, name = line.strip().split(maxsplit=2)
+                pid, rss = int(pid), int(rss)
+                if rss > 0:
+                    processes.append({'id': str(pid), 'pid': pid,
+                                      'name': os.path.basename(name), 'rssBytes': rss * 1024})
+            except (ValueError, IndexError):
+                continue
+        metrics['memory']['topProcesses'] = sorted(
+            processes, key=lambda p: (-p['rssBytes'], p['pid']))[:10]
+    except (OSError, subprocess.SubprocessError):
         pass
 
     try:
@@ -489,14 +577,20 @@ def logical_cpu_ids():
     return list(range(count))
 
 
-def cpu_percent(before, after, previous):
+def cpu_delta(before, after):
     if before is None or after is None:
-        return previous.copy()
+        return None
     delta = [b - a for a, b in zip(before, after)]
     # iowait can decrease on Linux. Other decreases imply a reset/hotplug.
     if any(value < 0 for i, value in enumerate(delta) if i != 4):
+        return None
+    return [max(0, value) for value in delta]
+
+
+def cpu_percent(before, after, previous):
+    delta = cpu_delta(before, after)
+    if delta is None:
         return previous.copy()
-    delta = [max(0, value) for value in delta]
     total = sum(delta)
     if total <= 0:
         return previous.copy()
@@ -599,21 +693,19 @@ class LinuxSampler:
         current = self.snapshot()
         previous = self.previous
         elapsed = current['time'] - previous['time']
-        # Normally use the kernel aggregate. Under a restricted CPU affinity,
-        # measure the same capacity as coreCount and the per-core list.
-        def aggregate(snapshot):
-            cpus = snapshot['cpus']
-            selected = {'cpu' + str(core) for core in self.cpu_ids}
-            online = {key for key in cpus if re.fullmatch(r'cpu\d+', key)}
-            if online and selected != online:
-                if not selected <= online:
-                    return None
-                return tuple(sum(cpus[key][i] for key in selected) for i in range(8))
-            return cpus.get('cpu')
-        self.cpu = cpu_percent(aggregate(previous), aggregate(current), self.cpu)
+        # Sum usable per-core deltas, not percentages or cumulative counters.
+        # This weights each logical CPU by its elapsed ticks and prevents a
+        # reset on one CPU being hidden by growth on another. Guest counters
+        # are already included in user/nice, so snapshot reads only fields 1–8.
+        aggregate = [0] * 8
         for i, core in enumerate(self.cpu_ids):
             key = 'cpu' + str(core)
-            self.per_core[i] = cpu_percent(previous['cpus'].get(key), current['cpus'].get(key), self.per_core[i])
+            before, after = previous['cpus'].get(key), current['cpus'].get(key)
+            delta = cpu_delta(before, after)
+            if delta is not None:
+                aggregate = [a + b for a, b in zip(aggregate, delta)]
+            self.per_core[i] = cpu_percent(before, after, self.per_core[i])
+        self.cpu = cpu_percent((0,) * 8, aggregate, self.cpu)
         excluded = {os.getpid()}
         # Include descendants present in either sample, including just-exited parents.
         family = dict(previous['processes'])
@@ -674,23 +766,57 @@ def linux_temperature(sys_root='/sys'):
                 values.append(value)
         except OSError:
             continue
-    if not values:
-        for monitor in root.glob('class/hwmon/hwmon*'):
-            try:
-                if (monitor / 'name').read_text().strip() not in ('coretemp', 'k10temp'):
-                    continue
-                for sensor in monitor.glob('temp*_input'):
-                    value = read_temp(sensor)
-                    if value is not None:
-                        values.append(value)
-            except OSError:
+    for monitor in root.glob('class/hwmon/hwmon*'):
+        try:
+            if (monitor / 'name').read_text().strip() not in ('coretemp', 'k10temp'):
                 continue
-    return max(values) if values else (read_temp(root / 'class/thermal/thermal_zone0/temp') or 0.0)
+            for sensor in monitor.glob('temp*_input'):
+                value = read_temp(sensor)
+                if value is not None:
+                    values.append(value)
+        except OSError:
+            continue
+    return max(values) if values else 0.0
+
+
+def linux_memory_processes(proc_root='/proc', limit=10):
+    sampler = LinuxSampler(proc_root=proc_root, cpu_ids=[])
+    ranked = []
+    try:
+        for entry in sampler.proc.iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                pid = int(entry.name)
+                start = sampler.process_stat(pid)[2]
+                for line in (entry / 'status').read_text().splitlines():
+                    if line.startswith('VmRSS:'):
+                        rss = int(line.split()[1]) * 1024
+                        if rss > 0:
+                            ranked.append((rss, pid, start))
+                        break
+            except (OSError, ValueError, IndexError):
+                continue
+    except OSError:
+        pass
+    processes = []
+    for rss, pid, start in sorted(ranked, key=lambda p: (-p[0], p[1])):
+        try:
+            name = sampler.process_name(pid)
+            if sampler.process_stat(pid)[2] != start:
+                continue  # Exited/reused PID; never attach another process's name.
+        except (OSError, ValueError, IndexError):
+            continue
+        processes.append({'id': f'{pid}:{start}', 'pid': pid, 'name': name, 'rssBytes': rss})
+        if len(processes) == limit:
+            break
+    return processes
 
 
 def linux_memory(proc_root='/proc'):
     memory = dict.fromkeys(('usagePercent', 'total', 'used', 'app', 'wired',
                             'compressed', 'free', 'swap', 'available', 'cache'), 0.0)
+    memory['topProcesses'] = linux_memory_processes(proc_root)
     try:
         info = {line.split(':')[0]: int(line.split()[1])
                 for line in (Path(proc_root) / 'meminfo').read_text().splitlines()}

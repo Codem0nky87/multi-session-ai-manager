@@ -1,5 +1,6 @@
 """Collector regression tests: python3 -m unittest discover -s tests -v."""
 import importlib.util
+import json
 import os
 from pathlib import Path
 import plistlib
@@ -119,6 +120,35 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(cpu['utilization'], 10.0)
         self.assertEqual(cpu['perCoreUsage'], [10.0])
 
+    def test_aggregate_weights_each_core_by_its_actual_tick_delta(self):
+        sampler = self.sampler(count=2)
+        # A 100% busy CPU with 100 ticks and an idle CPU with 300 ticks.
+        # Deliberately inconsistent kernel aggregate: use the per-core windows.
+        sampler.previous = {'time': 1, 'processes': {}, 'network': {},
+                            'cpus': {key: (0,) * 8 for key in ('cpu', 'cpu0', 'cpu1')}}
+        with patch.object(sampler, 'snapshot', return_value={
+                'time': 2, 'processes': {}, 'network': {}, 'cpus': {
+                    'cpu': (200, 0, 0, 200, 0, 0, 0, 0),
+                    'cpu0': (100, 0, 0, 0, 0, 0, 0, 0),
+                    'cpu1': (0, 0, 0, 300, 0, 0, 0, 0)}}):
+            cpu, _ = sampler.sample()
+        self.assertEqual(cpu['perCoreUsage'], [100.0, 0.0])
+        self.assertEqual(cpu['utilization'], 25.0)
+
+    def test_core_reset_cannot_be_hidden_by_another_cores_growth(self):
+        sampler = self.sampler(count=2)
+        sampler.previous = {'time': 1, 'processes': {}, 'network': {}, 'cpus': {
+            'cpu0': (100, 0, 0, 100, 0, 0, 0, 0),
+            'cpu1': (100, 0, 0, 100, 0, 0, 0, 0),
+            'cpu': (200, 0, 0, 200, 0, 0, 0, 0)}}
+        with patch.object(sampler, 'snapshot', return_value={
+                'time': 2, 'processes': {}, 'network': {}, 'cpus': {
+                    'cpu0': (0,) * 8,
+                    'cpu1': (200, 0, 0, 400, 0, 0, 0, 0),
+                    'cpu': (200, 0, 0, 400, 0, 0, 0, 0)}}):
+            cpu, _ = sampler.sample()
+        self.assertEqual(cpu['utilization'], 25.0)
+
     def test_network_physical_only_down_resets_and_new_interfaces(self):
         names = ['enp2s0f0', 'wlan0', 'lo', 'veth0', 'br-123', 'docker0', 'virbr0', 'tun0']
         lines = ['header', 'header']
@@ -143,10 +173,57 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(m.linux_temperature(str(self.root / 'sys')), 35.0)
         for i in (1, 2):
             self.write(f'sys/class/thermal/thermal_zone{i}/temp', 'unavailable')
-        self.assertEqual(m.linux_temperature(str(self.root / 'sys')), 55.0)
+        # A chipset reading is not a CPU temperature.
+        self.assertEqual(m.linux_temperature(str(self.root / 'sys')), 0.0)
         self.write('sys/class/hwmon/hwmon2/name', 'k10temp')
         self.write('sys/class/hwmon/hwmon2/temp1_input', '42000')
         self.assertEqual(m.linux_temperature(str(self.root / 'sys')), 42.0)
+        self.write('sys/class/thermal/thermal_zone1/temp', '33000')
+        self.write('sys/class/hwmon/hwmon2/temp2_input', '49000')
+        self.assertEqual(m.linux_temperature(str(self.root / 'sys')), 49.0)
+
+    def test_memory_top_processes_rank_rss_not_cpu_with_pid_and_safe_name(self):
+        for pid, rss, ticks in [(11, 1024, 9000), (12, 8192, 0), (13, 4096, 100)]:
+            self.stat(pid, ticks)
+            self.write(f'proc/{pid}/status', f'Name:\tworker\nVmRSS:\t{rss} kB\n')
+            self.write(f'proc/{pid}/cmdline', '/usr/bin/python3\0-m\0worker\0--secret\0hidden\0')
+        # Disappearing, malformed and kernel processes do not hide valid rows.
+        self.write('proc/14/status', 'VmRSS: garbage kB')
+        self.write('proc/15/status', 'Name: kernel\n')
+        memory = m.linux_memory(str(self.root / 'proc'))
+        self.assertEqual([p['pid'] for p in memory.get('topProcesses', [])], [12, 13, 11])
+        self.assertEqual(memory['topProcesses'][0], {
+            'id': '12:10', 'pid': 12, 'name': 'python3 worker', 'rssBytes': 8192 * 1024})
+        self.assertNotIn('hidden', json.dumps(memory['topProcesses']))
+
+    def test_memory_process_limit_and_reused_pid(self):
+        for pid in range(10, 22):
+            self.stat(pid, 0)
+            self.write(f'proc/{pid}/status', f'VmRSS: {pid * 1024} kB\n')
+        original = m.LinuxSampler.process_stat
+        calls = {}
+        def changing_stat(sampler, pid):
+            value = original(sampler, pid)
+            calls[pid] = calls.get(pid, 0) + 1
+            if pid == 21 and calls[pid] > 1:
+                return value[0], value[1], value[2] + 1
+            return value
+        with patch.object(m.LinuxSampler, 'process_stat', changing_stat):
+            processes = m.linux_memory(str(self.root / 'proc')).get('topProcesses', [])
+        self.assertEqual([p['pid'] for p in processes], list(range(20, 10, -1)))
+
+    def test_mac_memory_processes_use_same_rss_shape(self):
+        def output(command, **kwargs):
+            if command[0] == 'ps' and 'pid=,rss=,comm=' in command:
+                return b' 41 1024 /usr/bin/small\n 42 8192 /Applications/Large App\n'
+            raise OSError('Unavailable in fixture')
+        with patch.object(m, 'get_unix_disks', return_value={}), \
+                patch.object(m, 'get_mac_gpu', return_value={}), \
+                patch.object(m.subprocess, 'check_output', side_effect=output):
+            processes = m.get_mac_metrics()['memory'].get('topProcesses', [])
+        self.assertEqual(processes, [
+            {'id': '42', 'pid': 42, 'name': 'Large App', 'rssBytes': 8192 * 1024},
+            {'id': '41', 'pid': 41, 'name': 'small', 'rssBytes': 1024 * 1024}])
 
     def test_memory_free_available_anon_and_cache(self):
         self.write('proc/meminfo', '\n'.join(f'{key}: {value * 1024**2} kB' for key, value in dict(MemTotal=256, MemFree=54, MemAvailable=217, AnonPages=25, Cached=150, Buffers=2, SwapTotal=8, SwapFree=7).items()))
@@ -173,6 +250,98 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(disk['totalGB'], 3000 / 1024**2)
         self.assertEqual(disk['usedGB'], 2040 / 1024**2)
         self.assertAlmostEqual(disk['usagePercent'], 2040 / (2040 + 890) * 100)
+        self.assertEqual(disk['disks'][1]['volumes'][0]['availableGB'], 280 / 1024**2)
+
+    def test_linux_data_mount_pressure_is_preserved_despite_healthy_aggregate(self):
+        output = b'''Filesystem 1024-blocks Used Available Capacity Mounted on
+/dev/sda1 100000 1000 99000 1% /
+/dev/sdb1 1000 820 180 82% /data
+'''
+        with patch.object(m.sys, 'platform', 'linux'), \
+                patch.object(m.subprocess, 'check_output', return_value=output), \
+                patch.object(m.os, 'statvfs', side_effect=OSError):
+            disk = m.get_unix_disks(sys_root=str(self.root / 'sys'))
+        data = disk['disks'][1]['volumes'][0]
+        self.assertLess(disk['usagePercent'], 2)
+        self.assertEqual(disk['platform'], 'linux')
+        self.assertTrue(data['isCriticalMount'])
+        self.assertEqual(data['availableGB'] / (data['availableGB'] + data['usedGB']), 0.18)
+
+    def test_zfs_data_mount_is_reported_but_memory_filesystems_are_excluded(self):
+        self.write('proc/self/mountinfo', '''10 1 8:1 / / rw - ext4 /dev/sda1 rw
+11 1 0:50 / /data rw - zfs tank/data rw
+12 1 0:51 / /run rw - tmpfs tmpfs rw
+13 1 0:52 / /scratch rw - overlay overlay rw
+''')
+        output = b'''Filesystem 1024-blocks Used Available Capacity Mounted on
+/dev/sda1 100000 1000 99000 1% /
+tank/data 1000 820 180 82% /data
+tmpfs 1000 950 50 95% /run
+overlay 1000 950 50 95% /scratch
+'''
+        with patch.object(m.sys, 'platform', 'linux'), \
+                patch.object(m.subprocess, 'check_output', return_value=output), \
+                patch.object(m.os, 'statvfs', side_effect=OSError):
+            disk = m.get_unix_disks(sys_root=str(self.root / 'sys'), proc_root=str(self.root / 'proc'))
+        volumes = [v for d in disk['disks'] for v in d['volumes']]
+        self.assertEqual([v['mountPoint'] for v in volumes], ['/', '/data'])
+        self.assertTrue(volumes[1]['isCriticalMount'])
+        self.assertEqual(volumes[1]['availableGB'], 180 / 1024**2)
+
+    def test_nvme_temperature_dedup_uses_controller_and_model_not_sensor_label(self):
+        for number, controller, values in [(1, 'nvme0', (39000, 41000)),
+                                            (2, 'nvme0', (38000,)),
+                                            (3, 'nvme1', (47000,))]:
+            monitor = self.root / f'sys/class/hwmon/hwmon{number}'
+            self.write(f'sys/class/hwmon/hwmon{number}/name', 'nvme')
+            controller_path = self.root / f'sys/class/nvme/{controller}'
+            controller_path.mkdir(parents=True, exist_ok=True)
+            (monitor / 'device').symlink_to(controller_path, target_is_directory=True)
+            for i, value in enumerate(values, 1):
+                self.write(f'sys/class/hwmon/hwmon{number}/temp{i}_input', str(value))
+        # Identical models are still two separate physical drives.
+        for controller in ('nvme0', 'nvme1'):
+            self.write(f'sys/class/nvme/{controller}/model', 'Samsung SSD 990 PRO\n')
+        sys_root = str(self.root / 'sys')
+        self.assertEqual(m.linux_disk_temperatures(sys_root), {'nvme0': 41.0, 'nvme1': 47.0})
+        with patch.object(m.sys, 'platform', 'linux'), \
+                patch.object(m.subprocess, 'check_output', side_effect=subprocess.TimeoutExpired('df', 3)):
+            disk = m.get_unix_disks(sys_root=sys_root)
+        self.assertEqual(disk['temperatures'], [
+            {'id': 'nvme0', 'model': 'Samsung SSD 990 PRO', 'temperature': 41.0},
+            {'id': 'nvme1', 'model': 'Samsung SSD 990 PRO', 'temperature': 47.0}])
+        self.assertEqual(m.linux_disk_identity('/dev/nvme0n1p2', sys_root),
+                         ('nvme0', 'Samsung SSD 990 PRO'))
+        self.assertEqual(m.linux_disk_identity('/dev/nvme0n2', sys_root),
+                         ('nvme0', 'Samsung SSD 990 PRO'))
+        with patch.object(m.os.path, 'realpath', return_value='/dev/nvme0n1p2'):
+            self.assertEqual(m.linux_disk_identity('/dev/disk/by-uuid/volume', sys_root),
+                             ('nvme0', 'Samsung SSD 990 PRO'))
+
+    def test_drivetemp_scsi_device_resolves_physical_block_model(self):
+        self.write('sys/class/hwmon/hwmon0/name', 'drivetemp')
+        self.write('sys/class/hwmon/hwmon0/temp1_input', '43000')
+        device = self.root / 'sys/devices/pci/host0/target0/0:0:0:0'
+        (device / 'block/sda').mkdir(parents=True)
+        (self.root / 'sys/class/hwmon/hwmon0/device').symlink_to(device, target_is_directory=True)
+        self.write('sys/class/block/sda/device/model', 'WDC WD40EFRX\n')
+        sys_root = str(self.root / 'sys')
+        self.assertEqual(m.linux_disk_temperatures(sys_root), {'sda': 43.0})
+        self.assertEqual(m.linux_disk_model('sda', sys_root), 'WDC WD40EFRX')
+
+    def test_windows_marks_system_drive_and_retains_each_volume_capacity(self):
+        output = json.dumps([
+            {'id': 'C:', 'name': 'System', 'mountPoint': 'C:\\', 'totalGB': 100, 'usedGB': 82},
+            {'id': 'D:', 'name': 'Data', 'mountPoint': 'D:\\', 'totalGB': 100, 'usedGB': 99}
+        ]).encode()
+        with patch.object(m.subprocess, 'check_output', return_value=output) as command:
+            disk = m.get_windows_disks()
+        self.assertEqual(disk['platform'], 'win32')
+        volumes = disk['disks'][0]['volumes']
+        self.assertEqual([v['isCriticalMount'] for v in volumes], [True, False])
+        self.assertEqual([v['availableGB'] for v in volumes], [18, 1])
+        # The Python string must preserve the PowerShell backslash.
+        self.assertIn("$vol.DriveLetter + ':\\'", command.call_args.args[0][-1])
 
     def test_linux_disk_temperatures_from_nvme_and_drivetemp_hwmon(self):
         # NVMe drive: hwmon named "nvme" whose device symlink ends in nvme0.
@@ -215,7 +384,7 @@ class CollectorTests(unittest.TestCase):
         def statvfs(path):
             total, used, available = (1000, 340, 610) if path == '/' else (2000, 1700, 280)
             return SimpleNamespace(f_blocks=total, f_bfree=total-used, f_bavail=available, f_frsize=1024)
-        def identity(device):
+        def identity(device, sys_root='/sys'):
             base = device[5:]
             return (base[:5], 'NVMe SSD') if base.startswith('nvme') else (base[:3], 'SATA Disk')
         with patch.object(m.sys, 'platform', 'linux'), \
@@ -247,6 +416,8 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(disk['usagePercent'], 50.0)
         self.assertEqual(len(disk['disks']), 1)
         self.assertEqual(disk['disks'][0]['volumes'][0]['usedGB'], 512000 / 1024**3)
+        self.assertEqual(disk['platform'], 'darwin')
+        self.assertTrue(disk['disks'][0]['volumes'][0]['isCriticalMount'])
         self.assertEqual(command.call_args.args[0], ['df', '-P', '-k', '-l'])
         gpu_data = plistlib.dumps([{'model': 'Apple M3', 'gpu-core-count': 10, 'PerformanceStatistics': {'Device Utilization %': 27, 'In use system memory': 128 * 1024**2}}])
         with patch.object(m.subprocess, 'check_output', return_value=gpu_data) as command:
@@ -279,7 +450,7 @@ class CollectorTests(unittest.TestCase):
     def test_disks_timeout_returns_safe_shape(self):
         with patch.object(m.subprocess, 'check_output', side_effect=subprocess.TimeoutExpired('df', 3)):
             result = m.get_unix_disks()
-        self.assertEqual(set(result), {'usagePercent', 'totalGB', 'usedGB', 'disks'})
+        self.assertTrue({'usagePercent', 'totalGB', 'usedGB', 'disks'} <= set(result))
         self.assertEqual(result['disks'], [])
 
 
