@@ -47,6 +47,7 @@ struct MetricsDetailHeader: View {
     let subtitle: String
     let color: Color
     var status: String? = nil
+    var showsValue = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -67,11 +68,13 @@ struct MetricsDetailHeader: View {
                         .background(color.opacity(0.12), in: Capsule())
                 }
             }
-            Text(value)
-                .font(.system(size: 46, weight: .semibold, design: .rounded))
-                .monospacedDigit()
-                .foregroundStyle(HerdrTheme.text)
-                .contentTransition(.numericText())
+            if showsValue {
+                Text(value)
+                    .font(.system(size: 46, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(HerdrTheme.text)
+                    .contentTransition(.numericText())
+            }
             Text(subtitle)
                 .font(HerdrTheme.mono(.caption))
                 .foregroundStyle(HerdrTheme.subtext)
@@ -91,7 +94,7 @@ struct MetricsHistoryView: View {
             MetricsSectionTitle(title: title, detail: "\(values.count) samples")
             if values.count > 1 {
                 Chart {
-                    ForEach(Array(values.enumerated()), id: \.offset) { index, value in
+                    ForEach(Array(values.filter(\.isFinite).enumerated()), id: \.offset) { index, value in
                         AreaMark(x: .value("Sample", index), y: .value("Usage", value))
                             .foregroundStyle(LinearGradient(
                                 colors: [color.opacity(0.25), color.opacity(0.01)],

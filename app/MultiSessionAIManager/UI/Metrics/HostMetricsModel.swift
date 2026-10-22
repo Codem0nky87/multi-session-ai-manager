@@ -65,6 +65,10 @@ struct PhysicalDisk: Decodable, Identifiable {
     /// SMART temperature in °C when the host service can report it (Linux
     /// hwmon). Optional so payloads from older collectors still decode.
     var temperature: Double?
+    /// Hardware capacity and free space attributable to its mounted filesystems.
+    /// Pool free space cannot always be attributed to a single physical member.
+    var totalGB: Double?
+    var availableGB: Double?
 }
 
 struct DiskMetrics: Decodable {
@@ -75,6 +79,16 @@ struct DiskMetrics: Decodable {
     // Additive fields: nil on collectors before 2.2.
     var platform: String?
     var temperatures: [DiskDeviceTemperature]?
+    var physicalDisks: [PhysicalDisk]?
+
+    var hardware: [PhysicalDisk] {
+        if let physicalDisks { return physicalDisks }
+        // Legacy payloads only identify hardware reliably through sensors.
+        // Never relabel an LVM group or the Windows catch-all as a physical disk.
+        return deviceTemperatures.map {
+            PhysicalDisk(id: $0.id, model: $0.model, volumes: [], temperature: $0.temperature)
+        }
+    }
 
     var volumes: [DiskVolume] { disks.flatMap(\.volumes) }
 
@@ -223,6 +237,9 @@ struct GPUMetrics: Decodable {
     var temperature: Double = 0.0
     var memoryUsed: Double = 0.0
     var memoryTotal: Double = 0.0
+    var utilizationAvailable: Bool?
+
+    var hasUtilization: Bool { utilizationAvailable ?? !modelName.isEmpty }
 }
 
 struct NetworkMetrics: Decodable {
@@ -250,6 +267,9 @@ final class HostMetricsModel {
     var memoryHistory: [Double] = []
     var gpuHistory: [Double] = []
     var diskVolumeHistory: [String: [Double]] = [:]
+    var downloadHistory: [Double] = []
+    var uploadHistory: [Double] = []
+    var hasNetworkSample = false
 
     private func history(_ values: [Double], appending value: Double) -> [Double] {
         guard value.isFinite else { return values }
@@ -307,7 +327,8 @@ final class HostMetricsModel {
             gpu.temperature = newGpu.temperature
             gpu.memoryUsed = newGpu.memoryUsed
             gpu.memoryTotal = newGpu.memoryTotal
-            if !newGpu.modelName.isEmpty {
+            gpu.utilizationAvailable = newGpu.utilizationAvailable
+            if newGpu.hasUtilization {
                 gpuHistory = history(gpuHistory, appending: newGpu.usagePercent)
             } else {
                 gpuHistory = []
@@ -318,6 +339,9 @@ final class HostMetricsModel {
             network.uploadSpeed = newNet.uploadSpeed
             network.downloadString = newNet.downloadString
             network.uploadString = newNet.uploadString
+            hasNetworkSample = true
+            downloadHistory = history(downloadHistory, appending: max(0, newNet.downloadSpeed))
+            uploadHistory = history(uploadHistory, appending: max(0, newNet.uploadSpeed))
         }
     }
 }

@@ -1,10 +1,10 @@
 param([switch]$loop)
-$MetricsVersion = '2.1.1'
+$MetricsVersion = '2.3.0'
 $ProgressPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 
 function Get-Disks {
-    $volumes = Get-Volume | Where-Object DriveType -eq 'Fixed' | Select-Object DriveLetter,FileSystemLabel,Size,SizeRemaining,UniqueId
+    $volumes = @(Get-Volume -ErrorAction SilentlyContinue | Where-Object { $_.DriveType -eq 'Fixed' -and $_.Size -gt 0 })
     $vols = @()
     $totalGB = 0.0
     $usedGB = 0.0
@@ -26,10 +26,51 @@ function Get-Disks {
             mountPoint = $mountPoint
             totalGB = $tGB
             usedGB = $uGB
+            availableGB = [double]$vol.SizeRemaining / 1GB
+            isCriticalMount = $mountPoint -eq 'C:\'
         }
     }
     
+    $physical = @()
+    $temperatures = @()
+    $osDisks = @(Get-Disk -ErrorAction SilentlyContinue)
+    foreach ($device in @(Get-PhysicalDisk -ErrorAction SilentlyContinue | Sort-Object DeviceId)) {
+        $temperature = $null
+        try {
+            $counter = $device | Get-StorageReliabilityCounter -ErrorAction Stop
+            if ($counter.Temperature -gt 0 -and $counter.Temperature -lt 150) {
+                $temperature = [double]$counter.Temperature
+            }
+        } catch {}
+        $free = $null
+        # DeviceId and disk number are different identifiers. Match stable IDs;
+        # a Storage Spaces member must never inherit the virtual pool's free space.
+        $matches = @($osDisks | Where-Object { $device.UniqueId -and $_.UniqueId -eq $device.UniqueId })
+        if ($matches.Count -eq 1) {
+            try {
+                $mounted = @(Get-Partition -DiskNumber $matches[0].Number -ErrorAction Stop |
+                    Get-Volume -ErrorAction Stop | Where-Object { $_.Size -gt 0 } |
+                    Sort-Object UniqueId -Unique)
+                if ($mounted.Count -gt 0) {
+                    $free = [double](($mounted | Measure-Object SizeRemaining -Sum).Sum) / 1GB
+                }
+            } catch {}
+        }
+        $id = 'physical:' + $device.DeviceId
+        $model = if ($device.FriendlyName) { [string]$device.FriendlyName } else { $id }
+        $physical += @{
+            id = $id; model = $model; volumes = @(); temperature = $temperature
+            totalGB = [double]$device.Size / 1GB; availableGB = $free
+        }
+        if ($null -ne $temperature) {
+            $temperatures += @{id=$id; model=$model; temperature=$temperature}
+        }
+    }
+
     return @{
+        platform = 'win32'
+        physicalDisks = $physical
+        temperatures = $temperatures
         usagePercent = if ($totalGB -gt 0) { [math]::Round(($usedGB / $totalGB) * 100, 2) } else { 0.0 }
         totalGB = $totalGB
         usedGB = $usedGB
@@ -43,11 +84,32 @@ function Get-Disks {
     }
 }
 
+function Get-CPUActivity {
+    try {
+        # CIM class/property names are stable on localized Windows installations.
+        $cores = @(Get-CimInstance Win32_PerfFormattedData_Counters_ProcessorInformation -ErrorAction Stop |
+            Where-Object { $_.Name -match '^\d+,\d+$' } |
+            Sort-Object @{Expression={ [int]($_.Name -split ',')[0] }}, @{Expression={ [int]($_.Name -split ',')[1] }})
+        if ($cores.Count -gt 0) {
+            $values = @($cores | ForEach-Object { [math]::Min(100, [math]::Max(0, [double]$_.PercentProcessorTime)) })
+            return @{
+                perCoreUsage = $values
+                utilization = ($values | Measure-Object -Average).Average
+                userUsage = ($cores | Measure-Object PercentUserTime -Average).Average
+                systemUsage = ($cores | Measure-Object PercentPrivilegedTime -Average).Average
+            }
+        }
+    } catch {}
+    return $null
+}
+
 function Get-Metrics {
     $processors = Get-CimInstance Win32_Processor
     $cpuLoad = ($processors | Measure-Object -Property LoadPercentage -Average).Average
     $coreCount = ($processors | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum
     if ($null -eq $cpuLoad) { $cpuLoad = 0 }
+    $activity = Get-CPUActivity
+    if ($null -ne $activity) { $cpuLoad = $activity.utilization }
     
     $mem = Get-CimInstance Win32_OperatingSystem | Select-Object FreePhysicalMemory, TotalVisibleMemorySize,LastBootUpTime
     $memTotal = 0.0
@@ -58,9 +120,11 @@ function Get-Metrics {
     }
     
     $gpuUtil = 0.0
+    $gpuAvailable = $false
     try {
-        $gpuSamples = Get-Counter '\GPU Engine(*)\Utilization Percentage' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty CounterSamples | Where-Object { $_.CookedValue -gt 0 }
+        $gpuSamples = Get-Counter '\GPU Engine(*)\Utilization Percentage' -ErrorAction Stop | Select-Object -ExpandProperty CounterSamples
         if ($null -ne $gpuSamples) {
+            $gpuAvailable = $true
             $gpuUtil = ($gpuSamples | Measure-Object -Property CookedValue -Sum).Sum
             if ($gpuUtil -gt 100.0) { $gpuUtil = 100.0 }
         }
@@ -69,7 +133,7 @@ function Get-Metrics {
     $gpuName = ""
     $gpuMemoryUsed = 0.0; $gpuMemoryTotal = 0.0; $gpuTemperature = 0.0
     try {
-        $gpu = Get-WmiObject Win32_VideoController | Select-Object -First 1
+        $gpu = Get-CimInstance Win32_VideoController | Select-Object -First 1
         if ($null -ne $gpu) {
             $gpuName = $gpu.Name
         }
@@ -81,6 +145,7 @@ function Get-Metrics {
             if ($LASTEXITCODE -eq 0 -and $readings.Count -gt 0) {
                 $values = $readings[0] -split ',\s*'
                 $gpuName = $values[0]; $gpuUtil = [double]$values[1]
+                $gpuAvailable = $true
                 $gpuTemperature = [double]$values[2]; $gpuMemoryUsed = [double]$values[3]; $gpuMemoryTotal = [double]$values[4]
             }
         }
@@ -100,8 +165,9 @@ function Get-Metrics {
         cpu = @{
             temperature = 0.0
             utilization = [math]::Round($cpuLoad, 2)
-            systemUsage = 0.0
-            userUsage = 0.0
+            perCoreUsage = @(if ($activity) { $activity.perCoreUsage })
+            systemUsage = if ($activity) { [double]$activity.systemUsage } else { 0.0 }
+            userUsage = if ($activity) { [double]$activity.userUsage } else { 0.0 }
             idleUsage = [math]::Round(100.0 - $cpuLoad, 2)
             efficiencyCoreUsage = 0.0
             performanceCoreUsage = 0.0
@@ -130,6 +196,7 @@ function Get-Metrics {
         gpu = @{
             usagePercent = [math]::Round($gpuUtil, 2)
             modelName = $gpuName
+            utilizationAvailable = $gpuAvailable
             cores = 0
             temperature = $gpuTemperature
             memoryUsed = $gpuMemoryUsed

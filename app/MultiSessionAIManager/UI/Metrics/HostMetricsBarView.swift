@@ -104,7 +104,7 @@ struct HostMetricsBarView: View {
                 VStack(spacing: 0) {
                     Text("GPU")
                         .font(HerdrTheme.mono(.caption2, weight: .bold))
-                    Text(metricsModel.gpu.modelName.isEmpty ? "--%" : CPUMetrics.formatPercent(metricsModel.gpu.usagePercent))
+                    Text(metricsModel.gpu.hasUtilization ? CPUMetrics.formatPercent(metricsModel.gpu.usagePercent) : "—")
                         .font(HerdrTheme.mono(.caption, weight: .bold))
                 }
                 .foregroundStyle(metricsModel.gpu.modelName.isEmpty ? HerdrTheme.muted : HerdrTheme.subtext)
@@ -154,14 +154,14 @@ struct HostMetricsBarView: View {
                 .foregroundStyle(metricsModel.disk.pressure.color)
             }
             .buttonStyle(.plain)
-            .disabled(metricsModel.disk.totalGB == 0 && metricsModel.disk.deviceTemperatures.isEmpty)
+            .disabled(metricsModel.disk.totalGB == 0 && metricsModel.disk.hardware.isEmpty)
             .accessibilityIdentifier("metrics.disk")
             .accessibilityLabel("Disk, \(metricsModel.disk.pressure.label)")
             .accessibilityValue(metricsModel.disk.worstVolume.map {
                 "\($0.mountPoint), \(CPUMetrics.formatPercent($0.freePercent ?? 0)) available"
             } ?? "Capacity unavailable")
             .popover(isPresented: $showingDiskDetail, arrowEdge: .top) {
-                DiskMetricsDetailView(metrics: metricsModel.disk, volumeHistory: metricsModel.diskVolumeHistory)
+                DiskMetricsDetailView(metrics: metricsModel.disk)
                     .presentationCompactAdaptation(.popover)
             }
 
@@ -184,8 +184,10 @@ struct HostMetricsBarView: View {
             }
             .buttonStyle(.plain)
             .popover(isPresented: $showingNetworkDetail, arrowEdge: .top) {
-                NetworkMetricsDetailView(metrics: metricsModel.network)
-                    .metricsPopoverBody(width: 320)
+                NetworkMetricsDetailView(metrics: metricsModel.network,
+                                         downloadHistory: metricsModel.downloadHistory,
+                                         uploadHistory: metricsModel.uploadHistory,
+                                         hasSample: metricsModel.hasNetworkSample)
                     .presentationCompactAdaptation(.popover)
             }
 

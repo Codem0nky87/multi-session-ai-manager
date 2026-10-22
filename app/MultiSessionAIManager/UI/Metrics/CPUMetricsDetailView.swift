@@ -9,8 +9,11 @@ struct CPUMetricsDetailView: View {
             MetricsDetailHeader(
                 title: "CPU", symbol: "cpu", value: metrics.utilizationText,
                 subtitle: metrics.coreCount.map { "Total capacity · \($0) logical cores" } ?? "Total CPU capacity",
-                color: accent)
-            MetricsHistoryView(values: metrics.history, color: accent)
+                color: accent, showsValue: false)
+            HStack(spacing: 16) {
+                MetricsLoadGauge(percent: metrics.utilization, color: accent, symbol: "cpu")
+                MetricsHistoryView(values: metrics.history, color: accent, title: "RECENT LOAD")
+            }
 
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 12) {
                 MetricsStat(label: "CPU temperature",
@@ -30,19 +33,11 @@ struct CPUMetricsDetailView: View {
 
             if let cores = metrics.perCoreUsage, !cores.isEmpty {
                 Divider().overlay(HerdrTheme.selection)
-                MetricsSectionTitle(title: "LOGICAL CORES", detail: "\(cores.count)")
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 60))], spacing: 12) {
-                    ForEach(Array(cores.enumerated()), id: \.offset) { index, usage in
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(CPUMetrics.formatPercent(usage))
-                                .font(HerdrTheme.mono(.caption, weight: .semibold))
-                                .foregroundStyle(HerdrTheme.text)
-                            MetricsUsageTrack(percent: usage, color: accent)
-                        }
-                        .accessibilityLabel("Logical core \(index + 1)")
-                        .accessibilityValue(CPUMetrics.formatPercent(usage))
-                    }
-                }
+                MetricsCoreHeatmap(cores: cores)
+            } else {
+                Text("Per-core activity unavailable from this host service.")
+                    .font(HerdrTheme.mono(.caption2))
+                    .foregroundStyle(HerdrTheme.subtext)
             }
 
             Divider().overlay(HerdrTheme.selection)

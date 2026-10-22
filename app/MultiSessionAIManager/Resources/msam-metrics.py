@@ -10,11 +10,10 @@ import re
 import shutil
 from pathlib import Path
 
-METRICS_VERSION = "2.2.0"
+METRICS_VERSION = "2.3.0"
 
-_last_net_bytes_recv = 0
-_last_net_bytes_sent = 0
-_last_net_time = 0
+_mac_network_previous = None
+_mac_cpu_previous = None
 
 def format_bytes(bytes_per_sec):
     if bytes_per_sec < 1024:
@@ -202,6 +201,79 @@ def linux_mount_types(proc_root='/proc'):
     return types
 
 
+def linux_physical_disks(groups, temperatures, sys_root='/sys'):
+    """Inventory hardware independently of mounts, without apportioning pool free space."""
+    result = []
+    volumes = [v for group in groups for v in group['volumes']]
+    for block in sorted((Path(sys_root) / 'class/block').glob('*')):
+        name = block.name
+        if (block / 'partition').exists() or name.startswith(('loop', 'ram', 'zram', 'dm-', 'md', 'sr')):
+            continue
+        if not (block / 'device').exists() and not re.fullmatch(r'nvme\d+n\d+', name):
+            continue
+        try:
+            size = int((block / 'size').read_text()) * 512
+            if size <= 0:
+                continue
+        except (OSError, ValueError):
+            continue
+        controller = re.fullmatch(r'(nvme\d+)n\d+', name)
+        sensor_id = controller.group(1) if controller else name
+        attached = []
+        for volume in volumes:
+            if volume.get('fileSystem') == 'btrfs':
+                continue  # The mount device can be just one member of a pool.
+            device = os.path.basename(os.path.realpath(volume['id']))
+            # Delimit partitions explicitly: sda must not match sdaa; n1 not n10.
+            suffix = r'p\d+' if name[-1:].isdigit() else r'\d+'
+            if device == name or re.fullmatch(re.escape(name) + suffix, device):
+                attached.append(volume)
+        result.append({'id': name, 'model': linux_disk_model(sensor_id, sys_root),
+                       'totalGB': size / 1024**3,
+                       'availableGB': sum(v['availableGB'] for v in attached) if attached else None,
+                       'temperature': temperatures.get(sensor_id), 'volumes': []})
+    return result
+
+
+def mac_physical_disks(groups):
+    def diskutil(*args):
+        try:
+            data = subprocess.check_output(['diskutil', *args], stderr=subprocess.DEVNULL, timeout=2)
+            value = plistlib.loads(data)
+            return value if isinstance(value, dict) else {}
+        except (OSError, subprocess.SubprocessError, ValueError, plistlib.InvalidFileException):
+            return {}
+
+    listing = diskutil('list', '-plist', 'physical').get('AllDisksAndPartitions', [])
+    if not listing:
+        return []
+    containers = diskutil('apfs', 'list', '-plist').get('Containers', [])
+    volumes = [v for group in groups for v in group['volumes']]
+    result = []
+    for disk in listing:
+        disk_id, size = disk.get('DeviceIdentifier', ''), disk.get('Size', 0)
+        if not re.fullmatch(r'disk\d+', disk_id) or size <= 0:
+            continue
+        info = diskutil('info', '-plist', disk_id)
+        available = []
+        shared = False
+        for container in containers:
+            stores = container.get('PhysicalStores', [])
+            if any(re.fullmatch(re.escape(disk_id) + r's\d+', s.get('DeviceIdentifier', '')) for s in stores):
+                if len(stores) == 1 and 'CapacityFree' in container:
+                    available.append(max(0, container['CapacityFree']) / 1024**3)
+                else:
+                    shared = True
+        # Non-APFS volumes refer directly to physical partitions.
+        available.extend(v['availableGB'] for v in volumes
+                         if re.fullmatch('/dev/' + re.escape(disk_id) + r'(s\d+)?', v['id']))
+        result.append({'id': disk_id, 'model': info.get('MediaName') or info.get('DeviceModel') or disk_id,
+                       'totalGB': size / 1024**3,
+                       'availableGB': sum(available) if available and not shared else None,
+                       'temperature': None, 'volumes': []})
+    return result
+
+
 def get_unix_disks(sys_root='/sys', proc_root='/proc'):
     metrics = {'usagePercent': 0.0, 'totalGB': 0.0, 'usedGB': 0.0, 'disks': [],
                'platform': sys.platform}
@@ -236,6 +308,8 @@ def get_unix_disks(sys_root='/sys', proc_root='/proc'):
         output = subprocess.check_output(['df', '-P', '-k', '-l'],
                                          stderr=subprocess.DEVNULL, timeout=3).decode('utf-8', 'replace')
     except (OSError, subprocess.SubprocessError):
+        metrics['physicalDisks'] = (mac_physical_disks([]) if is_mac
+                                    else linux_physical_disks([], disk_temps, sys_root))
         return metrics
     for line in output.splitlines()[1:]:
         parts = line.split(maxsplit=5)
@@ -291,12 +365,15 @@ def get_unix_disks(sys_root='/sys', proc_root='/proc'):
             disk['volumes'].append({'id': device, 'name': name, 'mountPoint': mount,
                                     'totalGB': total / 1024**3, 'usedGB': used / 1024**3,
                                     'availableGB': max(0, available) / 1024**3,
+                                    'fileSystem': filesystem,
                                     'isCriticalMount': not is_mac or mount == '/'})
             total_used += used
             total_available += max(0, available)
         except (ValueError, OSError):
             continue
     metrics['disks'] = list(disks.values())
+    metrics['physicalDisks'] = (mac_physical_disks(metrics['disks']) if is_mac
+                                else linux_physical_disks(metrics['disks'], disk_temps, sys_root))
     if not is_mac:
         metrics['totalGB'] = sum(v['totalGB'] for d in metrics['disks'] for v in d['volumes'])
         metrics['usedGB'] = sum(v['usedGB'] for d in metrics['disks'] for v in d['volumes'])
@@ -311,7 +388,8 @@ _mac_gpu_identity = None
 def get_mac_gpu():
     global _mac_gpu_identity
     gpu = {'usagePercent': 0.0, 'modelName': '', 'cores': 0,
-           'temperature': 0.0, 'memoryUsed': 0.0, 'memoryTotal': 0.0}
+           'temperature': 0.0, 'memoryUsed': 0.0, 'memoryTotal': 0.0,
+           'utilizationAvailable': False}
     try:
         output = subprocess.check_output(['ioreg', '-a', '-r', '-c', 'IOAccelerator', '-d', '1'],
                                          stderr=subprocess.DEVNULL, timeout=2)
@@ -323,6 +401,7 @@ def get_mac_gpu():
             gpu['modelName'] = str(device.get('model', ''))
             gpu['cores'] = int(device.get('gpu-core-count', 0))
             gpu['usagePercent'] = min(100.0, max(0.0, float(stats.get('Device Utilization %', 0))))
+            gpu['utilizationAvailable'] = 'Device Utilization %' in stats
             gpu['memoryUsed'] = float(stats.get('In use system memory', 0)) / 1024**2
             # Apple Silicon uses unified memory, not a dedicated VRAM capacity.
             break
@@ -342,6 +421,76 @@ def get_mac_gpu():
                 pass
         gpu['modelName'], gpu['cores'] = _mac_gpu_identity
     return gpu
+
+
+def mac_cpu_ticks():
+    """Read Mach's per-processor counters without sudo or third-party packages."""
+    if sys.platform != 'darwin':
+        return []
+    import ctypes as c
+    try:
+        lib = c.CDLL('/usr/lib/libSystem.B.dylib')
+        uint = c.c_uint
+        pointer = c.POINTER(uint)
+        lib.mach_host_self.restype = uint
+        lib.host_processor_info.argtypes = [uint, c.c_int, c.POINTER(uint), c.POINTER(pointer), c.POINTER(uint)]
+        lib.host_processor_info.restype = c.c_int
+        lib.vm_deallocate.argtypes = [uint, c.c_void_p, c.c_size_t]
+        lib.mach_port_deallocate.argtypes = [uint, uint]
+        task = uint.in_dll(lib, 'mach_task_self_').value
+        host = lib.mach_host_self()
+        count, length, data = uint(), uint(), pointer()
+        try:
+            # PROCESSOR_CPU_LOAD_INFO = 2; USER, SYSTEM, IDLE, NICE = 0...3.
+            status = lib.host_processor_info(host, 2, c.byref(count), c.byref(data), c.byref(length))
+            if status != 0:
+                return []
+            try:
+                if length.value < count.value * 4:
+                    return []
+                return [tuple(data[i * 4 + j] for j in range(4)) for i in range(count.value)]
+            finally:
+                lib.vm_deallocate(task, c.cast(data, c.c_void_p), length.value * c.sizeof(uint))
+        finally:
+            lib.mach_port_deallocate(task, host)
+    except (OSError, AttributeError, ValueError):
+        return []
+
+
+def mac_core_usage():
+    global _mac_cpu_previous
+    current = mac_cpu_ticks()
+    previous, _mac_cpu_previous = _mac_cpu_previous, current
+    if not previous or len(previous) != len(current):
+        return []
+    values = []
+    for before, after in zip(previous, current):
+        delta = [b - a for a, b in zip(before, after)]
+        if any(v < 0 for v in delta) or sum(delta) <= 0:
+            return []
+        values.append(100.0 * (sum(delta) - delta[2]) / sum(delta))
+    return values
+
+
+def mac_network_counters(output):
+    lines = output.splitlines()
+    if not lines:
+        return {}
+    headers = lines[0].split()
+    try:
+        rx, tx, network = (headers.index(name) for name in ('Ibytes', 'Obytes', 'Network'))
+    except ValueError:
+        return {}
+    counters = {}
+    for line in lines[1:]:
+        fields = line.split()
+        try:
+            name = fields[0]
+            if re.fullmatch(r'en\d+', name) and fields[network].startswith('<Link#'):
+                counters[name] = (int(fields[rx]), int(fields[tx]))
+        except (IndexError, ValueError):
+            continue
+    return counters
 
 
 def get_mac_metrics():
@@ -519,39 +668,24 @@ def get_mac_metrics():
     except Exception:
         pass
 
-    global _last_net_bytes_recv, _last_net_bytes_sent, _last_net_time
+    metrics['cpu']['perCoreUsage'] = mac_core_usage()
+    global _mac_network_previous
     try:
-        netstat_out = subprocess.check_output(['netstat', '-ib']).decode('utf-8')
-        total_recv = 0
-        total_sent = 0
-        for line in netstat_out.strip().split('\n')[1:]:
-            parts = line.split()
-            if len(parts) >= 10 and not parts[0].startswith('lo'):
-                try:
-                    # simplistic fallback for finding bytes based on standard mac netstat output
-                    # columns often are Name Mtu Network Address Ipkts Ierrs Ibytes Opkts Oerrs Obytes Coll
-                    # we will look at indices from the right
-                    total_recv += int(parts[-4])
-                    total_sent += int(parts[-2])
-                except Exception:
-                    pass
-        
-        now = time.time()
-        if _last_net_time > 0:
-            dt = now - _last_net_time
-            if dt > 0:
-                recv_speed = max(0, total_recv - _last_net_bytes_recv) / dt
-                sent_speed = max(0, total_sent - _last_net_bytes_sent) / dt
-                metrics["network"] = {
-                    "downloadSpeed": recv_speed,
-                    "uploadSpeed": sent_speed,
-                    "downloadString": format_bytes(recv_speed),
-                    "uploadString": format_bytes(sent_speed)
-                }
-        _last_net_bytes_recv = total_recv
-        _last_net_bytes_sent = total_sent
-        _last_net_time = now
-    except Exception:
+        output = subprocess.check_output(['netstat', '-ib'], stderr=subprocess.DEVNULL, timeout=2).decode('utf-8')
+        counters, now = mac_network_counters(output), time.monotonic()
+        if _mac_network_previous is not None:
+            previous, then = _mac_network_previous
+            elapsed = now - then
+            received = sent = 0.0
+            if elapsed > 0:
+                for name, (rx, tx) in counters.items():
+                    if name in previous:
+                        received += max(0, rx - previous[name][0]) / elapsed
+                        sent += max(0, tx - previous[name][1]) / elapsed
+                metrics['network'] = {'downloadSpeed': received, 'uploadSpeed': sent,
+                                      'downloadString': format_bytes(received), 'uploadString': format_bytes(sent)}
+        _mac_network_previous = counters, now
+    except (OSError, subprocess.SubprocessError):
         pass
 
     return metrics
@@ -845,7 +979,8 @@ def get_linux_metrics():
     metrics = {'cpu': dict(cpu_defaults(), **cpu), 'memory': linux_memory(),
                'disk': get_unix_disks(), 'network': network,
                'gpu': {'usagePercent': 0.0, 'modelName': '', 'cores': 0,
-                       'temperature': 0.0, 'memoryUsed': 0.0, 'memoryTotal': 0.0}}
+                       'temperature': 0.0, 'memoryUsed': 0.0, 'memoryTotal': 0.0,
+                       'utilizationAvailable': False}}
     try:
         load1, load5, load15 = os.getloadavg()
         metrics['cpu'].update(loadAverage1m=load1, loadAverage5m=load5, loadAverage15m=load15,
@@ -864,7 +999,8 @@ def get_linux_metrics():
             '--format=csv,noheader,nounits'], stderr=subprocess.DEVNULL, timeout=1).decode('utf-8')
         parts = output.splitlines()[0].split(',', 4)
         metrics['gpu'].update(usagePercent=float(parts[0]), temperature=float(parts[1]),
-                              memoryUsed=float(parts[2]), memoryTotal=float(parts[3]), modelName=parts[4].strip())
+                              memoryUsed=float(parts[2]), memoryTotal=float(parts[3]), modelName=parts[4].strip(),
+                              utilizationAvailable=True)
     except (OSError, subprocess.SubprocessError, ValueError, IndexError):
         pass
     return metrics

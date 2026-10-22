@@ -206,4 +206,56 @@ import Testing
         #expect(sample.disk?.worstVolume?.freePercent == 50)
         #expect(sample.disk?.pressure == .healthy)
     }
+
+    @Test func physicalInventoryDoesNotDuplicateLogicalVolumesOrInferPoolFreeSpace() throws {
+        let data = Data(#"""
+        {"usagePercent": 82, "totalGB": 100, "usedGB": 82, "platform": "linux",
+         "physicalDisks": [
+            {"id": "sda", "model": "SSD", "volumes": [], "totalGB": 200,
+             "availableGB": null, "temperature": 42},
+            {"id": "sdb", "model": "SSD", "volumes": [], "totalGB": 200,
+             "availableGB": null, "temperature": null}],
+         "disks": [{"id": "mapper/pool", "model": "Logical Volume", "volumes": [
+            {"id": "data", "name": "Data", "mountPoint": "/data", "totalGB": 100,
+             "usedGB": 82, "availableGB": 18}]}]}
+        """#.utf8)
+        let disk = try JSONDecoder().decode(DiskMetrics.self, from: data)
+        #expect(disk.hardware.map(\.id) == ["sda", "sdb"])
+        #expect(disk.hardware.first?.totalGB == 200)
+        #expect(disk.hardware.first?.availableGB == nil)
+        #expect(disk.volumes.count == 1)
+        #expect(disk.pressure == .warning)
+        #expect(disk.worstVolume?.freeGB == 18)
+    }
+
+    @Test func legacyDiskGroupIsNotPresentedAsPhysicalHardware() {
+        let disk = DiskMetrics(disks: [PhysicalDisk(id: "win_disks", model: "Windows Disks", volumes: [])])
+        #expect(disk.hardware.isEmpty)
+    }
+
+    @Test @MainActor func networkHistoryUsesRatesAndMissingSamplesDoNotInventTraffic() {
+        let model = HostMetricsModel()
+        #expect(!model.hasNetworkSample)
+        for value in 0..<35 {
+            model.update(from: .init(cpu: nil, memory: nil, gpu: nil, disk: nil,
+                                    network: NetworkMetrics(downloadSpeed: Double(value), uploadSpeed: 0)))
+        }
+        #expect(model.hasNetworkSample)
+        #expect(model.downloadHistory == (5..<35).map(Double.init))
+        #expect(model.uploadHistory == Array(repeating: 0, count: 30))
+        model.update(from: .init(cpu: nil, memory: nil, gpu: nil, disk: nil, network: nil))
+        #expect(model.downloadHistory.count == 30)
+        #expect(model.downloadHistory.last == 34)
+    }
+
+    @Test @MainActor func gpuIdentityWithoutTelemetryClearsLoadHistory() {
+        let model = HostMetricsModel()
+        model.update(from: .init(cpu: nil, memory: nil,
+                                gpu: GPUMetrics(usagePercent: 25, modelName: "GPU"), disk: nil, network: nil))
+        #expect(model.gpuHistory == [25])
+        model.update(from: .init(cpu: nil, memory: nil,
+                                gpu: GPUMetrics(modelName: "GPU", utilizationAvailable: false), disk: nil, network: nil))
+        #expect(!model.gpu.hasUtilization)
+        #expect(model.gpuHistory.isEmpty)
+    }
 }

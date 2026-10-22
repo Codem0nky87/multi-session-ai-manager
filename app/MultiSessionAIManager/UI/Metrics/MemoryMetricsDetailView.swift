@@ -11,9 +11,12 @@ struct MemoryMetricsDetailView: View {
                 title: "MEMORY", symbol: "memorychip",
                 value: CPUMetrics.formatPercent(metrics.usagePercent),
                 subtitle: String(format: "%.1f GiB used of %.1f GiB", metrics.used, metrics.total),
-                color: accent)
-            MetricsHistoryView(values: history, color: accent)
-            MetricsUsageTrack(percent: metrics.usagePercent, color: accent)
+                color: accent, showsValue: false)
+            HStack(spacing: 16) {
+                MetricsLiquidGauge(percent: metrics.total > 0 ? metrics.usagePercent : nil,
+                                   color: accent, symbol: "memorychip")
+                MetricsHistoryView(values: history, color: accent, title: "RECENT USAGE")
+            }
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 12) {
                 MetricsStat(label: "Available", value: gib(metrics.available ?? metrics.free), color: accent)
                 MetricsStat(label: "Free", value: gib(metrics.free))

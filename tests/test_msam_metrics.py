@@ -418,7 +418,7 @@ overlay 1000 950 50 95% /scratch
         self.assertEqual(disk['disks'][0]['volumes'][0]['usedGB'], 512000 / 1024**3)
         self.assertEqual(disk['platform'], 'darwin')
         self.assertTrue(disk['disks'][0]['volumes'][0]['isCriticalMount'])
-        self.assertEqual(command.call_args.args[0], ['df', '-P', '-k', '-l'])
+        self.assertIn(['df', '-P', '-k', '-l'], [call.args[0] for call in command.call_args_list])
         gpu_data = plistlib.dumps([{'model': 'Apple M3', 'gpu-core-count': 10, 'PerformanceStatistics': {'Device Utilization %': 27, 'In use system memory': 128 * 1024**2}}])
         with patch.object(m.subprocess, 'check_output', return_value=gpu_data) as command:
             gpu = m.get_mac_gpu()

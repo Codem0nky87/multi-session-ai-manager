@@ -1,6 +1,13 @@
 name: ci
 on: { push: { branches: [main] }, pull_request: {} }
 jobs:
+  windows-metrics:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Exercise Windows collector and JSON payloads
+        shell: powershell
+        run: ./tests/test_msam_metrics_windows.ps1
   app:
     runs-on: macos-15
     env:

@@ -9,10 +9,19 @@ struct GPUMetricsDetailView: View {
         VStack(alignment: .leading, spacing: 20) {
             MetricsDetailHeader(
                 title: "GPU", symbol: "display",
-                value: metrics.modelName.isEmpty ? "—" : CPUMetrics.formatPercent(metrics.usagePercent),
+                value: metrics.hasUtilization ? CPUMetrics.formatPercent(metrics.usagePercent) : "—",
                 subtitle: metrics.modelName.isEmpty ? "No GPU reported" : metrics.modelName,
-                color: accent)
-            MetricsHistoryView(values: history, color: accent)
+                color: accent, showsValue: false)
+            HStack(spacing: 16) {
+                MetricsLoadGauge(percent: metrics.hasUtilization ? metrics.usagePercent : nil,
+                                 color: accent, symbol: "square.stack.3d.up")
+                MetricsHistoryView(values: history, color: accent, title: "RECENT LOAD")
+            }
+            if !metrics.hasUtilization {
+                Text("GPU utilization unavailable from this host service.")
+                    .font(HerdrTheme.mono(.caption2))
+                    .foregroundStyle(HerdrTheme.subtext)
+            }
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 12) {
                 MetricsStat(label: "GPU temperature",
                             value: metrics.temperature > 0 ? String(format: "%.0f°C", metrics.temperature) : "Unavailable")
@@ -30,7 +39,12 @@ struct GPUMetricsDetailView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     MetricsSectionTitle(title: "VIDEO MEMORY",
                                         detail: CPUMetrics.formatPercent(100 * metrics.memoryUsed / metrics.memoryTotal))
-                    MetricsUsageTrack(percent: 100 * metrics.memoryUsed / metrics.memoryTotal, color: accent)
+                    HStack(spacing: 12) {
+                        MetricsLiquidGauge(percent: 100 * metrics.memoryUsed / metrics.memoryTotal,
+                                           color: accent, symbol: "memorychip", compact: true)
+                        MetricsStat(label: "VRAM free", value: String(format: "%.2f GiB",
+                            max(0, metrics.memoryTotal - metrics.memoryUsed) / 1024), color: accent)
+                    }
                 }
             }
         }

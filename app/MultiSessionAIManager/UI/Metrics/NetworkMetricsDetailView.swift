@@ -1,119 +1,92 @@
 import SwiftUI
+import Charts
 
 struct NetworkMetricsDetailView: View {
     var metrics: NetworkMetrics
-    
+    var downloadHistory: [Double] = []
+    var uploadHistory: [Double] = []
+    var hasSample = false
+
+    private var peak: Double {
+        max(1, (downloadHistory + uploadHistory).filter(\.isFinite).max() ?? 0)
+    }
+
     var body: some View {
-        VStack(spacing: 16) {
-            // Header
-            HStack {
-                Image(systemName: "chart.bar.fill")
-                    .foregroundStyle(HerdrTheme.subtext)
-                Spacer()
-                Text("Network")
-                    .font(.headline)
-                    .foregroundStyle(HerdrTheme.text)
-                Spacer()
-                Image(systemName: "command")
-                    .foregroundStyle(HerdrTheme.subtext)
-            }
-            .padding(.bottom, 8)
-            
-            HStack(spacing: 32) {
-                VStack(spacing: 4) {
-                    HStack(alignment: .firstTextBaseline, spacing: 2) {
-                        Text(numberString(metrics.downloadString))
-                            .font(.system(size: 32, weight: .regular))
-                        Text(unitString(metrics.downloadString))
-                            .font(.headline)
-                    }
-                    HStack {
-                        Circle().fill(.blue).frame(width: 10, height: 10)
-                        Text("Download")
-                            .font(HerdrTheme.mono(.subheadline))
-                    }
-                }
-                
-                VStack(spacing: 4) {
-                    HStack(alignment: .firstTextBaseline, spacing: 2) {
-                        Text(numberString(metrics.uploadString))
-                            .font(.system(size: 32, weight: .regular))
-                        Text(unitString(metrics.uploadString))
-                            .font(.headline)
-                    }
-                    HStack {
-                        Circle().fill(.red).frame(width: 10, height: 10)
-                        Text("Upload")
-                            .font(HerdrTheme.mono(.subheadline))
-                    }
-                }
-            }
-            .padding(.bottom, 16)
-            
-            Divider().background(HerdrTheme.selection)
-            Text("INTERFACE")
-                .font(HerdrTheme.mono(.caption, weight: .bold))
+        VStack(alignment: .leading, spacing: 20) {
+            MetricsDetailHeader(title: "NETWORK", symbol: "network", value: "",
+                                subtitle: "Live traffic · physical interfaces", color: .blue, showsValue: false)
+            flowCard(title: "DOWNLOAD", symbol: "arrow.down", speed: metrics.downloadSpeed,
+                     color: .blue, incoming: true, history: downloadHistory)
+            flowCard(title: "UPLOAD", symbol: "arrow.up", speed: metrics.uploadSpeed,
+                     color: .red, incoming: false, history: uploadHistory)
+            Text(hasSample
+                 ? "Both charts share a scale. Flow reflects current traffic; it is not a percentage of link capacity."
+                 : "Waiting for network samples…")
+                .font(HerdrTheme.mono(.caption2))
                 .foregroundStyle(HerdrTheme.subtext)
-            
-            VStack(spacing: 8) {
-                detailRow(label: "Total upload:", value: "14.13 TB", color: .red)
-                detailRow(label: "Total download:", value: "9.89 TB", color: .blue)
-                
-                HStack {
-                    Text("Status:")
-                        .font(HerdrTheme.mono(.subheadline))
-                    Spacer()
-                    Text("UP")
-                        .font(HerdrTheme.mono(.caption, weight: .bold))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 2)
-                        .background(Color.green)
-                        .foregroundStyle(.white)
-                        .cornerRadius(4)
-                }
-                
-                HStack {
-                    Text("Internet connection:")
-                        .font(HerdrTheme.mono(.subheadline))
-                    Spacer()
-                    Text("UP")
-                        .font(HerdrTheme.mono(.caption, weight: .bold))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 2)
-                        .background(Color.green)
-                        .foregroundStyle(.white)
-                        .cornerRadius(4)
-                }
-            }
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .padding()
-        .frame(width: 320)
-        .background(HerdrTheme.background)
+        .padding(20)
+        .metricsPopoverBody(width: MetricsPopoverMetrics.detailWidth)
     }
-    
-    private func detailRow(label: String, value: String, color: Color? = nil) -> some View {
-        HStack {
-            if let c = color {
-                RoundedRectangle(cornerRadius: 2).fill(c).frame(width: 10, height: 10)
+
+    private func flowCard(title: String, symbol: String, speed: Double, color: Color,
+                          incoming: Bool, history: [Double]) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label(title, systemImage: symbol)
+                    .font(HerdrTheme.mono(.caption2, weight: .bold))
+                    .foregroundStyle(color)
+                Spacer()
+                Text(hasSample ? rate(speed) : "—")
+                    .font(.system(size: 25, weight: .semibold, design: .rounded))
+                    .foregroundStyle(HerdrTheme.text)
+                    .monospacedDigit()
+                    .minimumScaleFactor(0.7)
+                    .lineLimit(1)
             }
-            Text(label)
-                .font(HerdrTheme.mono(.subheadline))
-                .foregroundStyle(HerdrTheme.text)
-            Spacer()
-            Text(value)
-                .font(HerdrTheme.mono(.subheadline, weight: .semibold))
-                .foregroundStyle(HerdrTheme.text)
+            MetricsNetworkFlow(speed: hasSample ? speed : 0, peak: peak, color: color, incoming: incoming)
+            if history.count > 1 {
+                Chart {
+                    ForEach(Array(history.filter(\.isFinite).enumerated()), id: \.offset) { index, value in
+                        AreaMark(x: .value("Sample", index), y: .value("Bytes / second", value))
+                            .foregroundStyle(LinearGradient(colors: [color.opacity(0.25), color.opacity(0.01)],
+                                                            startPoint: .top, endPoint: .bottom))
+                        LineMark(x: .value("Sample", index), y: .value("Bytes / second", value))
+                            .foregroundStyle(color)
+                            .lineStyle(StrokeStyle(lineWidth: 2))
+                    }
+                }
+                .chartYScale(domain: 0...peak)
+                .chartXAxis(.hidden)
+                .chartYAxis(.hidden)
+                .frame(height: 52)
+                .accessibilityLabel("\(title) recent rate")
+                .accessibilityValue(rate(speed))
+            }
+            HStack {
+                Text("RECENT PEAK")
+                Spacer()
+                Text(history.max().map(rate) ?? "—").monospacedDigit()
+            }
+            .font(HerdrTheme.mono(.caption2))
+            .foregroundStyle(HerdrTheme.subtext)
         }
+        .padding(14)
+        .background(HerdrTheme.panel, in: RoundedRectangle(cornerRadius: 14))
     }
-    
-    private func numberString(_ s: String) -> String {
-        s.components(separatedBy: " ").first ?? "0"
-    }
-    
-    private func unitString(_ s: String) -> String {
-        let parts = s.components(separatedBy: " ")
-        if parts.count > 1 { return parts[1] }
-        return "KB/s"
+
+    private func rate(_ value: Double) -> String {
+        guard value.isFinite, value >= 0 else { return "—" }
+        if value >= 1_073_741_824 { return String(format: "%.1f GiB/s", value / 1_073_741_824) }
+        if value >= 1_048_576 { return String(format: "%.1f MiB/s", value / 1_048_576) }
+        if value >= 1024 { return String(format: "%.0f KiB/s", value / 1024) }
+        return String(format: "%.0f B/s", value)
     }
 }
 
+#Preview {
+    NetworkMetricsDetailView(metrics: NetworkMetrics(downloadSpeed: 2_700_000, uploadSpeed: 180_000),
+                             downloadHistory: [0, 100_000, 900_000, 500_000, 2_700_000],
+                             uploadHistory: [0, 50_000, 20_000, 220_000, 180_000], hasSample: true)
+}
