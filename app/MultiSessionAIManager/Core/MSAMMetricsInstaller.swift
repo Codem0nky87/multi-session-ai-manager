@@ -30,20 +30,20 @@ enum MSAMMetricsInstaller {
                 _ = try await HostServiceInstaller.install(using: service)
                 return true
             }
-            if HostMetricsLifecycle.shared.isUpdating(host) {
+            if await HostMetricsLifecycle.shared.isUpdating(host) {
                 return status.installed && status.running
             }
-            if isOutdated, HostMetricsLifecycle.shared.hasRecentFailure(host) {
+            if isOutdated, await HostMetricsLifecycle.shared.hasRecentFailure(host) {
                 return status.installed && status.running
             }
             do {
                 _ = try await HostMetricsLifecycle.shared.withUpdate(host, excluding: session) {
                     try await HostServiceInstaller.install(using: service)
                 }
-                HostMetricsLifecycle.shared.clearRecentFailure(host)
+                await HostMetricsLifecycle.shared.clearRecentFailure(host)
                 return true
             } catch {
-                HostMetricsLifecycle.shared.recordRecentFailure(host)
+                await HostMetricsLifecycle.shared.recordRecentFailure(host)
                 if status.installed && status.running {
                     return true
                 }

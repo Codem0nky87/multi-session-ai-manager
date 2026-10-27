@@ -115,7 +115,7 @@ import Testing
         return (connection, transport)
     }
 
-    @Test func lifecycleWithUpdateClearsStateOnFailureAndCooldownWorks() async throws {
+    @Test @MainActor func lifecycleWithUpdateClearsStateOnFailureAndCooldownWorks() async throws {
         let host = Host(name: "cooldown-test", address: "198.51.100.30", username: "test", keyID: UUID(), defaultWorkdir: "")
         #expect(!HostMetricsLifecycle.shared.isUpdating(host))
         #expect(!HostMetricsLifecycle.shared.hasRecentFailure(host))
