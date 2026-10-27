@@ -488,7 +488,7 @@ overlay 1000 950 50 95% /scratch
                 patch.object(m.os, 'getloadavg', return_value=(2.0, 1.0, 0.5)), \
                 patch.object(m, 'get_unix_disks', return_value={}), \
                 patch.object(m, 'get_mac_gpu', return_value={}), \
-                patch.object(m, 'mac_cpu_activity', return_value={}), \
+                patch.object(m, 'mac_cpu_activity', return_value=(None, [])), \
                 patch.object(m.subprocess, 'check_output', side_effect=output):
             cpu = m.get_mac_metrics()['cpu']
         self.assertEqual(cpu['coreCount'], 8)
