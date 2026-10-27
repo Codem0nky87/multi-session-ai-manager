@@ -20,18 +20,35 @@ enum MSAMMetricsInstaller {
     static func install(using service: SSHService) async throws {
         _ = try await HostServiceInstaller.install(using: service)
     }
-    static func ensureInstalled(using service: SSHService, host: Host? = nil) async throws -> Bool {
+    static func ensureInstalled(using service: SSHService, host: Host? = nil, session: HerdrHostSession? = nil) async throws -> Bool {
         let status = try await HostServiceInstaller.status(using: service)
         guard !status.disabled else { return false }
-        if !status.installed || !status.running || HostServiceInstaller.isOutdated(status) {
-            if let host {
-                try await HostMetricsLifecycle.shared.begin(host)
-                defer { Task { await HostMetricsLifecycle.shared.finish(host) } }
+        let needsInstall = !status.installed || !status.running
+        let isOutdated = HostServiceInstaller.isOutdated(status)
+        if needsInstall || isOutdated {
+            guard let host else {
                 _ = try await HostServiceInstaller.install(using: service)
-            } else {
-                _ = try await HostServiceInstaller.install(using: service)
+                return true
             }
-            return true
+            if HostMetricsLifecycle.shared.isUpdating(host) {
+                return status.installed && status.running
+            }
+            if isOutdated, HostMetricsLifecycle.shared.hasRecentFailure(host) {
+                return status.installed && status.running
+            }
+            do {
+                _ = try await HostMetricsLifecycle.shared.withUpdate(host, excluding: session) {
+                    try await HostServiceInstaller.install(using: service)
+                }
+                HostMetricsLifecycle.shared.clearRecentFailure(host)
+                return true
+            } catch {
+                HostMetricsLifecycle.shared.recordRecentFailure(host)
+                if status.installed && status.running {
+                    return true
+                }
+                throw error
+            }
         }
         return true
     }

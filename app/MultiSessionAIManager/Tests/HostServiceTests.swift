@@ -115,6 +115,27 @@ import Testing
         return (connection, transport)
     }
 
+    @Test func lifecycleWithUpdateClearsStateOnFailureAndCooldownWorks() async throws {
+        let host = Host(name: "cooldown-test", address: "198.51.100.30", username: "test", keyID: UUID(), defaultWorkdir: "")
+        #expect(!HostMetricsLifecycle.shared.isUpdating(host))
+        #expect(!HostMetricsLifecycle.shared.hasRecentFailure(host))
+
+        do {
+            try await HostMetricsLifecycle.shared.withUpdate(host) {
+                #expect(HostMetricsLifecycle.shared.isUpdating(host))
+                throw MSAMMetricsInstaller.Failure.uploadFailed("Simulated network timeout")
+            }
+            Issue.record("Expected error")
+        } catch {
+            #expect(!HostMetricsLifecycle.shared.isUpdating(host), "Lock must be released on failure")
+        }
+
+        HostMetricsLifecycle.shared.recordRecentFailure(host)
+        #expect(HostMetricsLifecycle.shared.hasRecentFailure(host))
+        HostMetricsLifecycle.shared.clearRecentFailure(host)
+        #expect(!HostMetricsLifecycle.shared.hasRecentFailure(host))
+    }
+
     @Test func maintenanceReplacesOnlyMetricsChannelsAndReconnectDoesNotUpload() async throws {
         let keyStore = KeyStore(backing: InMemoryKeychain())
         let key = try keyStore.generateEd25519(label: "host-service")

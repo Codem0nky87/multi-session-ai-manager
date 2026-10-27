@@ -9,6 +9,7 @@ final class HostMetricsLifecycle {
     private struct Entry { weak var session: HerdrHostSession? }
     private var sessions: [Entry] = []
     private var updating: Set<String> = []
+    private var failureTimestamps: [String: Date] = [:]
 
     private func key(_ host: Host) -> String {
         "\(host.username)@\(host.address):\(host.port)"
@@ -21,17 +22,47 @@ final class HostMetricsLifecycle {
 
     func isUpdating(_ host: Host) -> Bool { updating.contains(key(host)) }
 
-    func begin(_ host: Host) async throws {
+    func hasRecentFailure(_ host: Host, within cooldown: TimeInterval = 300) -> Bool {
+        guard let timestamp = failureTimestamps[key(host)] else { return false }
+        return Date().timeIntervalSince(timestamp) < cooldown
+    }
+
+    func recordRecentFailure(_ host: Host) {
+        failureTimestamps[key(host)] = Date()
+    }
+
+    func clearRecentFailure(_ host: Host) {
+        failureTimestamps.removeValue(forKey: key(host))
+    }
+
+    func begin(_ host: Host, excluding: HerdrHostSession? = nil) async throws {
         let key = key(host)
         guard updating.insert(key).inserted else {
             throw MSAMMetricsInstaller.Failure.uploadFailed("Another metrics operation is already in progress.")
         }
-        for session in matching(host) { await session.pauseMetricsStream() }
+        for session in matching(host) where session !== excluding {
+            await session.pauseMetricsStream()
+        }
     }
 
-    func finish(_ host: Host) async {
-        updating.remove(key(host))
-        for session in matching(host) { await session.ensureMetricsStream() }
+    func finish(_ host: Host, excluding: HerdrHostSession? = nil) async {
+        let key = key(host)
+        updating.remove(key)
+        for session in matching(host) where session !== excluding {
+            await session.ensureMetricsStream()
+        }
+    }
+
+    func withUpdate<T>(_ host: Host, excluding: HerdrHostSession? = nil, operation: () async throws -> T) async throws -> T {
+        try await begin(host, excluding: excluding)
+        do {
+            let result = try await operation()
+            await finish(host, excluding: excluding)
+            return result
+        } catch {
+            await finish(host, excluding: excluding)
+            throw error
+        }
     }
 
     private func matching(_ host: Host) -> [HerdrHostSession] {
@@ -78,21 +109,17 @@ final class HostServiceManager {
         message = nil
         defer { isBusy = false }
         do {
-            try await HostMetricsLifecycle.shared.begin(connection.host)
-            do {
+            try await HostMetricsLifecycle.shared.withUpdate(connection.host) {
                 if action == "install" {
                     record(try await HostServiceInstaller.install(using: service))
                 } else {
                     record(try await HostServiceInstaller.management(action, using: service))
                 }
-                message = action == "install"
-                    ? "Host service updated. The old updater service and metrics collectors were removed."
-                    : "Host service: \(action) completed."
-            } catch {
-                await HostMetricsLifecycle.shared.finish(connection.host)
-                throw error
             }
-            await HostMetricsLifecycle.shared.finish(connection.host)
+            HostMetricsLifecycle.shared.clearRecentFailure(connection.host)
+            message = action == "install"
+                ? "Host service updated. The old updater service and metrics collectors were removed."
+                : "Host service: \(action) completed."
         } catch {
             installation = nil
             self.error = error.localizedDescription

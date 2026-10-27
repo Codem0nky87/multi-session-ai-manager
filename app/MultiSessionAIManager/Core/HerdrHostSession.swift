@@ -396,7 +396,7 @@ final class HerdrHostSession {
         sessionGeneration: UInt64
     ) async {
         do {
-            guard try await MSAMMetricsInstaller.ensureInstalled(using: service, host: connection.host) else { return }
+            guard try await MSAMMetricsInstaller.ensureInstalled(using: service, host: connection.host, session: self) else { return }
             guard metricsGeneration == metricsAttemptGeneration,
                   !HostMetricsLifecycle.shared.isUpdating(connection.host),
                   !Task.isCancelled else { return }
