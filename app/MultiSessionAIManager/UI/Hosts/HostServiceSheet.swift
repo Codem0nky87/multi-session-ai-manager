@@ -42,7 +42,6 @@ struct HostServiceSheet: View {
                             let friendly: [(String, String)] = [
                                 ("service", "Service"),
                                 ("metrics", "Metrics collector"),
-                                ("metrics_windows", "Metrics collector (Windows)"),
                                 ("updater", "Updater protocol"),
                             ]
                             ForEach(friendly.filter { components[$0.0] != nil }, id: \.0) { key, label in

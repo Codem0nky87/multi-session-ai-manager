@@ -26,8 +26,8 @@ WINDOWS_NETWORK = None
 # still tell two builds apart. Read once at startup: the service is replaced
 # (and restarted) when files change, never hot-swapped.
 COMPONENT_VERSION_SOURCES = {
-    'metrics': ('msam-metrics.py', r"^METRICS_VERSION = ['\"]([^'\"]+)['\"]"),
-    'metrics_windows': ('msam-metrics.ps1', r'^\$MetricsVersion\s*=\s*[\'"]([^\'"]+)[\'"]'),
+    'metrics': ('msam-metrics.ps1', r'^\$MetricsVersion\s*=\s*[\'"]([^\'"]+)[\'"]') if os.name == 'nt'
+               else ('msam-metrics.py', r"^METRICS_VERSION = ['\"]([^'\"]+)['\"]"),
     'updater': ('msam-agent-updater.sh', r'^PROTOCOL_VERSION=(\S+)'),
 }
 COMPONENT_DIGEST_FILES = ['msam-host-software.py', 'msam-metrics-manage.py',
@@ -39,7 +39,13 @@ def component_versions():
     import hashlib
     import re
     versions = {'service': VERSION}
-    for name, (filename, pattern) in COMPONENT_VERSION_SOURCES.items():
+    sources = dict(COMPONENT_VERSION_SOURCES)
+    sources['metrics'] = (
+        ('msam-metrics.ps1', r'^\$MetricsVersion\s*=\s*[\'"]([^\'"]+)[\'"]')
+        if os.name == 'nt'
+        else ('msam-metrics.py', r"^METRICS_VERSION = ['\"]([^'\"]+)['\"]")
+    )
+    for name, (filename, pattern) in sources.items():
         try:
             match = re.search(pattern, (ROOT / filename).read_text(encoding='utf-8'), re.MULTILINE)
         except OSError:
