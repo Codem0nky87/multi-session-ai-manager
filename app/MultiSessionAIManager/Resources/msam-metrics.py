@@ -10,7 +10,7 @@ import re
 import shutil
 from pathlib import Path
 
-METRICS_VERSION = "2.3.0"
+METRICS_VERSION = "2.4.0"
 
 _mac_network_previous = None
 _mac_cpu_previous = None
@@ -457,19 +457,42 @@ def mac_cpu_ticks():
         return []
 
 
-def mac_core_usage():
+def mac_cpu_activity():
     global _mac_cpu_previous
     current = mac_cpu_ticks()
     previous, _mac_cpu_previous = _mac_cpu_previous, current
     if not previous or len(previous) != len(current):
-        return []
+        return None, []
     values = []
+    tot_user = tot_sys = tot_idle = tot_nice = 0
     for before, after in zip(previous, current):
         delta = [b - a for a, b in zip(before, after)]
-        if any(v < 0 for v in delta) or sum(delta) <= 0:
-            return []
-        values.append(100.0 * (sum(delta) - delta[2]) / sum(delta))
-    return values
+        if any(v < 0 for v in delta):
+            return None, []
+        s = sum(delta)
+        if s <= 0:
+            values.append(0.0)
+        else:
+            values.append(100.0 * (s - delta[2]) / s)
+            tot_user += delta[0]
+            tot_sys += delta[1]
+            tot_idle += delta[2]
+            tot_nice += delta[3]
+    total = tot_user + tot_sys + tot_idle + tot_nice
+    if total <= 0:
+        return None, values
+    agg = {
+        'utilization': 100.0 * (total - tot_idle) / total,
+        'userUsage': 100.0 * (tot_user + tot_nice) / total,
+        'systemUsage': 100.0 * tot_sys / total,
+        'idleUsage': 100.0 * tot_idle / total,
+    }
+    return agg, values
+
+
+def mac_core_usage():
+    _, per_core = mac_cpu_activity()
+    return per_core
 
 
 def mac_network_counters(output):
@@ -485,7 +508,7 @@ def mac_network_counters(output):
     for line in lines[1:]:
         fields = line.split()
         try:
-            name = fields[0]
+            name = fields[0].rstrip('*')
             if re.fullmatch(r'en\d+', name) and fields[network].startswith('<Link#'):
                 counters[name] = (int(fields[rx]), int(fields[tx]))
         except (IndexError, ValueError):
@@ -535,6 +558,12 @@ def get_mac_metrics():
             "temperature": 0.0,
             "memoryUsed": 0.0,
             "memoryTotal": 0.0
+        },
+        "network": {
+            "downloadSpeed": 0.0,
+            "uploadSpeed": 0.0,
+            "downloadString": format_bytes(0),
+            "uploadString": format_bytes(0)
         }
     }
     
@@ -639,24 +668,26 @@ def get_mac_metrics():
     except Exception:
         pass
 
-    try:
-        # CPU & Mem Usage via top
-        top_out = subprocess.check_output(['top', '-l', '1', '-n', '0']).decode('utf-8')
-        for line in top_out.split('\n'):
-            if line.startswith('CPU usage:'):
-                parts = line.split(',')
-                user = float(parts[0].split(':')[1].replace('% user', '').strip())
-                sys_ = float(parts[1].replace('% sys', '').strip())
-                idle = float(parts[2].replace('% idle', '').strip())
-                metrics["cpu"]["userUsage"] = user
-                metrics["cpu"]["systemUsage"] = sys_
-                metrics["cpu"]["idleUsage"] = idle
-                metrics["cpu"]["utilization"] = user + sys_
-            elif line.startswith('PhysMem:'):
-                # PhysMem: 16G used (8G wired), 1G unused.
-                pass # Can be parsed for better mem usage
-    except Exception:
-        pass
+    agg, per_core = mac_cpu_activity()
+    metrics['cpu']['perCoreUsage'] = per_core
+    if agg is not None:
+        metrics['cpu'].update(agg)
+    else:
+        try:
+            # CPU Usage via top fallback when Mach ticks delta is not available (e.g. first sample or tests)
+            top_out = subprocess.check_output(['top', '-l', '1', '-n', '0']).decode('utf-8')
+            for line in top_out.split('\n'):
+                if line.startswith('CPU usage:'):
+                    parts = line.split(',')
+                    user = float(parts[0].split(':')[1].replace('% user', '').strip())
+                    sys_ = float(parts[1].replace('% sys', '').strip())
+                    idle = float(parts[2].replace('% idle', '').strip())
+                    metrics["cpu"]["userUsage"] = user
+                    metrics["cpu"]["systemUsage"] = sys_
+                    metrics["cpu"]["idleUsage"] = idle
+                    metrics["cpu"]["utilization"] = user + sys_
+        except Exception:
+            pass
         
     try:
         uptime_out = subprocess.check_output(['uptime']).decode('utf-8')
@@ -668,10 +699,9 @@ def get_mac_metrics():
     except Exception:
         pass
 
-    metrics['cpu']['perCoreUsage'] = mac_core_usage()
     global _mac_network_previous
     try:
-        output = subprocess.check_output(['netstat', '-ib'], stderr=subprocess.DEVNULL, timeout=2).decode('utf-8')
+        output = subprocess.check_output(['netstat', '-ibn'], stderr=subprocess.DEVNULL, timeout=2).decode('utf-8')
         counters, now = mac_network_counters(output), time.monotonic()
         if _mac_network_previous is not None:
             previous, then = _mac_network_previous
