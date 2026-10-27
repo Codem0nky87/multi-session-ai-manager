@@ -182,6 +182,55 @@ class CollectorTests(unittest.TestCase):
         self.write('sys/class/hwmon/hwmon2/temp2_input', '49000')
         self.assertEqual(m.linux_temperature(str(self.root / 'sys')), 49.0)
 
+    def test_temperature_supports_arm_and_acpitz_fallback(self):
+        # On ARM / DGX Spark systems without x86_pkg_temp or k10temp, acpitz is the SoC thermal zone.
+        for i, temp in [(0, 42800), (1, 40000), (2, 43600)]:
+            self.write(f'sys/class/thermal/thermal_zone{i}/type', 'acpitz')
+            self.write(f'sys/class/thermal/thermal_zone{i}/temp', str(temp))
+        self.assertEqual(m.linux_temperature(str(self.root / 'sys')), 43.6)
+
+        # Primary sensors (e.g. cpu_thermal or coretemp) take precedence when available.
+        self.write('sys/class/thermal/thermal_zone3/type', 'cpu-thermal')
+        self.write('sys/class/thermal/thermal_zone3/temp', '52000')
+        self.assertEqual(m.linux_temperature(str(self.root / 'sys')), 52.0)
+
+    def test_linux_gpu_discrete_parsing(self):
+        output = b"45, 62, 8192, 16384, NVIDIA GeForce RTX 4090\n"
+        with patch.object(m.subprocess, 'check_output', return_value=output):
+            gpu = m.get_linux_gpu()
+        self.assertEqual(gpu['modelName'], 'NVIDIA GeForce RTX 4090')
+        self.assertEqual(gpu['usagePercent'], 45.0)
+        self.assertEqual(gpu['temperature'], 62.0)
+        self.assertEqual(gpu['memoryUsed'], 8192.0)
+        self.assertEqual(gpu['memoryTotal'], 16384.0)
+        self.assertTrue(gpu['utilizationAvailable'])
+
+    def test_linux_gpu_unified_memory_and_compute_apps(self):
+        # NVIDIA GB10 / Blackwell / Grace unified memory returns [N/A] for device VRAM.
+        smi_gpu = b"96, 70, [N/A], [N/A], NVIDIA GB10\n"
+        smi_apps = b"4196\n936\n1290\n31066\n"
+        def mock_smi(args, **kwargs):
+            if any('query-gpu' in a for a in args):
+                return smi_gpu
+            if any('query-compute-apps' in a for a in args):
+                return smi_apps
+            raise subprocess.CalledProcessError(1, args)
+        with patch.object(m.subprocess, 'check_output', side_effect=mock_smi):
+            gpu = m.get_linux_gpu()
+        self.assertEqual(gpu['modelName'], 'NVIDIA GB10')
+        self.assertEqual(gpu['usagePercent'], 96.0)
+        self.assertEqual(gpu['temperature'], 70.0)
+        self.assertEqual(gpu['memoryUsed'], 37488.0)
+        self.assertEqual(gpu['memoryTotal'], 0.0)
+        self.assertTrue(gpu['utilizationAvailable'])
+
+    def test_linux_gpu_handles_failure_and_missing_tool(self):
+        with patch.object(m.subprocess, 'check_output', side_effect=FileNotFoundError):
+            gpu = m.get_linux_gpu()
+        self.assertEqual(gpu['modelName'], '')
+        self.assertFalse(gpu['utilizationAvailable'])
+        self.assertEqual(gpu['usagePercent'], 0.0)
+
     def test_memory_top_processes_rank_rss_not_cpu_with_pid_and_safe_name(self):
         for pid, rss, ticks in [(11, 1024, 9000), (12, 8192, 0), (13, 4096, 100)]:
             self.stat(pid, ticks)

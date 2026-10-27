@@ -34,6 +34,30 @@ enum HostServiceInstaller {
         return try Data(contentsOf: url)
     }
 
+    static func currentBundleManifest() -> [String: String]? {
+        var manifest: [String: String] = [:]
+        for filename in resources {
+            guard let data = try? resource(filename) else { return nil }
+            manifest[filename] = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        }
+        return manifest
+    }
+
+    static func isManifestOutdated(manifest: [String: String]?, expected: [String: String]?) -> Bool {
+        guard let expected, !expected.isEmpty else { return false }
+        guard let manifest else { return true }
+        for (filename, hash) in expected {
+            if manifest[filename] != hash {
+                return true
+            }
+        }
+        return false
+    }
+
+    static func isOutdated(_ status: Status) -> Bool {
+        isManifestOutdated(manifest: status.manifest, expected: currentBundleManifest())
+    }
+
     static func powershell(_ script: String) -> String {
         WindowsShell.command(script)
     }

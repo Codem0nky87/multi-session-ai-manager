@@ -20,8 +20,19 @@ enum MSAMMetricsInstaller {
     static func install(using service: SSHService) async throws {
         _ = try await HostServiceInstaller.install(using: service)
     }
-    static func ensureInstalled(using service: SSHService) async throws -> Bool {
+    static func ensureInstalled(using service: SSHService, host: Host? = nil) async throws -> Bool {
         let status = try await HostServiceInstaller.status(using: service)
-        return status.installed && status.running && !status.disabled
+        guard !status.disabled else { return false }
+        if !status.installed || !status.running || HostServiceInstaller.isOutdated(status) {
+            if let host {
+                try await HostMetricsLifecycle.shared.begin(host)
+                defer { Task { await HostMetricsLifecycle.shared.finish(host) } }
+                _ = try await HostServiceInstaller.install(using: service)
+            } else {
+                _ = try await HostServiceInstaller.install(using: service)
+            }
+            return true
+        }
+        return true
     }
 }

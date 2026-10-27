@@ -10,7 +10,7 @@ import re
 import shutil
 from pathlib import Path
 
-METRICS_VERSION = "2.4.0"
+METRICS_VERSION = "2.4.1"
 
 _mac_network_previous = None
 _mac_cpu_previous = None
@@ -914,33 +914,48 @@ class LinuxSampler:
 
 def linux_temperature(sys_root='/sys'):
     root = Path(sys_root)
-    values = []
+    primary_values = []
+    fallback_values = []
     def read_temp(path):
         try:
             value = float(path.read_text().strip()) / 1000.0
             return value if math.isfinite(value) and 0 < value < 150 else None
         except (OSError, ValueError):
             return None
+
+    primary_zone_types = {'x86_pkg_temp', 'cpu-thermal', 'cpu_thermal', 'soc-thermal', 'soc_thermal', 'cpu_temp'}
+    primary_hwmon_names = {'coretemp', 'k10temp', 'zenpower', 'cpu_thermal', 'soc_thermal'}
+
     for zone in root.glob('class/thermal/thermal_zone*'):
         try:
-            if (zone / 'type').read_text().strip() != 'x86_pkg_temp':
-                continue
-            value = read_temp(zone / 'temp')
-            if value is not None:
-                values.append(value)
+            z_type = (zone / 'type').read_text().strip().lower()
+            val = read_temp(zone / 'temp')
+            if val is not None:
+                if z_type in primary_zone_types:
+                    primary_values.append(val)
+                elif z_type == 'acpitz':
+                    fallback_values.append(val)
         except OSError:
             continue
+
     for monitor in root.glob('class/hwmon/hwmon*'):
         try:
-            if (monitor / 'name').read_text().strip() not in ('coretemp', 'k10temp'):
-                continue
+            m_name = (monitor / 'name').read_text().strip().lower()
             for sensor in monitor.glob('temp*_input'):
-                value = read_temp(sensor)
-                if value is not None:
-                    values.append(value)
+                val = read_temp(sensor)
+                if val is not None:
+                    if m_name in primary_hwmon_names:
+                        primary_values.append(val)
+                    elif m_name == 'acpitz':
+                        fallback_values.append(val)
         except OSError:
             continue
-    return max(values) if values else 0.0
+
+    if primary_values:
+        return max(primary_values)
+    if fallback_values:
+        return max(fallback_values)
+    return 0.0
 
 
 def linux_memory_processes(proc_root='/proc', limit=10):
@@ -1001,6 +1016,61 @@ def linux_memory(proc_root='/proc'):
 _linux_sampler = None
 
 
+def get_linux_gpu():
+    gpu = {'usagePercent': 0.0, 'modelName': '', 'cores': 0,
+           'temperature': 0.0, 'memoryUsed': 0.0, 'memoryTotal': 0.0,
+           'utilizationAvailable': False}
+    try:
+        output = subprocess.check_output([
+            'nvidia-smi', '--query-gpu=utilization.gpu,temperature.gpu,memory.used,memory.total,name',
+            '--format=csv,noheader,nounits'], stderr=subprocess.DEVNULL, timeout=1).decode('utf-8')
+        lines = [line.strip() for line in output.splitlines() if line.strip()]
+        if not lines:
+            return gpu
+        parts = [p.strip() for p in lines[0].split(',', 4)]
+        if len(parts) < 5:
+            return gpu
+
+        def safe_float(v, default=0.0):
+            if v in ('[N/A]', 'N/A', '[Not Supported]', 'Not Supported', ''):
+                return default
+            try:
+                return float(v)
+            except ValueError:
+                return default
+
+        util_str = parts[0]
+        temp_str = parts[1]
+        mem_used_str = parts[2]
+        mem_total_str = parts[3]
+        model_name = parts[4]
+
+        gpu['modelName'] = model_name
+        if util_str not in ('[N/A]', 'N/A', '[Not Supported]', 'Not Supported', ''):
+            gpu['usagePercent'] = safe_float(util_str)
+            gpu['utilizationAvailable'] = True
+
+        gpu['temperature'] = safe_float(temp_str)
+        gpu['memoryUsed'] = safe_float(mem_used_str)
+        gpu['memoryTotal'] = safe_float(mem_total_str)
+
+        # On unified memory systems (e.g. Grace Blackwell GB10), memory.used is [N/A].
+        # Sum allocated compute memory from running processes if memoryUsed is 0.
+        if gpu['memoryUsed'] == 0.0:
+            try:
+                app_out = subprocess.check_output([
+                    'nvidia-smi', '--query-compute-apps=used_gpu_memory',
+                    '--format=csv,noheader,nounits'], stderr=subprocess.DEVNULL, timeout=1).decode('utf-8')
+                total_app_mem = sum(safe_float(line.strip()) for line in app_out.splitlines() if line.strip())
+                if total_app_mem > 0:
+                    gpu['memoryUsed'] = total_app_mem
+            except (OSError, subprocess.SubprocessError):
+                pass
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+        pass
+    return gpu
+
+
 def get_linux_metrics():
     global _linux_sampler
     if _linux_sampler is None:
@@ -1008,9 +1078,7 @@ def get_linux_metrics():
     cpu, network = _linux_sampler.sample()
     metrics = {'cpu': dict(cpu_defaults(), **cpu), 'memory': linux_memory(),
                'disk': get_unix_disks(), 'network': network,
-               'gpu': {'usagePercent': 0.0, 'modelName': '', 'cores': 0,
-                       'temperature': 0.0, 'memoryUsed': 0.0, 'memoryTotal': 0.0,
-                       'utilizationAvailable': False}}
+               'gpu': get_linux_gpu()}
     try:
         load1, load5, load15 = os.getloadavg()
         metrics['cpu'].update(loadAverage1m=load1, loadAverage5m=load5, loadAverage15m=load15,
@@ -1022,16 +1090,6 @@ def get_linux_metrics():
         seconds = float(Path('/proc/uptime').read_text().split()[0])
         metrics['cpu']['uptime'] = f'{int(seconds // 86400)} days, {int(seconds % 86400 // 3600)} hours'
     except (OSError, ValueError, IndexError):
-        pass
-    try:
-        output = subprocess.check_output([
-            'nvidia-smi', '--query-gpu=utilization.gpu,temperature.gpu,memory.used,memory.total,name',
-            '--format=csv,noheader,nounits'], stderr=subprocess.DEVNULL, timeout=1).decode('utf-8')
-        parts = output.splitlines()[0].split(',', 4)
-        metrics['gpu'].update(usagePercent=float(parts[0]), temperature=float(parts[1]),
-                              memoryUsed=float(parts[2]), memoryTotal=float(parts[3]), modelName=parts[4].strip(),
-                              utilizationAvailable=True)
-    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
         pass
     return metrics
 

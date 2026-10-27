@@ -52,7 +52,7 @@ class HostAgentTests(unittest.TestCase):
         metrics = (RESOURCES / 'msam-metrics.py').read_text()
         self.assertEqual(components['metrics'],
                          re.search(r"^METRICS_VERSION = ['\"]([^'\"]+)['\"]", metrics, re.MULTILINE).group(1))
-        self.assertEqual(components['metrics'], '2.4.0')
+        self.assertEqual(components['metrics'], '2.4.1')
         self.assertNotIn('metrics_windows', components, "metrics_windows must be unified under metrics")
         self.assertRegex(components['updater'], r'^\d+$')
         # Digest-only components are short hex strings.
@@ -61,10 +61,10 @@ class HostAgentTests(unittest.TestCase):
         # Windows platform resolves metrics version from msam-metrics.ps1
         metrics_ps1 = (RESOURCES / 'msam-metrics.ps1').read_text()
         ps1_version = re.search(r'^\$MetricsVersion\s*=\s*[\'"]([^\'"]+)[\'"]', metrics_ps1, re.MULTILINE).group(1)
-        self.assertEqual(ps1_version, '2.4.0', "Windows metrics collector version must match POSIX (2.4.0)")
+        self.assertEqual(ps1_version, '2.4.1', "Windows metrics collector version must match POSIX (2.4.1)")
         with patch('os.name', 'nt'):
             win_components = self.agent.component_versions()
-            self.assertEqual(win_components['metrics'], '2.4.0')
+            self.assertEqual(win_components['metrics'], '2.4.1')
             self.assertNotIn('metrics_windows', win_components)
 
     def test_status_command_output_carries_components(self):

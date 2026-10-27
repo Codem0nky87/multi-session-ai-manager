@@ -23,6 +23,18 @@ import Testing
         #expect(legacy.components == nil)
     }
 
+    @Test func manifestComparisonIdentifiesOutdatedHostScripts() throws {
+        let expected = ["msam-metrics.py": "hash_v2", "msam-host-agent.py": "hash_v1"]
+        let matching = ["msam-metrics.py": "hash_v2", "msam-host-agent.py": "hash_v1"]
+        let outdated = ["msam-metrics.py": "hash_v1", "msam-host-agent.py": "hash_v1"]
+
+        #expect(!HostServiceInstaller.isManifestOutdated(manifest: matching, expected: expected))
+        #expect(HostServiceInstaller.isManifestOutdated(manifest: outdated, expected: expected))
+        #expect(HostServiceInstaller.isManifestOutdated(manifest: nil, expected: expected))
+        #expect(!HostServiceInstaller.isManifestOutdated(manifest: matching, expected: nil))
+        #expect(!HostServiceInstaller.isManifestOutdated(manifest: matching, expected: [:]))
+    }
+
     @Test func windowsCommandIsEncodedAndPreservesArguments() throws {
         let command = HostServiceInstaller.python("print('ok')", arguments: ["C:\\Users\\a's folder\\file"], isWindows: true)
         let encoded = try #require(command.split(separator: " ").last)
