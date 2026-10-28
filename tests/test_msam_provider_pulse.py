@@ -188,10 +188,50 @@ class ProviderPulseTests(unittest.TestCase):
             json.dumps({"type": "assistant", "message": "Encountered compiler deadlock in build_app and requires full restructure"}) + "\n"
         )
 
-        recommendation = self.pulse_module.analyze_session_task(str(transcript_file), target_provider="codex")
-        self.assertEqual(recommendation["model"], "gpt-6.1-sol")
-        self.assertEqual(recommendation["effort"], "high")
-        self.assertIn("summary", recommendation)
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = FileNotFoundError()
+            recommendation = self.pulse_module.analyze_session_task(str(transcript_file), target_provider="codex")
+            self.assertEqual(recommendation["model"], "gpt-6.1-sol")
+            self.assertEqual(recommendation["effort"], "high")
+            self.assertIn("summary", recommendation)
+
+    def test_analyze_session_task_invokes_provider_cli(self):
+        transcript_file = self.tmp_path / "test-transcript.jsonl"
+        transcript_file.write_text(
+            json.dumps({"type": "user", "message": "Fix login modal rendering issue"}) + "\n"
+        )
+
+        cli_json = json.dumps({
+            "model": "gemini-2.5-pro",
+            "effort": "medium",
+            "summary": "Fix UI rendering glitch in modal"
+        })
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout=cli_json, stderr="")
+            res = self.pulse_module.analyze_session_task(str(transcript_file), target_provider="agy", home_dir=self.tmp_path)
+            self.assertEqual(res["model"], "gemini-2.5-pro")
+            self.assertEqual(res["effort"], "medium")
+            self.assertEqual(res["summary"], "Fix UI rendering glitch in modal")
+            self.assertTrue(mock_run.called)
+            args, kwargs = mock_run.call_args
+            cmd_str = args[0] if isinstance(args[0], str) else " ".join(args[0])
+            self.assertIn("agy", cmd_str)
+
+    def test_analyze_session_task_falls_back_when_cli_fails(self):
+        transcript_file = self.tmp_path / "test-transcript.jsonl"
+        transcript_file.write_text(
+            json.dumps({"type": "user", "message": "Investigate simple typo in help text"}) + "\n"
+        )
+
+        with patch("subprocess.run") as mock_run:
+            # Non-zero exit code
+            mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="command failed")
+            res = self.pulse_module.analyze_session_task(str(transcript_file), target_provider="codex", home_dir=self.tmp_path)
+            self.assertEqual(res["model"], "gpt-6.1-sol")
+            self.assertEqual(res["effort"], "medium")
+            self.assertFalse(res["is_complex"])
+
 
 
 if __name__ == '__main__':

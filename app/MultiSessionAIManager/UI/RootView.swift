@@ -107,6 +107,8 @@ struct RootView: View {
     @State private var showingHardwareMetricsSheet = false
     @State private var showingProviderPulseSheet = false
     @State private var rolloverTargetTerminal: TerminalAgentSession? = nil
+    @State private var activeAILoaderState: AILoaderState? = nil
+    @State private var activeRolloverTask: Task<Void, Never>? = nil
     /// The downloaded file awaiting the user, if any. Set by the watch pipeline.
     @State private var incomingFile: IncomingFile?
     @State private var isFetchingIncoming = false
@@ -426,29 +428,102 @@ struct RootView: View {
                 SessionRolloverSheet(
                     terminal: term,
                     availableProviders: session.metrics.pulse.activeProviders,
-                    service: session.connection.provisioningCommandRunner,
-                    onExecuteRollover: { provider, command, targetTerm in
-                        handleSessionRollover(provider: provider, command: command, terminal: targetTerm)
+                    onSelectRollover: { provider, autoApprove, targetTerm in
+                        handleSessionRollover(provider: provider, autoApprove: autoApprove, terminal: targetTerm)
                     }
                 )
             }
         }
+        .overlay {
+            if let loaderState = activeAILoaderState {
+                AILoaderModalView(state: loaderState) {
+                    activeRolloverTask?.cancel()
+                    activeRolloverTask = nil
+                    activeAILoaderState = nil
+                }
+            }
+        }
     }
 
-    private func handleSessionRollover(provider: String, command: String, terminal: TerminalAgentSession) {
+    private func handleSessionRollover(provider: String, autoApprove: Bool, terminal: TerminalAgentSession) {
         guard let selectedTab else { return }
-        let currentTabID = selectedTab.id
-        let newTab = tabStore.open(hostID: selectedTab.hostID, sessionName: nil, insertAfter: currentTabID)
-        toastCenter.success("Rolled over to \(provider.capitalized) in adjacent tab")
+        let session = tabs.session(for: selectedTab)
+        guard let service = session.connection.provisioningCommandRunner else {
+            toastCenter.warning("SSH connection not available to execute rollover")
+            return
+        }
 
-        Task {
-            let session = tabs.session(for: newTab)
-            try? await Task.sleep(nanoseconds: 1_200_000_000)
-            session.terminal.feedInputToPTY(Array((command + "\n").utf8))
-            if let service = tabs.session(for: selectedTab).connection.provisioningCommandRunner {
-                _ = try? await service.run("herdr pane close \(terminal.paneID)", timeout: .seconds(5), outputLimit: 1024)
+        activeAILoaderState = AILoaderState(
+            provider: provider,
+            terminal: terminal,
+            statusMessage: "Analyzing previous task on host…",
+            detailedMessage: "Evaluating transcript for optimal model and effort"
+        )
+
+        activeRolloverTask = Task {
+            var model = "gpt-6.1-sol"
+            var effort = "high"
+
+            // Phase 1: Background analysis turn on host
+            let transcriptPath = terminal.transcriptPath ?? ""
+            let analyzeCmd = HerdrSessionRollover.makeAnalysisCommand(transcriptPath: transcriptPath, provider: provider)
+            if let output = try? await service.run(analyzeCmd, timeout: .seconds(25), outputLimit: 65536) {
+                if let result = HerdrSessionRollover.parseAnalysisResult(json: output.stdoutString) {
+                    model = result.model
+                    effort = result.effort
+                }
             }
-            tabStore.close(currentTabID)
+
+            guard !Task.isCancelled else { return }
+
+            await MainActor.run {
+                activeAILoaderState?.statusMessage = "Recommended: \(model) (\(effort) effort)"
+                activeAILoaderState?.detailedMessage = "Creating adjacent Herdr tab on host…"
+            }
+
+            // Phase 2: Create adjacent tab in Herdr on host
+            let workspaceID = HerdrSessionRollover.extractWorkspaceID(from: terminal.tabID)
+            let tabLabel = "\(provider.capitalized) - Resume"
+            let createCmd = HerdrSessionRollover.makeCreateTabCommand(
+                workspaceID: workspaceID,
+                cwd: terminal.project,
+                label: tabLabel
+            )
+
+            var newPaneID: String? = nil
+            if let createOutput = try? await service.run(createCmd, timeout: .seconds(10), outputLimit: 16384) {
+                if let ids = HerdrSessionRollover.parseCreatedTabResult(json: createOutput.stdoutString) {
+                    newPaneID = ids.paneID
+                }
+            }
+
+            guard !Task.isCancelled else { return }
+
+            // Phase 3: Launch provider agent inside the new Herdr pane on the host
+            let launchCmd = HerdrSessionRollover.makeLaunchCommand(
+                provider: provider,
+                model: model,
+                effort: effort,
+                autoApprove: autoApprove,
+                transcriptPath: terminal.transcriptPath,
+                project: terminal.project
+            )
+
+            if let targetPane = newPaneID, !targetPane.isEmpty {
+                let runCmd = HerdrSessionRollover.makeRunCommand(paneID: targetPane, command: launchCmd)
+                _ = try? await service.run(runCmd, timeout: .seconds(10), outputLimit: 1024)
+            } else {
+                let runCmd = "\(HerdrSessionRollover.pathPrefix); herdr pane run --current \(POSIXShell.quote(launchCmd))"
+                _ = try? await service.run(runCmd, timeout: .seconds(10), outputLimit: 1024)
+            }
+
+            try? await Task.sleep(nanoseconds: 600_000_000)
+
+            await MainActor.run {
+                activeAILoaderState = nil
+                activeRolloverTask = nil
+                toastCenter.success("Relaunched with \(provider.capitalized) (\(model)) on host")
+            }
         }
     }
 

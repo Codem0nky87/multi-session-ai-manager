@@ -3,25 +3,20 @@ import SwiftUI
 struct SessionRolloverSheet: View {
     var terminal: TerminalAgentSession
     var availableProviders: [ProviderQuota]
-    var service: SSHService?
-    var onExecuteRollover: (String, String, TerminalAgentSession) -> Void
+    var onSelectRollover: (String, Bool, TerminalAgentSession) -> Void
     @Environment(\.dismiss) private var dismiss
 
     @State private var selectedProvider: String = "codex"
     @State private var autoApprove: Bool = true
-    @State private var isAnalyzing: Bool = false
-    @State private var analysisStatus: String? = nil
 
     init(
         terminal: TerminalAgentSession,
         availableProviders: [ProviderQuota],
-        service: SSHService? = nil,
-        onExecuteRollover: @escaping (String, String, TerminalAgentSession) -> Void
+        onSelectRollover: @escaping (String, Bool, TerminalAgentSession) -> Void
     ) {
         self.terminal = terminal
         self.availableProviders = availableProviders
-        self.service = service
-        self.onExecuteRollover = onExecuteRollover
+        self.onSelectRollover = onSelectRollover
 
         // Pre-select least loaded provider different from source
         let candidates = availableProviders.filter {
@@ -129,40 +124,20 @@ struct SessionRolloverSheet: View {
 
                 Spacer()
 
-                if let status = analysisStatus {
-                    HStack(spacing: 8) {
-                        ProgressView()
-                            .tint(HerdrTheme.accent)
-                        Text(status)
-                            .font(HerdrTheme.mono(.caption))
-                            .foregroundStyle(HerdrTheme.accent)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .center)
-                }
-
                 Button {
                     executeRollover()
                 } label: {
                     HStack {
                         Spacer()
-                        if isAnalyzing {
-                            ProgressView()
-                                .tint(Color.black)
-                            Text("Analyzing Task…")
-                                .font(HerdrTheme.mono(.body, weight: .bold))
-                                .foregroundStyle(Color.black)
-                        } else {
-                            Text("Continue in New Tab 🚀")
-                                .font(HerdrTheme.mono(.body, weight: .bold))
-                                .foregroundStyle(Color.black)
-                        }
+                        Text("Resume Task with \(providerDisplayName) 🚀")
+                            .font(HerdrTheme.mono(.body, weight: .bold))
+                            .foregroundStyle(Color.black)
                         Spacer()
                     }
                     .padding()
                     .background(Capsule().fill(HerdrTheme.accent))
                 }
                 .buttonStyle(.plain)
-                .disabled(isAnalyzing)
             }
             .padding()
             .background(HerdrTheme.background)
@@ -172,11 +147,19 @@ struct SessionRolloverSheet: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
                         .foregroundStyle(HerdrTheme.accent)
-                        .disabled(isAnalyzing)
                 }
             }
         }
         .presentationDetents([.medium, .large])
+    }
+
+    private var providerDisplayName: String {
+        let p = selectedProvider.lowercased()
+        if p.contains("claude") { return "Claude" }
+        if p.contains("codex") { return "Codex" }
+        if p.contains("anti") || p.contains("agy") { return "Antigravity" }
+        if p.contains("hermes") { return "Hermes" }
+        return selectedProvider.capitalized
     }
 
     private func permissionFlagDescription(for provider: String) -> String {
@@ -188,53 +171,7 @@ struct SessionRolloverSheet: View {
     }
 
     private func executeRollover() {
-        guard !isAnalyzing else { return }
-        isAnalyzing = true
-        analysisStatus = "Analyzing previous task in background…"
-
-        Task {
-            var model = "gpt-6.1-sol"
-            var effort = "high"
-
-            // Hidden analysis session on host
-            if let service {
-                let transcriptPath = terminal.transcriptPath ?? ""
-                let analyzeCmd = "python3 \"$HOME/.local/libexec/msam-host-agent/current/msam-host-agent.py\" analyze-task \"\(transcriptPath)\" \"\(selectedProvider)\""
-                if let output = try? await service.run(analyzeCmd, timeout: .seconds(10), outputLimit: 65536),
-                   let data = output.stdoutString.data(using: .utf8),
-                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                    if let m = json["model"] as? String { model = m }
-                    if let e = json["effort"] as? String { effort = e }
-                }
-            }
-
-            // Construct continuation command
-            let p = selectedProvider.lowercased()
-            let transcriptArg = terminal.transcriptPath.map { " at \($0)" } ?? ""
-            let taskPrompt = "Continue previous task from session\(transcriptArg) in \(terminal.project). Inspect prior turns and proceed."
-            let command: String
-
-            if p.contains("codex") {
-                let yoloFlag = autoApprove ? "--yolo " : ""
-                command = "codex --model \(model) -c model_effort=\(effort) \(yoloFlag)\"\(taskPrompt)\""
-            } else if p.contains("claude") {
-                let yoloFlag = autoApprove ? "--dangerously-skip-permissions " : ""
-                command = "claude --model \(model) \(yoloFlag)\"\(taskPrompt)\""
-            } else if p.contains("anti") || p.contains("agy") {
-                let yoloFlag = autoApprove ? "--yolo " : ""
-                command = "agy --model \(model) \(yoloFlag)\"\(taskPrompt)\""
-            } else if p.contains("hermes") {
-                let yoloFlag = autoApprove ? "--yolo " : ""
-                command = "hermes -m \(model) \(yoloFlag)-z \"\(taskPrompt)\""
-            } else {
-                command = "\(selectedProvider) \"\(taskPrompt)\""
-            }
-
-            await MainActor.run {
-                isAnalyzing = false
-                dismiss()
-                onExecuteRollover(selectedProvider, command, terminal)
-            }
-        }
+        dismiss()
+        onSelectRollover(selectedProvider, autoApprove, terminal)
     }
 }

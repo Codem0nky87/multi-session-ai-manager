@@ -584,7 +584,7 @@ def collect_terminal_agents(home_dir: Path | str | None = None, herdr_bin: str =
     return terminals
 
 
-def analyze_session_task(transcript_path: str, target_provider: str = "codex", home_dir: Path | str | None = None) -> dict:
+def analyze_session_task(transcript_path: str, target_provider: str = "codex", home_dir: Path | str | None = None, env: dict | None = None) -> dict:
     """Analyze a previous session transcript to determine task complexity and recommend optimal model and effort."""
     p = Path(transcript_path).expanduser() if transcript_path else None
     content = ""
@@ -598,7 +598,7 @@ def analyze_session_task(transcript_path: str, target_provider: str = "codex", h
             pass
 
     content_lower = content.lower()
-    # Assess task complexity
+    # Assess task complexity heuristic fallback
     complex_indicators = [
         "error", "failed", "deadlock", "timeout", "refactor", "architectur",
         "exception", "traceback", "fatal", "restructure", "compile", "bug", "crash"
@@ -608,6 +608,57 @@ def analyze_session_task(transcript_path: str, target_provider: str = "codex", h
 
     target = target_provider.lower().replace("-", "_")
 
+    # Try live background analysis using the selected provider CLI
+    home = Path(home_dir).expanduser() if home_dir else Path.home()
+    proc_env = dict(env or os.environ)
+    local_bin = str(home / ".local" / "bin")
+    if local_bin not in proc_env.get("PATH", ""):
+        proc_env["PATH"] = f"{local_bin}:{proc_env.get('PATH', '')}"
+
+    sample = content[-2000:] if len(content) > 2000 else content
+    eval_prompt = (
+        "You are an AI task analyzer. Inspect this session snippet and recommend the optimal "
+        "model and reasoning effort level ('low', 'medium', or 'high') to resume this task.\n\n"
+        f"Context:\n```\n{sample}\n```\n\n"
+        "Respond ONLY with a valid JSON object matching: "
+        '{"model": "<model_name>", "effort": "<low|medium|high>", "summary": "<brief reason>"}'
+    )
+
+    cmd = None
+    if "codex" in target:
+        cmd = ["codex", "exec", "-c", "shell_environment_policy.inherit=all", eval_prompt]
+    elif "claude" in target:
+        cmd = ["claude", "-p", "--dangerously-skip-permissions", eval_prompt]
+    elif "anti" in target or "agy" in target:
+        cmd = ["agy", "-p", "--dangerously-skip-permissions", eval_prompt]
+
+    if cmd:
+        try:
+            res = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=20,
+                env=proc_env
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                match = re.search(r"\{[\s\S]*\}", res.stdout)
+                if match:
+                    parsed = json.loads(match.group(0))
+                    model_val = parsed.get("model")
+                    effort_val = parsed.get("effort")
+                    summary_val = parsed.get("summary")
+                    if model_val and effort_val:
+                        return {
+                            "model": str(model_val).strip(),
+                            "effort": str(effort_val).strip().lower(),
+                            "is_complex": is_complex,
+                            "summary": str(summary_val or "Model recommendation by provider").strip(),
+                        }
+        except Exception:
+            pass
+
+    # Heuristic fallback if provider CLI was not reachable, timed out, or returned invalid JSON
     if "codex" in target:
         model = "gpt-6.1-sol"
         effort = "high" if is_complex else "medium"

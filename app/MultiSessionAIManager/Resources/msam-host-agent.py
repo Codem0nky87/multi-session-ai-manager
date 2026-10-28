@@ -13,7 +13,7 @@ import sys
 import threading
 import time
 
-VERSION = '1.1.1'
+VERSION = '1.1.2'
 ROOT = Path(__file__).resolve().parent
 HOME = Path(os.environ.get('MSAM_HOST_HOME', str(Path.home())))
 STATE = HOME / '.local/state/msam-host-agent'
