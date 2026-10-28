@@ -30,8 +30,8 @@ public protocol SpeechRecognitionService: AnyObject {
     func requestPermissions() async -> Bool
     func startRecognition(
         onDeviceOnly: Bool,
-        onPartialResult: @Sendable @escaping (String) -> Void,
-        onAudioLevel: @Sendable @escaping (Float) -> Void
+        onPartialResult: @MainActor @Sendable @escaping (String) -> Void,
+        onAudioLevel: @MainActor @Sendable @escaping (Float) -> Void
     ) async throws
     func stopRecognition() async -> String?
     func cancelRecognition()
@@ -88,22 +88,18 @@ public final class VoiceDictationEngine: ObservableObject {
             try await service.startRecognition(
                 onDeviceOnly: true,
                 onPartialResult: { [weak self] partialText in
-                    Task { @MainActor [weak self] in
-                        guard let self = self else { return }
-                        self.currentLiveText = partialText
-                        if case .listening = self.state {
-                            self.state = .listening(liveText: partialText, audioLevel: self.currentAudioLevel)
-                        }
+                    guard let self = self else { return }
+                    self.currentLiveText = partialText
+                    if case .listening = self.state {
+                        self.state = .listening(liveText: partialText, audioLevel: self.currentAudioLevel)
                     }
                 },
                 onAudioLevel: { [weak self] level in
-                    Task { @MainActor [weak self] in
-                        guard let self = self else { return }
-                        let normalized = Self.normalizeAudioLevel(rms: level)
-                        self.currentAudioLevel = normalized
-                        if case .listening = self.state {
-                            self.state = .listening(liveText: self.currentLiveText, audioLevel: normalized)
-                        }
+                    guard let self = self else { return }
+                    let normalized = Self.normalizeAudioLevel(rms: level)
+                    self.currentAudioLevel = normalized
+                    if case .listening = self.state {
+                        self.state = .listening(liveText: self.currentLiveText, audioLevel: normalized)
                     }
                 }
             )
@@ -182,8 +178,8 @@ public final class AppleSpeechRecognitionService: SpeechRecognitionService {
 
     public func startRecognition(
         onDeviceOnly: Bool,
-        onPartialResult: @Sendable @escaping (String) -> Void,
-        onAudioLevel: @Sendable @escaping (Float) -> Void
+        onPartialResult: @MainActor @Sendable @escaping (String) -> Void,
+        onAudioLevel: @MainActor @Sendable @escaping (Float) -> Void
     ) async throws {
         guard let recognizer = recognizer, recognizer.isAvailable else {
             throw NSError(domain: "VoiceDictation", code: 1, userInfo: [NSLocalizedDescriptionKey: "Speech recognizer is not available."])
@@ -219,7 +215,9 @@ public final class AppleSpeechRecognitionService: SpeechRecognitionService {
                 sum += sample * sample
             }
             let rms = sqrt(sum / Float(frameLength))
-            onAudioLevel(rms * 12.0)
+            Task { @MainActor in
+                onAudioLevel(rms * 12.0)
+            }
         }
 
         engine.prepare()
@@ -287,8 +285,8 @@ public final class MockSpeechRecognitionService: SpeechRecognitionService {
     public var permissionGranted = true
     public var transcribedResult: String? = "mock transcription"
 
-    private var onPartial: (@Sendable (String) -> Void)?
-    private var onLevel: (@Sendable (Float) -> Void)?
+    private var onPartial: (@MainActor @Sendable (String) -> Void)?
+    private var onLevel: (@MainActor @Sendable (Float) -> Void)?
 
     public init() {}
 
@@ -298,8 +296,8 @@ public final class MockSpeechRecognitionService: SpeechRecognitionService {
 
     public func startRecognition(
         onDeviceOnly: Bool,
-        onPartialResult: @Sendable @escaping (String) -> Void,
-        onAudioLevel: @Sendable @escaping (Float) -> Void
+        onPartialResult: @MainActor @Sendable @escaping (String) -> Void,
+        onAudioLevel: @MainActor @Sendable @escaping (Float) -> Void
     ) async throws {
         isRecording = true
         self.onPartial = onPartialResult
