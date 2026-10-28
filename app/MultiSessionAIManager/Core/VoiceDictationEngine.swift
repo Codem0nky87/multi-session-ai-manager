@@ -24,7 +24,8 @@ public enum VoiceDictationState: Equatable, Sendable {
 
 // MARK: - Speech Recognition Service Protocol
 
-public protocol SpeechRecognitionService: AnyObject, Sendable {
+@MainActor
+public protocol SpeechRecognitionService: AnyObject {
     var isRecording: Bool { get }
     func requestPermissions() async -> Bool
     func startRecognition(
@@ -138,19 +139,17 @@ public final class VoiceDictationEngine: ObservableObject {
 
 // MARK: - Apple Speech Recognition Service
 
-public final class AppleSpeechRecognitionService: SpeechRecognitionService, @unchecked Sendable {
+@MainActor
+public final class AppleSpeechRecognitionService: SpeechRecognitionService {
     private let recognizer: SFSpeechRecognizer?
     private var audioEngine: AVAudioEngine?
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
-    private let lock = NSLock()
     private var activeRecording = false
     private var latestTranscription: String = ""
 
     public var isRecording: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return activeRecording
+        activeRecording
     }
 
     public init(locale: Locale = Locale.current) {
@@ -186,14 +185,11 @@ public final class AppleSpeechRecognitionService: SpeechRecognitionService, @unc
         onPartialResult: @Sendable @escaping (String) -> Void,
         onAudioLevel: @Sendable @escaping (Float) -> Void
     ) async throws {
-        lock.lock()
-        defer { lock.unlock() }
-
         guard let recognizer = recognizer, recognizer.isAvailable else {
             throw NSError(domain: "VoiceDictation", code: 1, userInfo: [NSLocalizedDescriptionKey: "Speech recognizer is not available."])
         }
 
-        teardownAudioLocked()
+        teardownAudio()
 
         let audioSession = AVAudioSession.sharedInstance()
         try audioSession.setCategory(.playAndRecord, mode: .measurement, options: [.duckOthers, .defaultToSpeaker, .allowBluetooth])
@@ -235,48 +231,41 @@ public final class AppleSpeechRecognitionService: SpeechRecognitionService, @unc
         self.activeRecording = true
 
         self.recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
-            guard let self = self else { return }
-            if let result = result {
-                let text = result.bestTranscription.formattedString
-                self.lock.lock()
-                self.latestTranscription = text
-                self.lock.unlock()
-                onPartialResult(text)
-            }
-            if error != nil || (result?.isFinal ?? false) {
-                self.lock.lock()
-                self.activeRecording = false
-                self.lock.unlock()
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                if let result = result {
+                    let text = result.bestTranscription.formattedString
+                    self.latestTranscription = text
+                    onPartialResult(text)
+                }
+                if error != nil || (result?.isFinal ?? false) {
+                    self.activeRecording = false
+                }
             }
         }
     }
 
     public func stopRecognition() async -> String? {
-        lock.lock()
         guard activeRecording else {
             let existing = latestTranscription
-            teardownAudioLocked()
-            lock.unlock()
+            teardownAudio()
             return existing
         }
 
         activeRecording = false
         recognitionRequest?.endAudio()
         let capturedText = latestTranscription
-        teardownAudioLocked()
-        lock.unlock()
+        teardownAudio()
         return capturedText
     }
 
     public func cancelRecognition() {
-        lock.lock()
-        defer { lock.unlock() }
         activeRecording = false
         recognitionTask?.cancel()
-        teardownAudioLocked()
+        teardownAudio()
     }
 
-    private func teardownAudioLocked() {
+    private func teardownAudio() {
         if let engine = audioEngine {
             if engine.isRunning {
                 engine.stop()
@@ -292,7 +281,8 @@ public final class AppleSpeechRecognitionService: SpeechRecognitionService, @unc
 
 // MARK: - Mock Service for Unit Testing
 
-public final class MockSpeechRecognitionService: SpeechRecognitionService, @unchecked Sendable {
+@MainActor
+public final class MockSpeechRecognitionService: SpeechRecognitionService {
     public var isRecording = false
     public var permissionGranted = true
     public var transcribedResult: String? = "mock transcription"
