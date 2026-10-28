@@ -254,6 +254,31 @@ class HostAgentTests(unittest.TestCase):
             daemon.stderr.close()
         self.assertFalse(self.agent.status()['running'])
 
+    def test_sample_metrics_includes_providers_and_terminal_agents(self):
+        mock_metrics_mod = unittest.mock.MagicMock()
+        mock_metrics_mod.get_linux_metrics.return_value = {
+            'cpu': {'utilization': 15.0},
+            'memory': {'usagePercent': 45.0},
+            'disk': {'volumes': []},
+            'gpu': {'usagePercent': 0.0},
+        }
+        self.agent.atomic_json(self.agent.STATE / 'providers.json', {
+            'providers': {'claude_code': {'state': 'HEALTHY', 'used_percent': 10.0}, 'codex': {'state': 'HEALTHY', 'used_percent': 5.0}},
+            'terminal_agents': []
+        })
+        sample = self.agent.sample_metrics(mock_metrics_mod)
+        self.assertIn('providers', sample)
+        self.assertIn('terminal_agents', sample)
+        self.assertIn('claude_code', sample['providers'])
+        self.assertIn('codex', sample['providers'])
+
+    def test_analyze_task_command(self):
+        transcript = self.home / "task.jsonl"
+        transcript.write_text(json.dumps({"type": "user", "message": "refactor compiler and fix fatal error"}))
+        rec = self.agent.analyze_task(str(transcript), "codex")
+        self.assertEqual(rec["model"], "gpt-6.1-sol")
+        self.assertEqual(rec["effort"], "high")
+
 
 class WindowsUpdaterTests(unittest.TestCase):
     def setUp(self):

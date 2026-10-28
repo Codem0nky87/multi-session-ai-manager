@@ -24,7 +24,8 @@ enum HostServiceInstaller {
 
     static let resources = ["msam-host-agent.py", "msam-metrics.py", "msam-agent-updater.sh",
         "msam-agent-updater-windows.py", "msam-metrics.ps1", "msam-host-service-windows.py",
-        "msam-metrics-manage.py", "msam-host-agent-install.py", "msam-host-launcher.c.txt"]
+        "msam-metrics-manage.py", "msam-host-agent-install.py", "msam-host-launcher.c.txt",
+        "msam-provider-pulse.py"]
 
     static func resource(_ filename: String) throws -> Data {
         let path = filename as NSString

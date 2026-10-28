@@ -32,7 +32,7 @@ COMPONENT_VERSION_SOURCES = {
 }
 COMPONENT_DIGEST_FILES = ['msam-host-software.py', 'msam-metrics-manage.py',
                           'msam-host-service-windows.py', 'msam-agent-updater-windows.py',
-                          'msam-host-agent-install.py']
+                          'msam-host-agent-install.py', 'msam-provider-pulse.py']
 
 
 def component_versions():
@@ -121,11 +121,28 @@ def status():
     return value
 
 
+def load_pulse():
+    pulse_file = ROOT / 'msam-provider-pulse.py'
+    if pulse_file.exists():
+        try:
+            return load_module('pulse', 'msam-provider-pulse.py')
+        except Exception:
+            return None
+    return None
+
+
+def analyze_task(transcript_path, target_provider='codex'):
+    pulse = load_pulse()
+    if pulse:
+        return pulse.analyze_session_task(transcript_path, target_provider, home_dir=HOME)
+    return {'model': 'gpt-6.1-sol', 'effort': 'medium', 'summary': 'Default recommendation'}
+
+
 def sample_metrics(module):
     global WINDOWS_NETWORK
     if sys.platform == 'darwin':
-        return module.get_mac_metrics()
-    if os.name == 'nt':
+        value = module.get_mac_metrics()
+    elif os.name == 'nt':
         result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
                                  '-File', str(ROOT / 'msam-metrics.ps1')],
                                 capture_output=True, timeout=15, check=True, env=environment())
@@ -143,8 +160,16 @@ def sample_metrics(module):
         WINDOWS_NETWORK = (counters, now)
         value['network'] = {'downloadSpeed': received, 'uploadSpeed': sent,
                             'downloadString': module.format_bytes(received), 'uploadString': module.format_bytes(sent)}
-        return value
-    return module.get_linux_metrics()
+    else:
+        value = module.get_linux_metrics()
+
+    cached_pulse = read_json(STATE / 'providers.json', None)
+    if cached_pulse is not None:
+        value.update(cached_pulse)
+    else:
+        value['providers'] = {}
+        value['terminal_agents'] = []
+    return value
 
 
 def inventory():
@@ -187,6 +212,19 @@ def background_inventory():
         STOP.wait(15)
 
 
+def background_provider_pulse():
+    pulse = load_pulse()
+    if not pulse:
+        return
+    while not STOP.is_set():
+        try:
+            telemetry = pulse.collect_provider_telemetry(home_dir=HOME)
+            atomic_json(STATE / 'providers.json', telemetry)
+        except Exception as error:
+            atomic_json(STATE / 'providers.json', {'error': str(error), 'providers': {}, 'terminal_agents': []})
+        STOP.wait(30)
+
+
 @contextlib.contextmanager
 def singleton(path):
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -220,6 +258,7 @@ def serve():
     with singleton(STATE / 'daemon.lock'):
         threading.Thread(target=background_updates, daemon=True).start()
         threading.Thread(target=background_inventory, daemon=True).start()
+        threading.Thread(target=background_provider_pulse, daemon=True).start()
         try:
             while not STOP.is_set():
                 started = time.monotonic()
@@ -261,7 +300,7 @@ def main():
     global HOME, STATE, UPDATER_STATE
     parser = argparse.ArgumentParser()
     parser.add_argument('--home')
-    parser.add_argument('command', choices=['serve', 'windows-service', 'status', 'metrics', 'agents', 'updates', 'self-test'])
+    parser.add_argument('command', choices=['serve', 'windows-service', 'status', 'metrics', 'agents', 'updates', 'self-test', 'analyze-task'])
     parser.add_argument('args', nargs='*')
     parser.add_argument('--loop', action='store_true')
     options = parser.parse_args()
@@ -281,6 +320,10 @@ def main():
         stream_metrics(options.loop)
     elif options.command == 'agents':
         print(json.dumps(read_json(STATE / 'agents.json', {'sessions': []})))
+    elif options.command == 'analyze-task':
+        transcript_path = options.args[0] if options.args else ""
+        target_provider = options.args[1] if len(options.args) > 1 else "codex"
+        print(json.dumps(analyze_task(transcript_path, target_provider)))
     elif options.command == 'updates':
         if not options.args or options.args[0] not in ('protocol', 'verify-service', 'submit', 'status', 'version'):
             raise ValueError('Unsupported update operation.')

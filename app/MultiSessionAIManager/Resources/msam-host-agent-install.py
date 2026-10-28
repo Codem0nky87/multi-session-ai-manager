@@ -26,7 +26,7 @@ LEGACY_UNIT = 'msam-agent-updater.service'
 FILES = ('msam-host-agent.py', 'msam-metrics.py', 'msam-agent-updater.sh',
          'msam-agent-updater-windows.py', 'msam-metrics.ps1',
          'msam-host-service-windows.py', 'msam-metrics-manage.py', 'msam-host-agent-install.py',
-         'msam-host-launcher.c.txt')
+         'msam-host-launcher.c.txt', 'msam-provider-pulse.py')
 
 
 @contextlib.contextmanager
