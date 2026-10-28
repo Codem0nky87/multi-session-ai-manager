@@ -29,27 +29,9 @@
 **Interfaces:**
 - Produces: `NSMicrophoneUsageDescription` and `NSSpeechRecognitionUsageDescription` in generated `Info.plist`.
 
-- [ ] **Step 1: Add privacy usage descriptions to `project.yml`**
-
-Add the keys under `targets.MultiSessionAIManager.info.properties`:
-```yaml
-        NSMicrophoneUsageDescription: "AI Manager uses the microphone for push-to-talk voice input into your terminal sessions."
-        NSSpeechRecognitionUsageDescription: "AI Manager uses speech recognition to convert your voice into text for your terminal sessions."
-```
-
-- [ ] **Step 2: Regenerate Xcode project on Mac**
-
-Run on Mac via SSH:
-```bash
-ssh rufus@Rufuss-MacBook-Air.local "cd ~/Projects/multi-session-ai-manager/app/MultiSessionAIManager && xcodegen generate"
-```
-
-- [ ] **Step 3: Commit changes**
-
-```bash
-git add app/MultiSessionAIManager/project.yml
-git commit -m "chore(config): add microphone and speech recognition permissions to project.yml"
-```
+- [x] **Step 1: Add privacy usage descriptions to `project.yml`**
+- [x] **Step 2: Regenerate Xcode project on Mac**
+- [x] **Step 3: Commit changes**
 
 ---
 
@@ -80,45 +62,11 @@ git commit -m "chore(config): add microphone and speech recognition permissions 
   }
   ```
 
-- [ ] **Step 1: Write unit tests for `VoiceDictationState` and engine lifecycle**
-
-Create `app/MultiSessionAIManager/Tests/VoiceDictationEngineTests.swift` testing:
-1. Initial state is `.idle`.
-2. State transitions and equality checks.
-3. Audio level normalization clamping between 0.0 and 1.0.
-4. Text trimming and discarding whitespace-only results.
-
-- [ ] **Step 2: Run Swift tests on Mac to verify test fails**
-
-Run:
-```bash
-ssh rufus@Rufuss-MacBook-Air.local "cd ~/Projects/multi-session-ai-manager/app/MultiSessionAIManager && xcodebuild test -scheme MultiSessionAIManager -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M5)' -only-testing:MultiSessionAIManagerTests/VoiceDictationEngineTests"
-```
-Expected: Compilation failure (missing `VoiceDictationEngine`).
-
-- [ ] **Step 3: Implement `VoiceDictationEngine.swift`**
-
-Implement:
-- Permission checking: `AVAudioSession.sharedInstance().recordPermission` and `SFSpeechRecognizer.authorizationStatus()`.
-- Audio session setup: category `.playAndRecord`, mode `.measurement`, options `[.duckOthers, .defaultToSpeaker, .allowBluetooth]`.
-- `AVAudioEngine` input tap with RMS level computation.
-- `SFSpeechAudioBufferRecognitionRequest` with `requiresOnDeviceRecognition = true` and `shouldReportPartialResults = true`.
-- Clean teardown on stop and cancel.
-
-- [ ] **Step 4: Run Swift tests on Mac to verify PASS**
-
-Run:
-```bash
-ssh rufus@Rufuss-MacBook-Air.local "cd ~/Projects/multi-session-ai-manager/app/MultiSessionAIManager && xcodebuild test -scheme MultiSessionAIManager -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M5)' -only-testing:MultiSessionAIManagerTests/VoiceDictationEngineTests"
-```
-Expected: PASS.
-
-- [ ] **Step 5: Commit changes**
-
-```bash
-git add app/MultiSessionAIManager/Core/VoiceDictationEngine.swift app/MultiSessionAIManager/Tests/VoiceDictationEngineTests.swift
-git commit -m "feat(core): implement VoiceDictationEngine with on-device speech recognition"
-```
+- [x] **Step 1: Write unit tests for `VoiceDictationState` and engine lifecycle**
+- [x] **Step 2: Run Swift tests on Mac to verify test fails**
+- [x] **Step 3: Implement `VoiceDictationEngine.swift`**
+- [x] **Step 4: Run Swift tests on Mac to verify PASS**
+- [x] **Step 5: Commit changes**
 
 ---
 
@@ -132,35 +80,10 @@ git commit -m "feat(core): implement VoiceDictationEngine with on-device speech 
 - Consumes: `VoiceDictationState`
 - Produces: `VoiceTranscriptionHUD` SwiftUI view.
 
-- [ ] **Step 1: Write unit tests for `VoiceTranscriptionHUD`**
-
-Create `app/MultiSessionAIManager/Tests/VoiceTranscriptionHUDTests.swift` testing:
-1. Visibility checks based on state (visible on `.listening` and `.processing`, hidden on `.idle`).
-2. Text presentation formatting.
-
-- [ ] **Step 2: Implement `VoiceTranscriptionHUD.swift`**
-
-Build SwiftUI view:
-- Centered floating pill with `HerdrTheme.panel` background and `HerdrTheme.selection` border.
-- Pulsing red indicator dot.
-- Mini 4-bar equalizer reacting to `audioLevel`.
-- Scrolling live transcript text.
-- Helper subtitle: "Release to insert in terminal".
-
-- [ ] **Step 3: Run Swift tests on Mac to verify PASS**
-
-Run:
-```bash
-ssh rufus@Rufuss-MacBook-Air.local "cd ~/Projects/multi-session-ai-manager/app/MultiSessionAIManager && xcodebuild test -scheme MultiSessionAIManager -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M5)' -only-testing:MultiSessionAIManagerTests/VoiceTranscriptionHUDTests"
-```
-Expected: PASS.
-
-- [ ] **Step 4: Commit changes**
-
-```bash
-git add app/MultiSessionAIManager/UI/Terminal/VoiceTranscriptionHUD.swift app/MultiSessionAIManager/Tests/VoiceTranscriptionHUDTests.swift
-git commit -m "feat(ui): add VoiceTranscriptionHUD floating live transcription pill"
-```
+- [x] **Step 1: Write unit tests for `VoiceTranscriptionHUD`**
+- [x] **Step 2: Implement `VoiceTranscriptionHUD.swift`**
+- [x] **Step 3: Run Swift tests on Mac to verify PASS**
+- [x] **Step 4: Commit changes**
 
 ---
 
@@ -174,30 +97,9 @@ git commit -m "feat(ui): add VoiceTranscriptionHUD floating live transcription p
 **Interfaces:**
 - Connects Push-to-Talk button to `VoiceDictationEngine.shared` and routes transcribed text to `onInputBytes`.
 
-- [ ] **Step 1: Update `TerminalQuickKeyBar.swift`**
-
-1. Inject `@ObservedObject var voiceEngine = VoiceDictationEngine.shared`.
-2. Add the microphone key between `fn` and `arrow.left`:
-   - Visual: `mic.fill` with active tint and subtle pulse when recording.
-   - Gesture: Push-to-talk press/release handling using `DragGesture(minimumDistance: 0)`:
-     - On touch down: triggers medium haptic and `Task { await voiceEngine.startRecording() }`.
-     - On touch up: triggers light haptic, awaits `voiceEngine.stopRecording()`, and if text is present, sends `onInputBytes(Array(text.utf8))`.
-3. Render `VoiceTranscriptionHUD` hovering directly above the bar when active.
-
-- [ ] **Step 2: Run full Swift test suite on Mac**
-
-Run:
-```bash
-ssh rufus@Rufuss-MacBook-Air.local "cd ~/Projects/multi-session-ai-manager/app/MultiSessionAIManager && xcodebuild test -scheme MultiSessionAIManager -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M5)'"`
-```
-Expected: All tests PASS.
-
-- [ ] **Step 3: Commit changes**
-
-```bash
-git add app/MultiSessionAIManager/UI/Terminal/TerminalQuickKeyBar.swift app/MultiSessionAIManager/UI/RootView.swift
-git commit -m "feat(ui): integrate push-to-talk voice key into TerminalQuickKeyBar"
-```
+- [x] **Step 1: Update `TerminalQuickKeyBar.swift`**
+- [x] **Step 2: Run full Swift test suite on Mac**
+- [x] **Step 3: Commit changes**
 
 ---
 
