@@ -497,6 +497,28 @@ overlay 1000 950 50 95% /scratch
         # Preserve the collector protocol; the app normalizes process usage.
         self.assertEqual(cpu['topProcesses'][0]['usage'], 100.0)
 
+    def test_mac_temperatures_populates_cpu_gpu_and_disk(self):
+        sample_temps = {'cpu': 48.5, 'gpu': 45.2, 'disk': 37.0}
+        df_output = b'''Filesystem 1024-blocks Used Available Capacity Mounted on
+/dev/disk3s3s1 1000 100 500 17% /
+'''
+        with patch.object(m, 'mac_temperatures', return_value=sample_temps), \
+                patch.object(m.sys, 'platform', 'darwin'), \
+                patch.object(m.shutil, 'disk_usage', return_value=SimpleNamespace(total=1024000, used=512000, free=512000)), \
+                patch.object(m.subprocess, 'check_output', return_value=df_output), \
+                patch.object(m, 'mac_cpu_activity', return_value=(None, [])):
+            metrics = m.get_mac_metrics()
+        self.assertEqual(metrics['cpu']['temperature'], 48.5)
+        self.assertEqual(metrics['gpu']['temperature'], 45.2)
+        self.assertEqual(metrics['disk']['disks'][0]['temperature'], 37.0)
+        self.assertEqual(metrics['disk']['temperatures'][0]['temperature'], 37.0)
+        self.assertEqual(metrics['disk']['temperatures'][0]['model'], 'Apple NVMe SSD')
+
+    def test_mac_temperatures_safe_on_non_darwin(self):
+        with patch.object(m.sys, 'platform', 'linux'):
+            temps = m.mac_temperatures()
+            self.assertEqual(temps, {'cpu': None, 'gpu': None, 'disk': None})
+
     def test_disks_timeout_returns_safe_shape(self):
         with patch.object(m.subprocess, 'check_output', side_effect=subprocess.TimeoutExpired('df', 3)):
             result = m.get_unix_disks()

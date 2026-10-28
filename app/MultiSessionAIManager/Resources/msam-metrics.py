@@ -10,7 +10,7 @@ import re
 import shutil
 from pathlib import Path
 
-METRICS_VERSION = "2.4.1"
+METRICS_VERSION = "2.4.2"
 
 _mac_network_previous = None
 _mac_cpu_previous = None
@@ -235,7 +235,7 @@ def linux_physical_disks(groups, temperatures, sys_root='/sys'):
     return result
 
 
-def mac_physical_disks(groups):
+def mac_physical_disks(groups, disk_temperature_c=None):
     def diskutil(*args):
         try:
             data = subprocess.check_output(['diskutil', *args], stderr=subprocess.DEVNULL, timeout=2)
@@ -267,14 +267,15 @@ def mac_physical_disks(groups):
         # Non-APFS volumes refer directly to physical partitions.
         available.extend(v['availableGB'] for v in volumes
                          if re.fullmatch('/dev/' + re.escape(disk_id) + r'(s\d+)?', v['id']))
+        temp = disk_temperature_c if (disk_id == 'disk0' or not result) else None
         result.append({'id': disk_id, 'model': info.get('MediaName') or info.get('DeviceModel') or disk_id,
                        'totalGB': size / 1024**3,
                        'availableGB': sum(available) if available and not shared else None,
-                       'temperature': None, 'volumes': []})
+                       'temperature': temp, 'volumes': []})
     return result
 
 
-def get_unix_disks(sys_root='/sys', proc_root='/proc'):
+def get_unix_disks(sys_root='/sys', proc_root='/proc', disk_temperature_c=None):
     metrics = {'usagePercent': 0.0, 'totalGB': 0.0, 'usedGB': 0.0, 'disks': [],
                'platform': sys.platform}
     is_mac = sys.platform == 'darwin'
@@ -284,10 +285,12 @@ def get_unix_disks(sys_root='/sys', proc_root='/proc'):
                      'tracefs', 'configfs', 'hugetlbfs', 'mqueue', 'fusectl',
                      'bpf', 'autofs', 'overlay', 'nsfs', 'efivarfs'}
     disk_temps = {} if is_mac else linux_disk_temperatures(sys_root)
+    if is_mac and disk_temperature_c is not None:
+        disk_temps = {'disk0': disk_temperature_c}
     # Separate physical sensors from filesystem/LVM grouping. A disk can back
     # several volumes or no mounted volume and must appear here only once.
     metrics['temperatures'] = [
-        {'id': device, 'model': linux_disk_model(device, sys_root), 'temperature': value}
+        {'id': device, 'model': 'Apple NVMe SSD' if is_mac else linux_disk_model(device, sys_root), 'temperature': value}
         for device, value in sorted(disk_temps.items())]
     root_usage = None
     if is_mac:
@@ -308,7 +311,7 @@ def get_unix_disks(sys_root='/sys', proc_root='/proc'):
         output = subprocess.check_output(['df', '-P', '-k', '-l'],
                                          stderr=subprocess.DEVNULL, timeout=3).decode('utf-8', 'replace')
     except (OSError, subprocess.SubprocessError):
-        metrics['physicalDisks'] = (mac_physical_disks([]) if is_mac
+        metrics['physicalDisks'] = (mac_physical_disks([], disk_temperature_c) if is_mac
                                     else linux_physical_disks([], disk_temps, sys_root))
         return metrics
     for line in output.splitlines()[1:]:
@@ -360,8 +363,9 @@ def get_unix_disks(sys_root='/sys', proc_root='/proc'):
                 except OSError:
                     pass  # df already provided usable figures.
                 seen_devices.add(identity)
+            parent_temp = disk_temperature_c if is_mac else disk_temperature(disk_id, disk_temps, sys_root)
             disk = disks.setdefault(disk_id, {'id': disk_id, 'model': model, 'volumes': [],
-                                              'temperature': disk_temperature(disk_id, disk_temps, sys_root)})
+                                              'temperature': parent_temp})
             disk['volumes'].append({'id': device, 'name': name, 'mountPoint': mount,
                                     'totalGB': total / 1024**3, 'usedGB': used / 1024**3,
                                     'availableGB': max(0, available) / 1024**3,
@@ -372,7 +376,7 @@ def get_unix_disks(sys_root='/sys', proc_root='/proc'):
         except (ValueError, OSError):
             continue
     metrics['disks'] = list(disks.values())
-    metrics['physicalDisks'] = (mac_physical_disks(metrics['disks']) if is_mac
+    metrics['physicalDisks'] = (mac_physical_disks(metrics['disks'], disk_temperature_c) if is_mac
                                 else linux_physical_disks(metrics['disks'], disk_temps, sys_root))
     if not is_mac:
         metrics['totalGB'] = sum(v['totalGB'] for d in metrics['disks'] for v in d['volumes'])
@@ -382,13 +386,121 @@ def get_unix_disks(sys_root='/sys', proc_root='/proc'):
     return metrics
 
 
+def mac_temperatures():
+    """Read Apple Silicon (and Intel fallback) CPU, GPU, and Disk temperatures.
+    Uses native IOKit IOHIDEventSystemClient via ctypes - no root or unbundled packages needed.
+    """
+    temps = {'cpu': None, 'gpu': None, 'disk': None}
+    if sys.platform != 'darwin':
+        return temps
+    try:
+        import ctypes
+        iokit = ctypes.cdll.LoadLibrary('/System/Library/Frameworks/IOKit.framework/IOKit')
+        cf = ctypes.cdll.LoadLibrary('/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation')
+
+        cf.CFArrayGetCount.restype = ctypes.c_long
+        cf.CFArrayGetCount.argtypes = [ctypes.c_void_p]
+        cf.CFArrayGetValueAtIndex.restype = ctypes.c_void_p
+        cf.CFArrayGetValueAtIndex.argtypes = [ctypes.c_void_p, ctypes.c_long]
+
+        cf.CFStringGetCString.restype = ctypes.c_bool
+        cf.CFStringGetCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_long, ctypes.c_uint32]
+        cf.CFStringCreateWithCString.restype = ctypes.c_void_p
+        cf.CFStringCreateWithCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32]
+        cf.CFRelease.restype = None
+        cf.CFRelease.argtypes = [ctypes.c_void_p]
+
+        iokit.IOHIDEventSystemClientCreate.restype = ctypes.c_void_p
+        iokit.IOHIDEventSystemClientCreate.argtypes = [ctypes.c_void_p]
+        iokit.IOHIDEventSystemClientCopyServices.restype = ctypes.c_void_p
+        iokit.IOHIDEventSystemClientCopyServices.argtypes = [ctypes.c_void_p]
+
+        iokit.IOHIDServiceClientCopyProperty.restype = ctypes.c_void_p
+        iokit.IOHIDServiceClientCopyProperty.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+
+        iokit.IOHIDServiceClientCopyEvent.restype = ctypes.c_void_p
+        iokit.IOHIDServiceClientCopyEvent.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int]
+
+        iokit.IOHIDEventGetFloatValue.restype = ctypes.c_double
+        iokit.IOHIDEventGetFloatValue.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+
+        kCFStringEncodingUTF8 = 0x08000100
+        client = iokit.IOHIDEventSystemClientCreate(None)
+        if client:
+            services = iokit.IOHIDEventSystemClientCopyServices(client)
+            count = cf.CFArrayGetCount(services) if services else 0
+            prop_product = cf.CFStringCreateWithCString(None, b"Product", kCFStringEncodingUTF8)
+
+            cpu_vals = []
+            gpu_vals = []
+            disk_vals = []
+
+            buf = ctypes.create_string_buffer(128)
+            for i in range(count):
+                srv = cf.CFArrayGetValueAtIndex(services, i)
+                name_ref = iokit.IOHIDServiceClientCopyProperty(srv, prop_product)
+                if not name_ref:
+                    continue
+                name = ""
+                if cf.CFStringGetCString(name_ref, buf, 128, kCFStringEncodingUTF8):
+                    name = buf.value.decode('utf-8', errors='ignore')
+                cf.CFRelease(name_ref)
+
+                event = iokit.IOHIDServiceClientCopyEvent(srv, 15, 0, 0)
+                if event:
+                    val = iokit.IOHIDEventGetFloatValue(event, 15 << 16)
+                    cf.CFRelease(event)
+                    if 0 < val < 150:
+                        if "PMU tdie" in name or "PMU tcal" in name:
+                            cpu_vals.append(val)
+                        elif "PMU2 tdie" in name or "PMU2 tcal" in name:
+                            gpu_vals.append(val)
+                        elif "NAND" in name:
+                            disk_vals.append(val)
+
+            if prop_product:
+                cf.CFRelease(prop_product)
+            if services:
+                cf.CFRelease(services)
+            cf.CFRelease(client)
+
+            if cpu_vals:
+                temps['cpu'] = round(sum(cpu_vals) / len(cpu_vals), 1)
+            if gpu_vals:
+                temps['gpu'] = round(sum(gpu_vals) / len(gpu_vals), 1)
+            if disk_vals:
+                temps['disk'] = round(sum(disk_vals) / len(disk_vals), 1)
+    except Exception:
+        pass
+
+    # Intel Mac fallback for CPU via powermetrics if IOHID didn't find PMU
+    if temps['cpu'] is None:
+        try:
+            pm_out = subprocess.check_output(
+                ['sudo', '-n', 'powermetrics', '--samplers', 'smc', '-n', '1', '-i', '100'],
+                stderr=subprocess.DEVNULL, timeout=1
+            ).decode('utf-8', errors='ignore')
+            for line in pm_out.splitlines():
+                if 'CPU die temperature' in line or 'CPU thermal level' in line:
+                    parts = line.split(':')
+                    if len(parts) > 1:
+                        val = parts[1].strip().split(' ')[0]
+                        temps['cpu'] = float(val)
+                        break
+        except Exception:
+            pass
+
+    return temps
+
+
 _mac_gpu_identity = None
 
 
-def get_mac_gpu():
+def get_mac_gpu(temperature_c=None):
     global _mac_gpu_identity
     gpu = {'usagePercent': 0.0, 'modelName': '', 'cores': 0,
-           'temperature': 0.0, 'memoryUsed': 0.0, 'memoryTotal': 0.0,
+           'temperature': float(temperature_c) if temperature_c is not None else 0.0,
+           'memoryUsed': 0.0, 'memoryTotal': 0.0,
            'utilizationAvailable': False}
     try:
         output = subprocess.check_output(['ioreg', '-a', '-r', '-c', 'IOAccelerator', '-d', '1'],
@@ -518,9 +630,10 @@ def mac_network_counters(output):
 
 def get_mac_metrics():
     core_count = os.cpu_count() or 0
+    temps = mac_temperatures()
     metrics = {
         "cpu": {
-            "temperature": 0.0,
+            "temperature": temps.get('cpu') or 0.0,
             "utilization": 0.0,
             "systemUsage": 0.0,
             "userUsage": 0.0,
@@ -550,15 +663,8 @@ def get_mac_metrics():
             "swap": 0.0,
             "topProcesses": []
         },
-        "disk": get_unix_disks(),
-        "gpu": {
-            "usagePercent": 0.0,
-            "modelName": "",
-            "cores": 0,
-            "temperature": 0.0,
-            "memoryUsed": 0.0,
-            "memoryTotal": 0.0
-        },
+        "disk": get_unix_disks(disk_temperature_c=temps.get('disk')),
+        "gpu": get_mac_gpu(temperature_c=temps.get('gpu')),
         "network": {
             "downloadSpeed": 0.0,
             "uploadSpeed": 0.0,
@@ -573,26 +679,8 @@ def get_mac_metrics():
         metrics["cpu"]["loadAverage5m"] = load5
         metrics["cpu"]["loadAverage15m"] = load15
         metrics["cpu"]["loadPerCore"] = load1 / core_count if core_count else None
-        
-        # Try to read SMC temperatures via powermetrics for Intel Macs (requires passwordless sudo)
-        try:
-            pm_out = subprocess.check_output(['sudo', '-n', 'powermetrics', '--samplers', 'smc', '-n', '1', '-i', '100'], stderr=subprocess.DEVNULL, timeout=1).decode('utf-8')
-            for line in pm_out.split('\n'):
-                if 'CPU die temperature' in line or 'CPU thermal level' in line:
-                    # Format: "CPU die temperature: 45.32 C"
-                    parts = line.split(':')
-                    if len(parts) > 1:
-                        val = parts[1].strip().split(' ')[0]
-                        metrics["cpu"]["temperature"] = float(val)
-                        break
-        except Exception:
-            # Fallback for Apple Silicon where SMC sampler isn't supported and raw temp requires compiled IOKit C
-            pass
-            
     except Exception:
         pass
-
-    metrics["gpu"] = get_mac_gpu()
 
     try:
         page_size = int(subprocess.check_output(['sysctl', '-n', 'hw.pagesize']).decode('utf-8').strip())
