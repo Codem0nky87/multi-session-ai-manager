@@ -37,7 +37,7 @@ public enum HerdrSessionRollover {
               let end = json.range(of: "}", options: .backwards) else {
             return nil
         }
-        let substring = String(json[start.lowerBound...end.upperBound])
+        let substring = String(json[start.lowerBound..<end.upperBound])
         guard let data = substring.data(using: .utf8) else { return nil }
         return try? JSONDecoder().decode(AnalysisResult.self, from: data)
     }
@@ -93,7 +93,7 @@ public enum HerdrSessionRollover {
               let end = json.range(of: "}", options: .backwards) else {
             return nil
         }
-        let substring = String(json[start.lowerBound...end.upperBound])
+        let substring = String(json[start.lowerBound..<end.upperBound])
         guard let data = substring.data(using: .utf8),
               let response = try? JSONDecoder().decode(TabCreateResponse.self, from: data),
               let rootPane = response.result?.root_pane else {
