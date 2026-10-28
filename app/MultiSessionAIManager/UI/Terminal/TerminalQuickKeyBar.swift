@@ -24,6 +24,10 @@ struct TerminalQuickKeyBar: View {
     /// Routes bytes to the live PTY (the session's terminal feed).
     let onInputBytes: ([UInt8]) -> Void
 
+    @ObservedObject var voiceEngine: VoiceDictationEngine = .shared
+    @Environment(ToastCenter.self) private var toasts: ToastCenter?
+    @State private var isVoicePressed = false
+
     /// Wheel notches per page-key press. Matches roughly a half-page of a
     /// phone-height Herdr pane without flying past the prompt.
     private let pageNotches = 3
@@ -35,6 +39,12 @@ struct TerminalQuickKeyBar: View {
     /// the next arrow/tab press, then disarms.
     @State private var isShiftArmed = false
     @State private var showingFunctionKeys = false
+
+    private var isRecordingVoice: Bool {
+        if case .listening = voiceEngine.state { return true }
+        if case .processing = voiceEngine.state { return true }
+        return isVoicePressed
+    }
 
     var body: some View {
         HStack(spacing: 4) {
@@ -71,6 +81,8 @@ struct TerminalQuickKeyBar: View {
                 .presentationCompactAdaptation(.popover)
             }
 
+            voiceKey
+
             symbolKey("arrow.left", id: "left") {
                 send(shifted(emulator.applicationCursor ? EscapeSequences.leftShiftApp : EscapeSequences.leftShift,
                              plain: emulator.applicationCursor ? EscapeSequences.leftApp : EscapeSequences.left))
@@ -102,8 +114,65 @@ struct TerminalQuickKeyBar: View {
         .padding(.horizontal, 6)
         .frame(height: HerdrChromeMetrics.minimumHitTarget)
         .background(HerdrTheme.panel)
+        .overlay(alignment: .bottom) {
+            VoiceTranscriptionHUD(engine: voiceEngine)
+                .offset(y: -HerdrChromeMetrics.minimumHitTarget - 10)
+        }
+        .onChange(of: voiceEngine.state) { _, newState in
+            if case .error(let msg) = newState {
+                toasts?.error(msg)
+            }
+        }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("msam.quickkeys")
+    }
+
+    private var voiceKey: some View {
+        Button(action: {}) {
+            Image(systemName: "mic.fill")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(isRecordingVoice ? Color.white : (isLive ? HerdrTheme.subtext : HerdrTheme.muted))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(
+                    isRecordingVoice ? Color.red.opacity(0.85) : HerdrTheme.selection,
+                    in: RoundedRectangle(cornerRadius: 6)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!isLive)
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { _ in
+                    guard isLive else { return }
+                    if !isVoicePressed {
+                        isVoicePressed = true
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        Task {
+                            await voiceEngine.startRecording()
+                        }
+                    }
+                }
+                .onEnded { value in
+                    guard isLive, isVoicePressed else { return }
+                    isVoicePressed = false
+
+                    if abs(value.translation.height) > 50 || abs(value.translation.width) > 50 {
+                        UINotificationFeedbackGenerator().notificationOccurred(.warning)
+                        voiceEngine.cancelRecording()
+                    } else {
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        Task {
+                            if let text = await voiceEngine.stopRecording() {
+                                let bytes = VoiceDictationEngine.convertTextToTerminalBytes(text)
+                                send(bytes)
+                            }
+                        }
+                    }
+                }
+        )
+        .accessibilityLabel("Push-to-talk voice input")
+        .accessibilityIdentifier("msam.quickkey.voice")
     }
 
     private func send(_ bytes: [UInt8]) {
