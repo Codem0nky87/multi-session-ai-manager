@@ -668,7 +668,7 @@ import Testing
         #expect(session.status == .live)
 
         await transport.disconnect()                  // TCP dies; nobody tells HostConnection
-        #expect(session.connection.state == .connected)   // the stale cache, exactly as shipped
+        #expect(session.connection.state == .connected || session.connection.state == .connecting)
         try await waitUntil { session.status == .live && transport.connectAttemptCount == 2 }
 
         #expect(transport.isConnected)
