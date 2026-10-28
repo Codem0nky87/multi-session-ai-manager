@@ -1,12 +1,12 @@
 import SwiftUI
 
-public struct ProviderDetailSheet: View {
-    public var provider: ProviderQuota
-    public var terminals: [TerminalAgentSession]
-    public var onContinueSession: ((TerminalAgentSession) -> Void)?
+struct ProviderDetailSheet: View {
+    var provider: ProviderQuota
+    var terminals: [TerminalAgentSession]
+    var onContinueSession: ((TerminalAgentSession) -> Void)?
     @Environment(\.dismiss) private var dismiss
 
-    public init(
+    init(
         provider: ProviderQuota,
         terminals: [TerminalAgentSession],
         onContinueSession: ((TerminalAgentSession) -> Void)? = nil
@@ -16,7 +16,7 @@ public struct ProviderDetailSheet: View {
         self.onContinueSession = onContinueSession
     }
 
-    public var body: some View {
+    var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {

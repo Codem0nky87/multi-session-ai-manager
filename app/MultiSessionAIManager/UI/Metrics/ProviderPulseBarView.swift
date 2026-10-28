@@ -1,15 +1,15 @@
 import SwiftUI
 
-public struct ProviderPulseBarView: View {
-    public var pulse: ProviderPulseModel
-    public var onSelectProvider: (ProviderQuota) -> Void
+struct ProviderPulseBarView: View {
+    var pulse: ProviderPulseModel
+    var onSelectProvider: (ProviderQuota) -> Void
 
-    public init(pulse: ProviderPulseModel, onSelectProvider: @escaping (ProviderQuota) -> Void) {
+    init(pulse: ProviderPulseModel, onSelectProvider: @escaping (ProviderQuota) -> Void) {
         self.pulse = pulse
         self.onSelectProvider = onSelectProvider
     }
 
-    public var body: some View {
+    var body: some View {
         HStack(spacing: 10) {
             ForEach(pulse.activeProviders) { provider in
                 Button {

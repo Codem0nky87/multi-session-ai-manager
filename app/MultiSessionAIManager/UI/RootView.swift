@@ -465,9 +465,9 @@ struct RootView: View {
         Task {
             let session = tabs.session(for: newTab)
             try? await Task.sleep(nanoseconds: 1_200_000_000)
-            session.send(text: command + "\n")
+            session.terminal.feedInputToPTY(Array((command + "\n").utf8))
             if let service = tabs.session(for: selectedTab).connection.provisioningCommandRunner {
-                _ = try? await service.run("herdr pane close \(terminal.paneID)", timeout: .seconds(5))
+                _ = try? await service.run("herdr pane close \(terminal.paneID)", timeout: .seconds(5), outputLimit: 1024)
             }
             tabStore.close(currentTabID)
         }

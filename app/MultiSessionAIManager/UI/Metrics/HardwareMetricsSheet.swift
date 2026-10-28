@@ -1,14 +1,14 @@
 import SwiftUI
 
-public struct HardwareMetricsSheet: View {
-    public var metrics: HostMetricsModel
+struct HardwareMetricsSheet: View {
+    var metrics: HostMetricsModel
     @Environment(\.dismiss) private var dismiss
 
-    public init(metrics: HostMetricsModel) {
+    init(metrics: HostMetricsModel) {
         self.metrics = metrics
     }
 
-    public var body: some View {
+    var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 16) {

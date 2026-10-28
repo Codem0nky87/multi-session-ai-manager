@@ -1,10 +1,10 @@
 import SwiftUI
 
-public struct SessionRolloverSheet: View {
-    public var terminal: TerminalAgentSession
-    public var availableProviders: [ProviderQuota]
-    public var service: SSHService?
-    public var onExecuteRollover: (String, String, TerminalAgentSession) -> Void
+struct SessionRolloverSheet: View {
+    var terminal: TerminalAgentSession
+    var availableProviders: [ProviderQuota]
+    var service: SSHService?
+    var onExecuteRollover: (String, String, TerminalAgentSession) -> Void
     @Environment(\.dismiss) private var dismiss
 
     @State private var selectedProvider: String = "codex"
@@ -12,7 +12,7 @@ public struct SessionRolloverSheet: View {
     @State private var isAnalyzing: Bool = false
     @State private var analysisStatus: String? = nil
 
-    public init(
+    init(
         terminal: TerminalAgentSession,
         availableProviders: [ProviderQuota],
         service: SSHService? = nil,
@@ -31,7 +31,7 @@ public struct SessionRolloverSheet: View {
         _selectedProvider = State(initialValue: best?.name ?? "codex")
     }
 
-    public var body: some View {
+    var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 20) {
                 // Current session card
@@ -200,7 +200,7 @@ public struct SessionRolloverSheet: View {
             if let service {
                 let transcriptPath = terminal.transcriptPath ?? ""
                 let analyzeCmd = "python3 \"$HOME/.local/libexec/msam-host-agent/current/msam-host-agent.py\" analyze-task \"\(transcriptPath)\" \"\(selectedProvider)\""
-                if let output = try? await service.run(analyzeCmd, timeout: .seconds(10)),
+                if let output = try? await service.run(analyzeCmd, timeout: .seconds(10), outputLimit: 65536),
                    let data = output.stdoutString.data(using: .utf8),
                    let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                     if let m = json["model"] as? String { model = m }

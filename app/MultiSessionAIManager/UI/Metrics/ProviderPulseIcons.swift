@@ -1,14 +1,14 @@
 import SwiftUI
 
-public enum ProviderBrandColor {
-    public static let claude = Color(red: 217 / 255.0, green: 119 / 255.0, blue: 87 / 255.0) // #D97757
-    public static let codex = Color(red: 32 / 255.0, green: 40 / 255.0, blue: 32 / 255.0)   // #202820
-    public static let antigravity = Color(red: 66 / 255.0, green: 133 / 255.0, blue: 244 / 255.0) // Google Blue
-    public static let hermes = Color(red: 121 / 255.0, green: 82 / 255.0, blue: 144 / 255.0) // Purple
+enum ProviderBrandColor {
+    static let claude = Color(red: 217 / 255.0, green: 119 / 255.0, blue: 87 / 255.0) // #D97757
+    static let codex = Color(red: 32 / 255.0, green: 40 / 255.0, blue: 32 / 255.0)   // #202820
+    static let antigravity = Color(red: 66 / 255.0, green: 133 / 255.0, blue: 244 / 255.0) // Google Blue
+    static let hermes = Color(red: 121 / 255.0, green: 82 / 255.0, blue: 144 / 255.0) // Purple
 }
 
-public struct ClaudeIconShape: Shape {
-    public func path(in rect: CGRect) -> Path {
+struct ClaudeIconShape: Shape {
+    func path(in rect: CGRect) -> Path {
         var path = Path()
         let sx = rect.width / 32.0
         let sy = rect.height / 32.0
@@ -48,16 +48,16 @@ public struct ClaudeIconShape: Shape {
     }
 }
 
-public struct ProviderIconView: View {
-    public let providerName: String
-    public var size: CGFloat = 16
+struct ProviderIconView: View {
+    let providerName: String
+    var size: CGFloat = 16
 
-    public init(providerName: String, size: CGFloat = 16) {
+    init(providerName: String, size: CGFloat = 16) {
         self.providerName = providerName
         self.size = size
     }
 
-    public var body: some View {
+    var body: some View {
         let key = providerName.lowercased()
         if key.contains("claude") {
             ClaudeIconShape()
