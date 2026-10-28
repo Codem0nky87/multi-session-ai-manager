@@ -108,7 +108,7 @@
 **Files:**
 - Fastlane deployment to TestFlight.
 
-- [ ] **Step 1: Push commits to GitHub `origin/main`**
-- [ ] **Step 2: Run `fastlane beta` on Mac**
-- [ ] **Step 3: Confirm TestFlight build processing on App Store Connect**
-- [ ] **Step 4: Clean up any Mac build observers and release machine**
+- [x] **Step 1: Push commits to GitHub `origin/main`**
+- [x] **Step 2: Run `fastlane beta` on Mac**
+- [x] **Step 3: Confirm TestFlight build processing on App Store Connect**
+- [x] **Step 4: Clean up any Mac build observers and release machine**
