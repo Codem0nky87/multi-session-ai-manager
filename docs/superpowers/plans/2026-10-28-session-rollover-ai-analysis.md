@@ -44,40 +44,11 @@
   }
   ```
 
-- [ ] **Step 1: Write failing unit tests for provider CLI analysis**
-
-Add tests to `tests/test_msam_provider_pulse.py` that verify:
-1. `test_analyze_session_task_invokes_provider_cli`: When a supported provider CLI is available (e.g. `codex`, `claude`, `agy`), `analyze_session_task` invokes the CLI with transcript context and parses the JSON output.
-2. `test_analyze_session_task_falls_back_when_cli_fails`: When the provider CLI command returns an error or invalid JSON, it falls back to the heuristic analyzer without throwing.
-
-- [ ] **Step 2: Run pytest to verify the new tests fail**
-
-Run: `pytest tests/test_msam_provider_pulse.py -k "analyze_session_task_invokes"`
-Expected: FAIL
-
-- [ ] **Step 3: Implement provider CLI invocation in `msam-provider-pulse.py`**
-
-In `analyze_session_task`:
-1. Extract the last 50 lines of user and assistant turns from `transcript_path`.
-2. Construct the provider command:
-   - For `codex`: `codex exec -c shell_environment_policy.inherit=all "..."`
-   - For `claude`: `claude -p --dangerously-skip-permissions "..."`
-   - For `agy` / `antigravity`: `agy -p --dangerously-skip-permissions "..."`
-3. Execute via `subprocess.run(..., timeout=20, capture_output=True, text=True)`.
-4. Parse the returned JSON for `model`, `effort`, and `summary`.
-5. If parsing fails, subprocess errors, or times out, fall back to the heuristic evaluation.
-
-- [ ] **Step 4: Run pytest to verify all tests pass**
-
-Run: `pytest tests/test_msam_provider_pulse.py`
-Expected: 97 passed
-
-- [ ] **Step 5: Commit changes**
-
-```bash
-git add app/MultiSessionAIManager/Resources/msam-provider-pulse.py tests/test_msam_provider_pulse.py
-git commit -m "feat(host): add live AI provider CLI analysis for session rollover"
-```
+- [x] **Step 1: Write failing unit tests for provider CLI analysis**
+- [x] **Step 2: Run pytest to verify the new tests fail**
+- [x] **Step 3: Implement provider CLI invocation in `msam-provider-pulse.py`**
+- [x] **Step 4: Run pytest to verify all tests pass**
+- [x] **Step 5: Commit changes**
 
 ---
 
@@ -107,36 +78,11 @@ git commit -m "feat(host): add live AI provider CLI analysis for session rollove
   }
   ```
 
-- [ ] **Step 1: Write unit tests for HerdrSessionRollover command generation and parsing**
-
-Create `app/MultiSessionAIManager/Tests/HerdrSessionRolloverTests.swift` testing:
-1. Analysis command construction with correct quoting.
-2. JSON parsing for analysis result.
-3. Herdr tab create command generation with workspace and label.
-4. Parsing `herdr tab create` response JSON (`root_pane.pane_id` and `tab.tab_id`).
-5. Herdr pane run command generation.
-6. Launch command generation for Codex, Claude, Antigravity, and Hermes with `--yolo` / `--dangerously-skip-permissions` flags.
-
-- [ ] **Step 2: Run Swift tests on Mac to verify test suite fails or is missing**
-
-Run: `ssh rufus@Rufuss-MacBook-Air.local "cd ~/Projects/multi-session-ai-manager/app/MultiSessionAIManager && xcodebuild test -scheme MultiSessionAIManager -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M5)' -only-testing:MultiSessionAIManagerTests/HerdrSessionRolloverTests"`
-Expected: Build error or file missing.
-
-- [ ] **Step 3: Implement `HerdrSessionRollover.swift`**
-
-Implement all command builders, JSON parsers, and command formatters using `POSIXShell.quote` and robust Decodable structs.
-
-- [ ] **Step 4: Run Swift tests on Mac to verify PASS**
-
-Run: `ssh rufus@Rufuss-MacBook-Air.local "cd ~/Projects/multi-session-ai-manager/app/MultiSessionAIManager && xcodebuild test -scheme MultiSessionAIManager -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M5)' -only-testing:MultiSessionAIManagerTests/HerdrSessionRolloverTests"`
-Expected: PASS
-
-- [ ] **Step 5: Commit changes**
-
-```bash
-git add app/MultiSessionAIManager/Core/HerdrSessionRollover.swift app/MultiSessionAIManager/Tests/HerdrSessionRolloverTests.swift
-git commit -m "feat(core): add HerdrSessionRollover command builders and parsers"
-```
+- [x] **Step 1: Write unit tests for HerdrSessionRollover command generation and parsing**
+- [x] **Step 2: Run Swift tests on Mac to verify test suite fails or is missing**
+- [x] **Step 3: Implement `HerdrSessionRollover.swift`**
+- [x] **Step 4: Run Swift tests on Mac to verify PASS**
+- [x] **Step 5: Commit changes**
 
 ---
 
@@ -163,32 +109,10 @@ git commit -m "feat(core): add HerdrSessionRollover command builders and parsers
   }
   ```
 
-- [ ] **Step 1: Write unit tests for `AILoaderState`**
-
-Create `app/MultiSessionAIManager/Tests/AILoaderModalViewTests.swift` verifying initialization and state transitions.
-
-- [ ] **Step 2: Implement `AILoaderModalView.swift`**
-
-Build a modern SwiftUI view featuring:
-- Fullscreen dimming overlay (`Color.black.opacity(0.65)`).
-- Centered rounded modal card with `HerdrTheme.panel` background and border.
-- Animated pulsating provider badge (using `ProviderIconView`).
-- Glowing indeterminate spinner.
-- Main title: "Analyzing Task with \(provider.capitalized)…"
-- Subtitle / dynamic phase description: "Inspecting prior session transcript to determine optimal model and reasoning effort."
-- Cancel button calling `onCancel`.
-
-- [ ] **Step 3: Verify build and tests on Mac**
-
-Run: `ssh rufus@Rufuss-MacBook-Air.local "cd ~/Projects/multi-session-ai-manager/app/MultiSessionAIManager && xcodebuild test -scheme MultiSessionAIManager -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M5)' -only-testing:MultiSessionAIManagerTests/AILoaderModalViewTests"`
-Expected: PASS
-
-- [ ] **Step 4: Commit changes**
-
-```bash
-git add app/MultiSessionAIManager/UI/Terminal/AILoaderModalView.swift app/MultiSessionAIManager/Tests/AILoaderModalViewTests.swift
-git commit -m "feat(ui): add AILoaderModalView for AI model and effort analysis"
-```
+- [x] **Step 1: Write unit tests for `AILoaderState`**
+- [x] **Step 2: Implement `AILoaderModalView.swift`**
+- [x] **Step 3: Verify build and tests on Mac**
+- [x] **Step 4: Commit changes**
 
 ---
 
@@ -215,19 +139,10 @@ git commit -m "feat(ui): add AILoaderModalView for AI model and effort analysis"
        - Run `HerdrSessionRollover.makeRunCommand(paneID: newPaneID, command: launchCmd)`.
     3. Dismiss `rolloverLoaderState` and show `toastCenter.success("Relaunched with \(provider.capitalized) (\(model))")`.
 
-- [ ] **Step 1: Update `SessionRolloverSheet.swift` callback signature and action**
-- [ ] **Step 2: Update `RootView.swift` to present `AILoaderModalView` and execute remote Herdr rollover**
-- [ ] **Step 3: Run full Swift test suite on Mac**
-
-Run: `ssh rufus@Rufuss-MacBook-Air.local "cd ~/Projects/multi-session-ai-manager/app/MultiSessionAIManager && xcodebuild test -scheme MultiSessionAIManager -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M5)'"`
-Expected: All tests PASS.
-
-- [ ] **Step 4: Commit changes**
-
-```bash
-git add app/MultiSessionAIManager/UI/Terminal/SessionRolloverSheet.swift app/MultiSessionAIManager/UI/RootView.swift
-git commit -m "feat: wire host-native session rollover with AI loader modal and Herdr execution"
-```
+- [x] **Step 1: Update `SessionRolloverSheet.swift` callback signature and action**
+- [x] **Step 2: Update `RootView.swift` to present `AILoaderModalView` and execute remote Herdr rollover**
+- [x] **Step 3: Run full Swift test suite on Mac**
+- [x] **Step 4: Commit changes**
 
 ---
 
@@ -237,11 +152,11 @@ git commit -m "feat: wire host-native session rollover with AI loader modal and 
 - Modify: `app/MultiSessionAIManager/Resources/msam-host-agent.py` (version bump to 1.1.2)
 - TestFlight release via Fastlane
 
-- [ ] **Step 1: Bump version in `msam-host-agent.py` to 1.1.2**
-- [ ] **Step 2: Deploy updated `msam-provider-pulse.py` and `msam-host-agent.py` to `forge` and `IronMentorMac`**
-- [ ] **Step 3: Verify host daemons are active and healthy**
-- [ ] **Step 4: Push git commit to `origin/main`**
-- [ ] **Step 5: Run Fastlane beta build and upload to TestFlight**
-- [ ] **Step 6: Confirm upload on App Store Connect**
+- [x] **Step 1: Bump version in `msam-host-agent.py` to 1.1.2**
+- [x] **Step 2: Deploy updated `msam-provider-pulse.py` and `msam-host-agent.py` to `forge` and `IronMentorMac`**
+- [x] **Step 3: Verify host daemons are active and healthy**
+- [x] **Step 4: Push git commit to `origin/main`**
+- [x] **Step 5: Run Fastlane beta build and upload to TestFlight**
+- [x] **Step 6: Confirm upload on App Store Connect**
 
 ---
