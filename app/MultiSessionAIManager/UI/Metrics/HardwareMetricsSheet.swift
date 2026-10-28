@@ -63,7 +63,7 @@ struct HardwareMetricsSheet: View {
                         Text("STORAGE")
                             .font(HerdrTheme.mono(.headline, weight: .bold))
                             .foregroundStyle(HerdrTheme.subtext)
-                        DiskMetricsDetailView(metrics: metrics.disk, volumeHistory: metrics.diskVolumeHistory)
+                        DiskMetricsDetailView(metrics: metrics.disk)
                     }
                     .padding()
                     .background(HerdrTheme.panel)
