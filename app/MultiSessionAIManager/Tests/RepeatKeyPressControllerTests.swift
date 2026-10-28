@@ -10,7 +10,7 @@ import Testing
     var sends = 0
 
     repeater.start { sends += 1 }
-    try await Task.sleep(nanoseconds: 35_000_000)
+    try await Task.sleep(nanoseconds: 50_000_000)
     repeater.stop()
     let stoppedCount = sends
     try await Task.sleep(nanoseconds: 25_000_000)
