@@ -261,6 +261,24 @@ final class HostMetricsModel {
         let providers: [String: ProviderQuota]?
         let terminalAgents: [TerminalAgentSession]?
 
+        init(
+            cpu: CPUMetrics? = nil,
+            memory: MemoryMetrics? = nil,
+            gpu: GPUMetrics? = nil,
+            disk: DiskMetrics? = nil,
+            network: NetworkMetrics? = nil,
+            providers: [String: ProviderQuota]? = nil,
+            terminalAgents: [TerminalAgentSession]? = nil
+        ) {
+            self.cpu = cpu
+            self.memory = memory
+            self.gpu = gpu
+            self.disk = disk
+            self.network = network
+            self.providers = providers
+            self.terminalAgents = terminalAgents
+        }
+
         enum CodingKeys: String, CodingKey {
             case cpu, memory, gpu, disk, network, providers
             case terminalAgents = "terminal_agents"
