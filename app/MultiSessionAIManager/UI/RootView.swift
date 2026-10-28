@@ -103,7 +103,6 @@ struct RootView: View {
     @State private var showingPicker = false
     @State private var showingSettings = false
     @State private var showingFileSend = false
-    @State private var showingFunctionKeys = false
     @State private var selectedProviderForDetail: ProviderQuota? = nil
     @State private var showingHardwareMetricsSheet = false
     @State private var showingProviderPulseSheet = false
@@ -198,26 +197,6 @@ struct RootView: View {
                     .accessibilityLabel("Send a file to host")
                     .accessibilityIdentifier("msam.send.file")
                     .background(HerdrTheme.panel, ignoresSafeAreaEdges: [])
-
-                    Button { showingFunctionKeys.toggle() } label: {
-                        Text("fn")
-                            .font(.system(.body, design: .monospaced, weight: .semibold))
-                            .foregroundStyle(isSelectedTabLive ? HerdrTheme.subtext : HerdrTheme.muted)
-                            .frame(width: HerdrChromeMetrics.hostTabBarHeight, height: HerdrChromeMetrics.hostTabBarHeight)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(!isSelectedTabLive)
-                    .accessibilityLabel("Function keys")
-                    .accessibilityIdentifier("msam.function-keys")
-                    .background(HerdrTheme.panel, ignoresSafeAreaEdges: [])
-                    .popover(isPresented: $showingFunctionKeys) {
-                        FunctionKeyPalette { number in
-                            tabs.sendFunctionKey(number)
-                            showingFunctionKeys = false
-                        }
-                        .presentationCompactAdaptation(.popover)
-                    }
                 }
                 // Phone (compact width): the metrics bar and the five toolbar
                 // buttons cannot share 390pt with the tab strip, so every
@@ -602,6 +581,7 @@ struct HostTerminalView: View {
                 emulator: session.terminal,
                 controller: inputController,
                 keyboard: keyboard,
+                isLive: session.status == .live,
                 onInputBytes: { session.terminal.feedInputToPTY($0) }
             )
             // Lift the bar clear of the keyboard (or the home-indicator

@@ -20,6 +20,7 @@ struct TerminalQuickKeyBar: View {
     let emulator: TerminalEmulator
     let controller: KeyInputController
     let keyboard: KeyboardVisibilityModel
+    var isLive: Bool = true
     /// Routes bytes to the live PTY (the session's terminal feed).
     let onInputBytes: ([UInt8]) -> Void
 
@@ -33,6 +34,7 @@ struct TerminalQuickKeyBar: View {
     /// drawer on Shift+Left). Arming this latches the xterm Shift codings onto
     /// the next arrow/tab press, then disarms.
     @State private var isShiftArmed = false
+    @State private var showingFunctionKeys = false
 
     var body: some View {
         HStack(spacing: 4) {
@@ -55,6 +57,20 @@ struct TerminalQuickKeyBar: View {
                 isShiftArmed.toggle()
             }
             .accessibilityLabel("shift")
+
+            textKey("fn", id: "msam.function-keys", active: showingFunctionKeys, disabled: !isLive) {
+                showingFunctionKeys.toggle()
+            }
+            .popover(isPresented: $showingFunctionKeys) {
+                FunctionKeyPalette { number in
+                    if let bytes = TerminalFunctionKey.bytes(for: number) {
+                        send(bytes)
+                    }
+                    showingFunctionKeys = false
+                }
+                .presentationCompactAdaptation(.popover)
+            }
+
             symbolKey("arrow.left", id: "left") {
                 send(shifted(emulator.applicationCursor ? EscapeSequences.leftShiftApp : EscapeSequences.leftShift,
                              plain: emulator.applicationCursor ? EscapeSequences.leftApp : EscapeSequences.left))
@@ -123,19 +139,20 @@ struct TerminalQuickKeyBar: View {
         }
     }
 
-    private func textKey(_ label: String, id: String, active: Bool = false, action: @escaping () -> Void) -> some View {
+    private func textKey(_ label: String, id: String, active: Bool = false, disabled: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(label)
                 .font(HerdrTheme.mono(.footnote, weight: .semibold))
-                .foregroundStyle(active ? HerdrTheme.background : HerdrTheme.subtext)
+                .foregroundStyle(disabled ? HerdrTheme.muted : (active ? HerdrTheme.background : HerdrTheme.subtext))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(active ? HerdrTheme.accent : HerdrTheme.selection,
                             in: RoundedRectangle(cornerRadius: 6))
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .disabled(disabled)
         .accessibilityLabel(label)
-        .accessibilityIdentifier("msam.quickkey.\(id)")
+        .accessibilityIdentifier(id.contains(".") ? id : "msam.quickkey.\(id)")
     }
 
     private func symbolKey(_ symbol: String, id: String, active: Bool = false, action: @escaping () -> Void) -> some View {
