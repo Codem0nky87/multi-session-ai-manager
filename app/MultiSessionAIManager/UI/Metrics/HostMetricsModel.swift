@@ -249,6 +249,7 @@ struct NetworkMetrics: Decodable {
     var uploadString: String = "0 KB/s"
 }
 
+@MainActor
 @Observable
 final class HostMetricsModel {
     struct MetricsPayload: Decodable {
@@ -257,6 +258,13 @@ final class HostMetricsModel {
         let gpu: GPUMetrics?
         let disk: DiskMetrics?
         let network: NetworkMetrics?
+        let providers: [String: ProviderQuota]?
+        let terminalAgents: [TerminalAgentSession]?
+
+        enum CodingKeys: String, CodingKey {
+            case cpu, memory, gpu, disk, network, providers
+            case terminalAgents = "terminal_agents"
+        }
     }
     
     var cpu = CPUMetrics()
@@ -264,6 +272,7 @@ final class HostMetricsModel {
     var gpu = GPUMetrics()
     var disk = DiskMetrics()
     var network = NetworkMetrics()
+    var pulse = ProviderPulseModel()
     var memoryHistory: [Double] = []
     var gpuHistory: [Double] = []
     var diskVolumeHistory: [String: [Double]] = [:]
@@ -342,6 +351,9 @@ final class HostMetricsModel {
             hasNetworkSample = true
             downloadHistory = history(downloadHistory, appending: max(0, newNet.downloadSpeed))
             uploadHistory = history(uploadHistory, appending: max(0, newNet.uploadSpeed))
+        }
+        if let provs = payload.providers {
+            pulse.update(providers: provs, terminals: payload.terminalAgents ?? [])
         }
     }
 }
