@@ -55,16 +55,16 @@ public final class VoiceDictationEngine: ObservableObject {
 
     // MARK: - Static Helpers
 
-    public static func cleanTranscriptionText(_ raw: String) -> String? {
+    public nonisolated static func cleanTranscriptionText(_ raw: String) -> String? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    public static func normalizeAudioLevel(rms: Float) -> Float {
+    public nonisolated static func normalizeAudioLevel(rms: Float) -> Float {
         min(max(rms, 0.0), 1.0)
     }
 
-    public static func convertTextToTerminalBytes(_ text: String) -> [UInt8] {
+    public nonisolated static func convertTextToTerminalBytes(_ text: String) -> [UInt8] {
         Array(text.utf8)
     }
 
