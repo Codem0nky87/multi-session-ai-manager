@@ -83,9 +83,16 @@ struct ProviderDetailSheet: View {
                             VStack(alignment: .leading, spacing: 8) {
                                 ForEach(provider.windows) { win in
                                     HStack {
-                                        Text(win.group)
-                                            .font(HerdrTheme.mono(.caption))
-                                            .foregroundStyle(HerdrTheme.text)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(win.group)
+                                                .font(HerdrTheme.mono(.caption))
+                                                .foregroundStyle(HerdrTheme.text)
+                                            if let winResets = win.resetsAt {
+                                                Text("Resets \(Self.formatResetDate(winResets))")
+                                                    .font(HerdrTheme.mono(.caption2))
+                                                    .foregroundStyle(HerdrTheme.subtext)
+                                            }
+                                        }
                                         Spacer()
                                         Text("\(Int(win.usedPercent.rounded()))%")
                                             .font(HerdrTheme.mono(.caption, weight: .bold))
@@ -218,14 +225,96 @@ struct ProviderDetailSheet: View {
     }
 
     private func formatResetDate(_ raw: String) -> String {
-        guard let date = ISO8601DateFormatter().date(from: raw) else { return raw }
-        let remaining = date.timeIntervalSinceNow
-        if remaining > 0 {
-            let hours = Int(remaining) / 3600
-            let mins = (Int(remaining) % 3600) / 60
-            return "in \(hours)h \(mins)m"
+        Self.formatResetDate(raw)
+    }
+
+    public static func parseResetDate(_ raw: String) -> Date? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return nil }
+
+        let fractionalIso = ISO8601DateFormatter()
+        fractionalIso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let d = fractionalIso.date(from: trimmed) {
+            return d
         }
-        return "now"
+
+        let standardIso = ISO8601DateFormatter()
+        standardIso.formatOptions = [.withInternetDateTime]
+        if let d = standardIso.date(from: trimmed) {
+            return d
+        }
+
+        let posix = Locale(identifier: "en_US_POSIX")
+        for fmt in [
+            "yyyy-MM-dd'T'HH:mm:ss.SSSSSSXXXXX",
+            "yyyy-MM-dd'T'HH:mm:ss.SSSXXXXX",
+            "yyyy-MM-dd'T'HH:mm:ssXXXXX",
+            "yyyy-MM-dd'T'HH:mm:ssZ",
+            "yyyy-MM-dd HH:mm:ss"
+        ] {
+            let df = DateFormatter()
+            df.locale = posix
+            df.dateFormat = fmt
+            if let d = df.date(from: trimmed) {
+                return d
+            }
+        }
+        return nil
+    }
+
+    public static func formatResetDate(
+        _ raw: String,
+        now: Date = Date(),
+        timeZone: TimeZone = .current,
+        locale: Locale = .current
+    ) -> String {
+        guard let date = parseResetDate(raw) else { return raw }
+
+        var calendar = Calendar.current
+        calendar.timeZone = timeZone
+        calendar.locale = locale
+
+        let timeFmt = DateFormatter()
+        timeFmt.timeZone = timeZone
+        timeFmt.locale = locale
+        timeFmt.dateStyle = .none
+        timeFmt.timeStyle = .short
+        let timeString = timeFmt.string(from: date)
+
+        let datePrefix: String
+        if calendar.isDate(date, inSameDayAs: now) {
+            datePrefix = "Today"
+        } else if let tomorrow = calendar.date(byAdding: .day, value: 1, to: now),
+                  calendar.isDate(date, inSameDayAs: tomorrow) {
+            datePrefix = "Tomorrow"
+        } else {
+            let dateFmt = DateFormatter()
+            dateFmt.timeZone = timeZone
+            dateFmt.locale = locale
+            dateFmt.dateFormat = "MMM d"
+            datePrefix = dateFmt.string(from: date)
+        }
+
+        let remaining = date.timeIntervalSince(now)
+        let countdown: String
+        if remaining > 0 {
+            let totalMins = Int(remaining) / 60
+            let hours = totalMins / 60
+            let mins = totalMins % 60
+            if hours >= 24 {
+                let days = hours / 24
+                let remHours = hours % 24
+                countdown = "in \(days)d \(remHours)h"
+            } else if hours > 0 {
+                countdown = "in \(hours)h \(mins)m"
+            } else {
+                countdown = "in \(max(1, mins))m"
+            }
+        } else {
+            countdown = "now"
+        }
+
+        return "\(datePrefix) at \(timeString) (\(countdown))"
     }
 
     private func formatTokens(_ count: Int) -> String {

@@ -457,11 +457,11 @@ struct RootView: View {
         return tabStore.tabs.first(where: { $0.id == id })
     }
 
-    /// Phone layout. Compact width (iPhone portrait AND landscape) selects the
-    /// slim top bar and the quick-key strip; iPad regular width keeps the full
-    /// metrics bar and toolbar untouched.
+    /// Phone layout. iPhone (portrait AND landscape) and iPad compact split-view
+    /// select the slim top bar with single gauge/sparkles icons and the quick-key
+    /// strip; full-screen iPad keeps the expanded metrics bar and toolbar.
     private var isCompact: Bool {
-        horizontalSizeClass == .compact
+        UIDevice.current.userInterfaceIdiom == .phone || horizontalSizeClass == .compact
     }
 
     /// The image button needs a LIVE tab, not merely a selected one: an idle or

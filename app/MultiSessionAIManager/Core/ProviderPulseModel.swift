@@ -131,6 +131,21 @@ public struct TerminalAgentSession: Decodable, Equatable, Identifiable, Sendable
         self.transcriptPath = transcriptPath
         self.isLimitReached = isLimitReached
     }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let pane = try container.decodeIfPresent(String.self, forKey: .paneID) ?? ""
+        self.paneID = pane
+        self.tabID = try container.decodeIfPresent(String.self, forKey: .tabID) ?? ""
+        self.name = try container.decodeIfPresent(String.self, forKey: .name) ?? (!pane.isEmpty ? pane : "terminal")
+        self.provider = try container.decodeIfPresent(String.self, forKey: .provider) ?? ""
+        self.project = try container.decodeIfPresent(String.self, forKey: .project) ?? ""
+        self.state = try container.decodeIfPresent(String.self, forKey: .state) ?? "idle"
+        self.model = try container.decodeIfPresent(String.self, forKey: .model)
+        self.sessionTokens = try container.decodeIfPresent(Int.self, forKey: .sessionTokens)
+        self.transcriptPath = try container.decodeIfPresent(String.self, forKey: .transcriptPath)
+        self.isLimitReached = try container.decodeIfPresent(Bool.self, forKey: .isLimitReached) ?? false
+    }
 }
 
 @MainActor
@@ -170,14 +185,15 @@ public final class ProviderPulseModel {
     }
 
     public func terminals(for providerName: String) -> [TerminalAgentSession] {
-        terminalAgents.filter { agent in
+        let target = providerName.lowercased()
+        return terminalAgents.filter { agent in
             let p = agent.provider.lowercased()
-            let target = providerName.lowercased()
-            return p == target
-                || (target.contains("claude") && p.contains("claude"))
-                || (target.contains("codex") && p.contains("codex"))
-                || (target.contains("anti") && p.contains("anti"))
-                || (target.contains("hermes") && p.contains("hermes"))
+            if p == target { return true }
+            if (target.contains("claude") && p.contains("claude")) { return true }
+            if (target.contains("codex") && p.contains("codex")) { return true }
+            if ((target.contains("anti") || target.contains("agy")) && (p.contains("anti") || p.contains("agy"))) { return true }
+            if (target.contains("hermes") && p.contains("hermes")) { return true }
+            return false
         }
     }
 }

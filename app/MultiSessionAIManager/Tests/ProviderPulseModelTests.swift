@@ -69,4 +69,57 @@ import Testing
         #expect(terminals.first?.isLimitReached == true)
         #expect(terminals.first?.transcriptPath == "/home/rufus/.claude/projects/test/01a.jsonl")
     }
+
+    @Test func formatsResetDateInLocalTimezoneWithFractionalSeconds() throws {
+        // Raw ISO8601 with microseconds and UTC timezone
+        let raw = "2026-10-28T17:00:00.299728+00:00"
+        let parsed = try #require(ProviderDetailSheet.parseResetDate(raw))
+
+        // Fixed reference time: 2026-10-28 11:24:00 UTC
+        let now = Date(timeIntervalSince1970: 1793186640) // 2026-10-28 11:24:00 UTC
+        let timeZone = try #require(TimeZone(secondsFromGMT: 7200)) // SAST (UTC+2)
+        let locale = Locale(identifier: "en_GB")
+
+        let formatted = ProviderDetailSheet.formatResetDate(raw, now: now, timeZone: timeZone, locale: locale)
+        #expect(formatted.contains("Today"))
+        #expect(formatted.contains("19:00"))
+        #expect(formatted.contains("in 5h 36m"))
+    }
+
+    @Test func matchesProviderAliasesInTerminals() {
+        let pulse = ProviderPulseModel()
+        let t1 = TerminalAgentSession(paneID: "p1", name: "pantheon", provider: "claude", project: "pantheon")
+        let t2 = TerminalAgentSession(paneID: "p2", name: "netapp", provider: "claude_code", project: "netapp")
+        let t3 = TerminalAgentSession(paneID: "p3", name: "dev", provider: "agy", project: "tools")
+        let t4 = TerminalAgentSession(paneID: "p4", name: "bot", provider: "codex", project: "app")
+
+        pulse.update(providers: [:], terminals: [t1, t2, t3, t4])
+
+        // Query by "claude_code" matches both "claude" and "claude_code"
+        let claudeCodeTerms = pulse.terminals(for: "claude_code")
+        #expect(claudeCodeTerms.count == 2)
+
+        // Query by "claude" matches both "claude" and "claude_code"
+        let claudeTerms = pulse.terminals(for: "claude")
+        #expect(claudeTerms.count == 2)
+
+        // Query by "antigravity" matches "agy"
+        let agyTerms = pulse.terminals(for: "antigravity")
+        #expect(agyTerms.count == 1)
+        #expect(agyTerms.first?.paneID == "p3")
+    }
+
+    @Test func decodesTerminalAgentWithMissingOptionalFields() throws {
+        let minimalJSON = """
+        {
+            "pane_id": "wD:p9"
+        }
+        """
+        let term = try JSONDecoder().decode(TerminalAgentSession.self, from: Data(minimalJSON.utf8))
+        #expect(term.paneID == "wD:p9")
+        #expect(term.name == "wD:p9")
+        #expect(term.provider == "")
+        #expect(term.state == "idle")
+        #expect(term.isLimitReached == false)
+    }
 }

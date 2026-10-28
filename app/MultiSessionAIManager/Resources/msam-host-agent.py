@@ -13,7 +13,7 @@ import sys
 import threading
 import time
 
-VERSION = '1.1.0'
+VERSION = '1.1.1'
 ROOT = Path(__file__).resolve().parent
 HOME = Path(os.environ.get('MSAM_HOST_HOME', str(Path.home())))
 STATE = HOME / '.local/state/msam-host-agent'
@@ -218,7 +218,7 @@ def background_provider_pulse():
         return
     while not STOP.is_set():
         try:
-            telemetry = pulse.collect_provider_telemetry(home_dir=HOME)
+            telemetry = pulse.collect_provider_telemetry(home_dir=HOME, env=environment())
             atomic_json(STATE / 'providers.json', telemetry)
         except Exception as error:
             atomic_json(STATE / 'providers.json', {'error': str(error), 'providers': {}, 'terminal_agents': []})

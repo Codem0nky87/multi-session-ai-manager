@@ -81,10 +81,68 @@ class ProviderPulseTests(unittest.TestCase):
         """
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout=mock_cli_output)
-            res = self.pulse_module.collect_antigravity_quota()
+            res = self.pulse_module.collect_antigravity_quota(home_dir=self.tmp_path)
             self.assertEqual(res["state"], "HEALTHY")
             self.assertEqual(res["used_percent"], 39.0)
             self.assertEqual(res["resets_at"], "2026-11-01T07:29:52Z")
+
+    def test_collect_antigravity_quota_parses_real_agy_usage_output(self):
+        real_output = (
+            "Gemini Models\tWeekly Limit Remaining\t52%\t2026-11-01T07:29:52Z\n"
+            "Gemini Models\tFive Hour Limit Remaining\t64%\t2026-10-28T10:34:19Z\n"
+            "Claude and GPT models\tWeekly Limit Remaining\t100%\t2026-11-04T10:18:17Z\n"
+            "Claude and GPT models\tFive Hour Limit Remaining\t100%\t2026-10-28T15:18:17Z\n"
+            "Gemini 4 Argon\tGemini 4 Argon Weekly Limit\t7%\t2026-10-31T09:43:14Z\n"
+        )
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout=real_output, stderr="")
+            res = self.pulse_module.collect_antigravity_quota(home_dir=self.tmp_path)
+            self.assertEqual(res["state"], "HEALTHY")
+            self.assertEqual(res["used_percent"], 93.0)
+            self.assertEqual(res["resets_at"], "2026-10-28T10:34:19Z")
+            self.assertEqual(len(res["windows"]), 5)
+            # 52% remaining -> 48% used
+            self.assertEqual(res["windows"][0]["used_percent"], 48.0)
+            # 64% remaining -> 36% used
+            self.assertEqual(res["windows"][1]["used_percent"], 36.0)
+
+    def test_collect_terminal_agents_reads_agents_json_cache(self):
+        state_dir = self.tmp_path / ".local" / "state" / "msam-host-agent"
+        state_dir.mkdir(parents=True)
+        agents_cache = state_dir / "agents.json"
+        agents_cache.write_text(json.dumps({
+            "sessions": [
+                {
+                    "session": "default",
+                    "socketPath": "/tmp/herdr.sock",
+                    "agents": [
+                        {
+                            "agent": "claude",
+                            "pane_id": "wD:p1",
+                            "tab_id": "wD:t1",
+                            "name": "pantheon",
+                            "cwd": "/home/rufus/Projects/pantheon",
+                            "agent_status": "idle"
+                        },
+                        {
+                            "agent": "claude",
+                            "pane_id": "wD:p2",
+                            "tab_id": "wD:t2",
+                            "name": "netapp-dashboard",
+                            "cwd": "/home/rufus/Projects/netapp-dashboard",
+                            "agent_status": "idle"
+                        }
+                    ]
+                }
+            ]
+        }))
+
+        terminals = self.pulse_module.collect_terminal_agents(home_dir=self.tmp_path)
+        self.assertEqual(len(terminals), 2)
+        self.assertEqual(terminals[0]["provider"], "claude_code")
+        self.assertEqual(terminals[0]["name"], "pantheon")
+        self.assertEqual(terminals[1]["provider"], "claude_code")
+        self.assertEqual(terminals[1]["name"], "netapp-dashboard")
 
     def test_collect_terminal_agents_matches_transcripts(self):
         codex_session_dir = self.tmp_path / ".codex" / "sessions" / "2026" / "10"

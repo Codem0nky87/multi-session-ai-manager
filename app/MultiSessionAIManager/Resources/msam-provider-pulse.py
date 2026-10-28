@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -21,6 +22,35 @@ CACHE_COOLDOWN_SECONDS = 300
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _get_process_env(home: Path, base_env: dict | None = None) -> dict:
+    env = os.environ.copy() if base_env is None else dict(base_env)
+    env.setdefault('HOME', str(home))
+    path = env.get('PATH', '')
+    for candidate in (str(home / '.local/bin'), str(home / '.cargo/bin'), '/usr/local/bin', '/opt/homebrew/bin'):
+        if candidate not in path.split(':'):
+            path = f"{candidate}:{path}" if path else candidate
+    env['PATH'] = path
+    return env
+
+
+def _find_bin(home: Path, name: str, env: dict) -> str | None:
+    if name and name not in ('agy', 'herdr', 'hermes'):
+        p = Path(name).expanduser()
+        if p.is_file() and os.access(p, os.X_OK):
+            return str(p)
+    candidates = [
+        home / '.local/bin' / name,
+        home / '.cargo/bin' / name,
+        Path('/usr/local/bin') / name,
+        Path('/opt/homebrew/bin') / name,
+        Path('/usr/bin') / name,
+    ]
+    for cand in candidates:
+        if cand.is_file() and os.access(cand, os.X_OK):
+            return str(cand)
+    return shutil.which(name, path=env.get('PATH'))
 
 
 def http_get_json(url: str, headers: dict[str, str] | None = None, timeout: float = 10.0) -> tuple[int, dict, dict]:
@@ -298,37 +328,96 @@ def collect_codex_quota(codex_bin: str = "codex") -> dict:
     }
 
 
-def collect_antigravity_quota(agy_bin: str = "agy") -> dict:
+def collect_antigravity_quota(home_dir: Path | str | None = None, agy_bin: str = "agy", env: dict | None = None) -> dict:
     """Query Antigravity CLI quota using agy -p /usage."""
+    home = Path(home_dir).expanduser() if home_dir else Path.home()
+    proc_env = _get_process_env(home, env)
+    exe = _find_bin(home, agy_bin, proc_env) or agy_bin
+
     try:
-        res = subprocess.run([agy_bin, "-p", "/usage"], capture_output=True, text=True, timeout=12)
-        if res.returncode != 0:
-            return {"state": "UNAVAILABLE", "used_percent": 0.0, "resets_at": None, "windows": []}
+        res = subprocess.run([exe, "-p", "/usage"], capture_output=True, text=True, timeout=12, env=proc_env)
         out = res.stdout
+        err = res.stderr
     except Exception:
-        return {"state": "UNAVAILABLE", "used_percent": 0.0, "resets_at": None, "windows": []}
+        oauth_file = home / ".gemini/antigravity-cli/antigravity-oauth-token"
+        state = "SIGN_IN_REQUIRED" if not oauth_file.exists() else "UNAVAILABLE"
+        return {"state": state, "used_percent": 0.0, "resets_at": None, "plan": "standard", "windows": [], "reset_credits": None}
+
+    if res.returncode != 0:
+        combined = f"{out} {err}".lower()
+        if "sign in" in combined or "auth" in combined or "login" in combined:
+            return {"state": "SIGN_IN_REQUIRED", "used_percent": 0.0, "resets_at": None, "plan": "standard", "windows": [], "reset_credits": None}
+        return {"state": "UNAVAILABLE", "used_percent": 0.0, "resets_at": None, "plan": "standard", "windows": [], "reset_credits": None}
 
     used_percent = 0.0
     resets_at = None
     windows = []
 
-    # Parse pool lines like "Gemini Models: 39% used, resets in 3d 21h (2026-11-01T07:29:52Z)"
+    # Parse lines. agy -p /usage formats either as tab-separated columns or formatted text:
+    # Gemini Models\tWeekly Limit Remaining\t52%\t2026-11-01T07:29:52Z
+    # Gemini Models: 39% used, resets in 3d 21h (2026-11-01T07:29:52Z)
     for line in out.splitlines():
-        match = re.search(r'([^:]+):\s*([\d\.]+)%\s*used', line)
-        if match:
-            group = match.group(1).strip()
-            util = float(match.group(2))
-            used_percent = max(used_percent, util)
-            time_match = re.search(r'\(([\d\-T:]+Z)\)', line)
-            line_resets = time_match.group(1) if time_match else None
-            if line_resets and not resets_at:
-                resets_at = line_resets
-            windows.append({
-                "group": group,
-                "window_minutes": 10080,
-                "used_percent": util,
-                "resets_at": line_resets,
-            })
+        line = line.strip()
+        if not line or line.lower().startswith("quota:"):
+            continue
+
+        parts = [p.strip() for p in re.split(r'\t+|\s{2,}', line) if p.strip()]
+        if len(parts) >= 3:
+            family = parts[0]
+            limit_name = parts[1]
+            pct_str = parts[2]
+            date_str = parts[3] if len(parts) > 3 else None
+            group = f"{family} ({limit_name})" if limit_name and limit_name != family else family
+        else:
+            pct_match = re.search(r'(\d+(?:\.\d+)?)%', line)
+            if not pct_match:
+                continue
+            pct_str = pct_match.group(0)
+            group_match = re.search(r'([^:]+):', line)
+            group = group_match.group(1).strip() if group_match else line[:pct_match.start()].strip()
+            date_str = None
+            paren_match = re.search(r'\(([\d\-T:]+Z?)\)', line)
+            if paren_match:
+                date_str = paren_match.group(1)
+
+        val_match = re.search(r'(\d+(?:\.\d+)?)', pct_str)
+        if not val_match:
+            continue
+        pct_val = float(val_match.group(1))
+
+        if "used" in line.lower():
+            util = pct_val
+        else:
+            # agy reports "Remaining" percentages by default
+            util = max(0.0, min(100.0, 100.0 - pct_val))
+
+        used_percent = max(used_percent, util)
+
+        iso_resets = None
+        if date_str:
+            if "T" in date_str and ("Z" in date_str or "+" in date_str or "-" in date_str[10:]):
+                iso_resets = date_str
+            else:
+                time_match = re.search(r'(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})', date_str)
+                if time_match:
+                    try:
+                        dt = datetime.strptime(f"{time_match.group(1)} {time_match.group(2)}", "%Y-%m-%d %H:%M").astimezone()
+                        iso_resets = dt.isoformat()
+                    except Exception:
+                        pass
+
+        win_mins = 10080 if any(k in line.lower() for k in ("week", "weekly")) else 300
+        windows.append({
+            "group": group,
+            "window_minutes": win_mins,
+            "used_percent": util,
+            "resets_at": iso_resets,
+        })
+
+    # Pick earliest upcoming reset timestamp
+    resets_candidates = [w["resets_at"] for w in windows if w.get("resets_at")]
+    if resets_candidates:
+        resets_at = min(resets_candidates)
 
     state = "RATE_LIMITED" if used_percent >= 100.0 else "HEALTHY"
     return {
@@ -341,10 +430,13 @@ def collect_antigravity_quota(agy_bin: str = "agy") -> dict:
     }
 
 
-def collect_hermes_quota(hermes_bin: str = "hermes") -> dict:
+def collect_hermes_quota(home_dir: Path | str | None = None, hermes_bin: str = "hermes", env: dict | None = None) -> dict:
     """Query Hermes usage."""
+    home = Path(home_dir).expanduser() if home_dir else Path.home()
+    proc_env = _get_process_env(home, env)
+    exe = _find_bin(home, hermes_bin, proc_env) or hermes_bin
     try:
-        res = subprocess.run([hermes_bin, "usage"], capture_output=True, text=True, timeout=8)
+        res = subprocess.run([exe, "usage"], capture_output=True, text=True, timeout=8, env=proc_env)
         out = res.stdout if res.returncode == 0 else ""
     except Exception:
         out = ""
@@ -359,16 +451,53 @@ def collect_hermes_quota(hermes_bin: str = "hermes") -> dict:
     }
 
 
-def collect_terminal_agents(home_dir: Path | str | None = None, herdr_bin: str = "herdr") -> list[dict]:
+def collect_terminal_agents(home_dir: Path | str | None = None, herdr_bin: str = "herdr", env: dict | None = None) -> list[dict]:
     """Discover active Herdr agents and correlate their transcript paths and metrics."""
     home = Path(home_dir).expanduser() if home_dir else Path.home()
-    try:
-        res = subprocess.run([herdr_bin, "agent", "list"], capture_output=True, text=True, timeout=5)
-        if res.returncode != 0:
-            return []
-        agents = json.loads(res.stdout).get("result", {}).get("agents", [])
-    except Exception:
-        return []
+    proc_env = _get_process_env(home, env)
+
+    raw_agents: dict[str, dict] = {}
+
+    # 1. Read cached state inventory from msam-host-agent if present
+    state_agents_file = home / '.local/state/msam-host-agent/agents.json'
+    if state_agents_file.exists():
+        try:
+            data = json.loads(state_agents_file.read_text(encoding='utf-8'))
+            for session in data.get('sessions', []):
+                for a in session.get('agents', []):
+                    if isinstance(a, dict) and a.get('pane_id'):
+                        raw_agents[a['pane_id']] = a
+        except Exception:
+            pass
+
+    # 2. Query live Herdr if binary is available and no cached agents were found
+    if not raw_agents:
+        herdr_exe = _find_bin(home, herdr_bin, proc_env) or herdr_bin
+        try:
+            session_res = subprocess.run([herdr_exe, "session", "list", "--json"],
+                                         capture_output=True, text=True, timeout=5, env=proc_env)
+            if session_res.returncode == 0:
+                sessions_data = json.loads(session_res.stdout).get("sessions", [])
+                for s in sessions_data:
+                    if s.get("running") and s.get("socket_path"):
+                        sess_env = dict(proc_env, HERDR_SOCKET_PATH=s["socket_path"])
+                        agent_res = subprocess.run([herdr_exe, "agent", "list"],
+                                                   capture_output=True, text=True, timeout=5, env=sess_env)
+                        if agent_res.returncode == 0:
+                            agents = json.loads(agent_res.stdout).get("result", {}).get("agents", [])
+                            for a in agents:
+                                if isinstance(a, dict) and a.get("pane_id"):
+                                    raw_agents[a["pane_id"]] = a
+            if not raw_agents:
+                agent_res = subprocess.run([herdr_exe, "agent", "list"],
+                                           capture_output=True, text=True, timeout=5, env=proc_env)
+                if agent_res.returncode == 0:
+                    agents = json.loads(agent_res.stdout).get("result", {}).get("agents", [])
+                    for a in agents:
+                        if isinstance(a, dict) and a.get("pane_id"):
+                            raw_agents[a["pane_id"]] = a
+        except Exception:
+            pass
 
     # Build transcript index for codex and claude
     index: dict[tuple[str, str], Path] = {}
@@ -380,20 +509,25 @@ def collect_terminal_agents(home_dir: Path | str | None = None, herdr_bin: str =
                     index[(provider, match.group().lower())] = p
 
     terminals = []
-    for a in agents:
-        agent_type = (a.get("agent") or "").lower()
-        if agent_type in ('claude', 'claude_code'):
-            norm_provider = 'claude_code'
-        elif agent_type in ('codex',):
-            norm_provider = 'codex'
-        elif agent_type in ('agy', 'antigravity'):
-            norm_provider = 'antigravity'
-        elif agent_type in ('hermes',):
-            norm_provider = 'hermes'
-        else:
-            norm_provider = agent_type
+    for a in raw_agents.values():
+        agent_type = str(a.get("agent") or "").lower()
+        name_str = str(a.get("name") or "").lower()
+        title_str = str(a.get("terminal_title") or a.get("terminal_title_stripped") or "").lower()
+        cmd_str = str(a.get("command") or "").lower()
+        combined = f"{agent_type} {name_str} {title_str} {cmd_str}"
 
-        session_id = ((a.get("agent_session") or {}).get("value") or "").lower()
+        if "claude" in combined:
+            norm_provider = "claude_code"
+        elif "codex" in combined:
+            norm_provider = "codex"
+        elif any(k in combined for k in ("agy", "antigravity")):
+            norm_provider = "antigravity"
+        elif "hermes" in combined:
+            norm_provider = "hermes"
+        else:
+            norm_provider = agent_type or "unknown"
+
+        session_id = str((a.get("agent_session") or {}).get("value") or "").lower()
         transcript_path = ""
         model = None
         session_tokens = None
@@ -426,15 +560,20 @@ def collect_terminal_agents(home_dir: Path | str | None = None, herdr_bin: str =
             except Exception:
                 pass
 
-        status = a.get("agent_status", "idle")
-        is_limit_reached = (status == "blocked")
+        status = str(a.get("agent_status") or "idle")
+        is_limit_reached = (status.lower() == "blocked")
+        pane_id = str(a.get("pane_id") or "")
+        tab_id = str(a.get("tab_id") or "")
+        name = str(a.get("name") or pane_id or "terminal")
+        cwd = str(a.get("foreground_cwd") or a.get("cwd") or "")
+        project = Path(cwd).name if cwd else ""
 
         terminals.append({
-            "pane_id": a.get("pane_id", ""),
-            "tab_id": a.get("tab_id", ""),
-            "name": a.get("name") or a.get("pane_id", ""),
+            "pane_id": pane_id,
+            "tab_id": tab_id,
+            "name": name,
             "provider": norm_provider,
-            "project": Path(a.get("foreground_cwd") or a.get("cwd") or "").name,
+            "project": project,
             "state": status,
             "model": model,
             "session_tokens": session_tokens,
@@ -492,16 +631,16 @@ def analyze_session_task(transcript_path: str, target_provider: str = "codex", h
     }
 
 
-def collect_provider_telemetry(home_dir: Path | str | None = None) -> dict:
+def collect_provider_telemetry(home_dir: Path | str | None = None, env: dict | None = None) -> dict:
     """Main entrypoint called by msam-host-agent to sample provider quotas and terminal sessions."""
     home = Path(home_dir).expanduser() if home_dir else Path.home()
     claude_creds = home / ".claude" / ".credentials.json"
 
     claude = collect_claude_quota(claude_creds)
     codex = collect_codex_quota()
-    antigravity = collect_antigravity_quota()
-    hermes = collect_hermes_quota()
-    terminals = collect_terminal_agents(home_dir=home)
+    antigravity = collect_antigravity_quota(home_dir=home, env=env)
+    hermes = collect_hermes_quota(home_dir=home, env=env)
+    terminals = collect_terminal_agents(home_dir=home, env=env)
 
     return {
         "providers": {
