@@ -36,13 +36,17 @@ final class HostTabStore {
     }
 
     @discardableResult
-    func open(hostID: UUID, sessionName: String?) -> HostTab {
+    func open(hostID: UUID, sessionName: String?, insertAfter: UUID? = nil) -> HostTab {
         let trimmed = sessionName?.trimmingCharacters(in: .whitespacesAndNewlines)
         let tab = HostTab(
             hostID: hostID,
             sessionName: (trimmed?.isEmpty ?? true) ? nil : trimmed
         )
-        tabs.append(tab)
+        if let insertAfter, let index = tabs.firstIndex(where: { $0.id == insertAfter }) {
+            tabs.insert(tab, at: index + 1)
+        } else {
+            tabs.append(tab)
+        }
         selectedTabID = tab.id
         save()
         return tab

@@ -104,6 +104,10 @@ struct RootView: View {
     @State private var showingSettings = false
     @State private var showingFileSend = false
     @State private var showingFunctionKeys = false
+    @State private var selectedProviderForDetail: ProviderQuota? = nil
+    @State private var showingHardwareMetricsSheet = false
+    @State private var showingProviderPulseSheet = false
+    @State private var rolloverTargetTerminal: TerminalAgentSession? = nil
     /// The downloaded file awaiting the user, if any. Set by the watch pipeline.
     @State private var incomingFile: IncomingFile?
     @State private var isFetchingIncoming = false
@@ -132,6 +136,10 @@ struct RootView: View {
                     if let tab = selectedTab {
                         HostMetricsBarView(metricsModel: tabs.session(for: tab).metrics, hostID: tab.hostID)
                             .background(HerdrTheme.panel, ignoresSafeAreaEdges: [])
+                        ProviderPulseBarView(pulse: tabs.session(for: tab).metrics.pulse) { provider in
+                            selectedProviderForDetail = provider
+                        }
+                        .background(HerdrTheme.panel, ignoresSafeAreaEdges: [])
                     }
                     
                     Button {
@@ -210,45 +218,41 @@ struct RootView: View {
                         }
                         .presentationCompactAdaptation(.popover)
                     }
-
-                    Menu {
-                        Section("Tab Theme") {
-                            Button("Default (Global)") {
-                                tabStore.setTheme(nil, for: selectedTab?.id ?? UUID())
-                            }
-                            Divider()
-                            ForEach(TerminalTheme.all) { theme in
-                                Button {
-                                    if let id = selectedTab?.id {
-                                        tabStore.setTheme(theme.id, for: id)
-                                    }
-                                } label: {
-                                    if selectedTab?.themeID == theme.id {
-                                        Label(theme.name, systemImage: "checkmark")
-                                    } else {
-                                        Text(theme.name)
-                                    }
-                                }
-                            }
-                        }
-                    } label: {
-                        Image(systemName: "paintpalette")
-                            .foregroundStyle(selectedTab?.themeID != nil ? HerdrTheme.accent : HerdrTheme.subtext)
-                            .frame(
-                                width: HerdrChromeMetrics.hostTabBarHeight,
-                                height: HerdrChromeMetrics.hostTabBarHeight
-                            )
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Change tab theme")
-                    .accessibilityIdentifier("msam.tab.theme")
-                    .background(HerdrTheme.panel, ignoresSafeAreaEdges: [])
                 }
                 // Phone (compact width): the metrics bar and the five toolbar
                 // buttons cannot share 390pt with the tab strip, so every
-                // secondary action folds into one overflow menu.
-                if isCompact, selectedTab != nil {
+                // secondary action folds into one overflow menu, alongside 1 hardware
+                // icon and 1 AI provider icon.
+                if isCompact, let tab = selectedTab {
+                    let metrics = tabs.session(for: tab).metrics
+
+                    Button {
+                        showingHardwareMetricsSheet = true
+                    } label: {
+                        Image(systemName: "gauge.with.needle")
+                            .foregroundStyle(HerdrTheme.subtext)
+                            .frame(width: HerdrChromeMetrics.hostTabBarHeight, height: HerdrChromeMetrics.hostTabBarHeight)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Hardware metrics")
+
+                    Button {
+                        showingProviderPulseSheet = true
+                    } label: {
+                        HStack(spacing: 2) {
+                            Image(systemName: "sparkles")
+                                .foregroundStyle(metrics.pulse.hasRateLimitedProvider ? HerdrTheme.red : HerdrTheme.accent)
+                            if metrics.pulse.hasRateLimitedProvider {
+                                Circle()
+                                    .fill(HerdrTheme.red)
+                                    .frame(width: 5, height: 5)
+                            }
+                        }
+                        .frame(width: HerdrChromeMetrics.hostTabBarHeight, height: HerdrChromeMetrics.hostTabBarHeight)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("AI Provider Pulse")
+
                     Menu {
                         Button(selection.isSelecting ? "Exit text selection" : "Select text") {
                             if selection.isSelecting { selection.exit() } else { selection.isSelecting = true }
@@ -261,25 +265,6 @@ struct RootView: View {
                             ForEach(TerminalFunctionKey.numbers, id: \.self) { number in
                                 Button("F\(number)") { tabs.sendFunctionKey(number) }
                                     .disabled(!isSelectedTabLive)
-                            }
-                        }
-                        Section("Tab Theme") {
-                            Button("Default (Global)") {
-                                tabStore.setTheme(nil, for: selectedTab?.id ?? UUID())
-                            }
-                            Divider()
-                            ForEach(TerminalTheme.all) { theme in
-                                Button {
-                                    if let id = selectedTab?.id {
-                                        tabStore.setTheme(theme.id, for: id)
-                                    }
-                                } label: {
-                                    if selectedTab?.themeID == theme.id {
-                                        Label(theme.name, systemImage: "checkmark")
-                                    } else {
-                                        Text(theme.name)
-                                    }
-                                }
                             }
                         }
                     } label: {
@@ -405,6 +390,86 @@ struct RootView: View {
             )
             .environment(toastCenter)
             .toastHost(toastCenter)
+        }
+        .sheet(item: $selectedProviderForDetail) { provider in
+            if let tab = selectedTab {
+                let session = tabs.session(for: tab)
+                ProviderDetailSheet(
+                    provider: provider,
+                    terminals: session.metrics.pulse.terminals(for: provider.name),
+                    onContinueSession: { term in
+                        rolloverTargetTerminal = term
+                    }
+                )
+            }
+        }
+        .sheet(isPresented: $showingHardwareMetricsSheet) {
+            if let tab = selectedTab {
+                HardwareMetricsSheet(metrics: tabs.session(for: tab).metrics)
+            }
+        }
+        .sheet(isPresented: $showingProviderPulseSheet) {
+            if let tab = selectedTab {
+                let session = tabs.session(for: tab)
+                NavigationStack {
+                    List(session.metrics.pulse.activeProviders) { prov in
+                        Button {
+                            showingProviderPulseSheet = false
+                            selectedProviderForDetail = prov
+                        } label: {
+                            HStack(spacing: 12) {
+                                ProviderIconView(providerName: prov.name, size: 24)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(prov.displayName)
+                                        .font(HerdrTheme.mono(.body, weight: .bold))
+                                        .foregroundStyle(HerdrTheme.text)
+                                    Text("\(Int(prov.usedPercent))% used · \(prov.state)")
+                                        .font(HerdrTheme.mono(.caption))
+                                        .foregroundStyle(prov.isRateLimited ? HerdrTheme.red : HerdrTheme.subtext)
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .foregroundStyle(HerdrTheme.subtext)
+                            }
+                        }
+                    }
+                    .background(HerdrTheme.background)
+                    .scrollContentBackground(.hidden)
+                    .navigationTitle("AI Provider Pulse")
+                    .navigationBarTitleDisplayMode(.inline)
+                }
+                .presentationDetents([.medium, .large])
+            }
+        }
+        .sheet(item: $rolloverTargetTerminal) { term in
+            if let tab = selectedTab {
+                let session = tabs.session(for: tab)
+                SessionRolloverSheet(
+                    terminal: term,
+                    availableProviders: session.metrics.pulse.activeProviders,
+                    service: session.connection.provisioningCommandRunner,
+                    onExecuteRollover: { provider, command, targetTerm in
+                        handleSessionRollover(provider: provider, command: command, terminal: targetTerm)
+                    }
+                )
+            }
+        }
+    }
+
+    private func handleSessionRollover(provider: String, command: String, terminal: TerminalAgentSession) {
+        guard let selectedTab else { return }
+        let currentTabID = selectedTab.id
+        let newTab = tabStore.open(hostID: selectedTab.hostID, sessionName: nil, insertAfter: currentTabID)
+        toastCenter.success("Rolled over to \(provider.capitalized) in adjacent tab")
+
+        Task {
+            let session = tabs.session(for: newTab)
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            session.send(text: command + "\n")
+            if let service = tabs.session(for: selectedTab).connection.provisioningCommandRunner {
+                _ = try? await service.run("herdr pane close \(terminal.paneID)", timeout: .seconds(5))
+            }
+            tabStore.close(currentTabID)
         }
     }
 

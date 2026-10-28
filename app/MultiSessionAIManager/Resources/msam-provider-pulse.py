@@ -230,36 +230,69 @@ def collect_codex_quota(codex_bin: str = "codex") -> dict:
         }
 
     rate_limits = limits.get("rateLimits", [])
+    if isinstance(rate_limits, dict):
+        primary = rate_limits.get("primary") or {}
+        resets_val = primary.get("resetsAt")
+        if isinstance(resets_val, (int, float)):
+            resets_iso = datetime.fromtimestamp(resets_val, timezone.utc).isoformat()
+        else:
+            resets_iso = resets_val
+        plan_type = rate_limits.get("planType", "pro")
+        rate_limits = [{
+            "group": rate_limits.get("limitId", "codex"),
+            "usedPercent": float(primary.get("usedPercent", 0.0)),
+            "windowMinutes": primary.get("windowDurationMins", 10080),
+            "resetsAt": resets_iso,
+            "planType": plan_type,
+        }]
+
     used_percent = 0.0
     resets_at = None
     windows = []
+    plan = usage.get("plan", "pro")
+
     for rl in rate_limits:
-        util = float(rl.get("usedPercent", 0.0))
-        used_percent = max(used_percent, util)
-        resets = rl.get("resetsAt")
-        if resets and not resets_at:
-            resets_at = resets
-        windows.append({
-            "group": rl.get("group", "codex"),
-            "window_minutes": rl.get("windowMinutes", 10080),
-            "used_percent": util,
-            "resets_at": resets,
-        })
+        if isinstance(rl, dict):
+            util = float(rl.get("usedPercent", 0.0))
+            used_percent = max(used_percent, util)
+            resets = rl.get("resetsAt")
+            if isinstance(resets, (int, float)):
+                resets = datetime.fromtimestamp(resets, timezone.utc).isoformat()
+            if resets and not resets_at:
+                resets_at = resets
+            if rl.get("planType"):
+                plan = rl["planType"]
+            windows.append({
+                "group": rl.get("group", "codex"),
+                "window_minutes": rl.get("windowMinutes", 10080),
+                "used_percent": util,
+                "resets_at": resets,
+            })
 
     state = "RATE_LIMITED" if used_percent >= 100.0 else "HEALTHY"
-    reset_credits_raw = usage.get("resetCredits") or {}
+    reset_credits_raw = limits.get("rateLimitResetCredits") or usage.get("resetCredits") or {}
     reset_credits = None
     if reset_credits_raw:
+        expires_at_list = []
+        for c in reset_credits_raw.get("credits", []):
+            exp = c.get("expiresAt")
+            if isinstance(exp, (int, float)):
+                expires_at_list.append(datetime.fromtimestamp(exp, timezone.utc).isoformat())
+            elif isinstance(exp, str):
+                expires_at_list.append(exp)
+        if not expires_at_list and "expiresAt" in reset_credits_raw:
+            raw_exp = reset_credits_raw.get("expiresAt")
+            expires_at_list = [raw_exp] if isinstance(raw_exp, str) else list(raw_exp)
         reset_credits = {
             "available_count": int(reset_credits_raw.get("availableCount", 0)),
-            "expires_at": reset_credits_raw.get("expiresAt", []),
+            "expires_at": expires_at_list,
         }
 
     return {
         "state": state,
         "used_percent": used_percent,
         "resets_at": resets_at,
-        "plan": usage.get("plan", "pro"),
+        "plan": plan,
         "windows": windows,
         "reset_credits": reset_credits,
     }
