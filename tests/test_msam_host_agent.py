@@ -256,12 +256,14 @@ class HostAgentTests(unittest.TestCase):
 
     def test_sample_metrics_includes_providers_and_terminal_agents(self):
         mock_metrics_mod = unittest.mock.MagicMock()
-        mock_metrics_mod.get_linux_metrics.return_value = {
+        mock_payload = {
             'cpu': {'utilization': 15.0},
             'memory': {'usagePercent': 45.0},
             'disk': {'volumes': []},
             'gpu': {'usagePercent': 0.0},
         }
+        mock_metrics_mod.get_linux_metrics.return_value = dict(mock_payload)
+        mock_metrics_mod.get_mac_metrics.return_value = dict(mock_payload)
         self.agent.atomic_json(self.agent.STATE / 'providers.json', {
             'providers': {'claude_code': {'state': 'HEALTHY', 'used_percent': 10.0}, 'codex': {'state': 'HEALTHY', 'used_percent': 5.0}},
             'terminal_agents': []
