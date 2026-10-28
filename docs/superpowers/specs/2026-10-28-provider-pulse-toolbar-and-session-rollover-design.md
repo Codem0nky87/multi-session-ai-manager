@@ -276,19 +276,25 @@ Tapping `Continue session` on a limited terminal opens `SessionRolloverSheet`:
   - Checkbox/Toggle: `Auto-approve commands (--yolo / --dangerously-skip-permissions)`.
   - Default: Enabled.
 
-### 7.2 Execution Flow
+### 7.2 Execution Flow with Hidden Analysis Window
 Upon user confirmation:
-1. **Open Adjacent Tab:**
+1. **Hidden Analysis Window Execution:**
+   - Before opening the visible user tab, the host agent runs a hidden analyzer process (headless SSH exec or hidden Herdr temporary pane):
+     - It inspects the prior session's transcript context, project directory, and task complexity.
+     - It evaluates the optimal **model** and **effort level** for the target provider (e.g. for Codex: `gpt-6.1-sol` with `--effort high` for unfinished complex builds, vs medium for verification; for Claude: `claude-3-7-sonnet` with thinking level).
+     - It outputs the recommended model, effort parameters, and task summary.
+   - The hidden analysis session terminates and closes immediately.
+2. **Open Adjacent Tab:**
    `HostTabStore.open(hostID: currentTab.hostID, sessionName: nil, insertAfter: currentTab.id)`
    Positions the new tab directly adjacent to the existing session and switches focus to it.
-2. **Construct Continuation Command:**
-   Constructs a token-optimized command referencing the on-disk transcript file path:
+3. **Construct Continuation Command:**
+   Constructs a token-optimized command incorporating the resolved model, effort level, permission flags, and transcript path:
    ```bash
-   codex --yolo "Continue previous task from session at /home/rufus/.claude/projects/-home-rufus-Projects-ai-stack/01a18130.jsonl in /home/rufus/Projects/ai-stack. Read the transcript context as needed and complete the work."
+   codex --model gpt-6.1-sol -c model_effort=high --yolo "Continue previous task from session at /home/rufus/.claude/projects/-home-rufus-Projects-ai-stack/01a18130.jsonl in /home/rufus/Projects/ai-stack. Read the transcript context as needed and complete the work."
    ```
-3. **Dispatch Command:**
+4. **Dispatch Command:**
    Sends the command string into the newly opened terminal session PTY.
-4. **Retire Old Tab:**
+5. **Retire Old Tab:**
    - Issues `herdr pane close <old_pane>` on the host.
    - Removes the old tab from `HostTabStore`.
 
