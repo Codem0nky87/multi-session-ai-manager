@@ -449,7 +449,7 @@ struct RootView: View {
         guard let selectedTab else { return }
         let session = tabs.session(for: selectedTab)
         guard let service = session.connection.provisioningCommandRunner else {
-            toastCenter.warning("SSH connection not available to execute rollover")
+            toastCenter.error("SSH connection not available to execute rollover")
             return
         }
 

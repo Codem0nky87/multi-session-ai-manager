@@ -104,7 +104,7 @@ public struct AILoaderModalView: View {
             .clipShape(RoundedRectangle(cornerRadius: 16))
             .overlay(
                 RoundedRectangle(cornerRadius: 16)
-                    .stroke(HerdrTheme.border, lineWidth: 1)
+                    .stroke(HerdrTheme.selection, lineWidth: 1)
             )
             .shadow(color: Color.black.opacity(0.4), radius: 24, x: 0, y: 12)
         }
