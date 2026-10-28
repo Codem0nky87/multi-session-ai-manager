@@ -51,6 +51,8 @@ targets:
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
         NSLocalNetworkUsageDescription: "AI Manager connects to Herdr servers and your machines on the local network."
+        NSMicrophoneUsageDescription: "AI Manager uses the microphone for push-to-talk voice input into your terminal sessions."
+        NSSpeechRecognitionUsageDescription: "AI Manager uses speech recognition to convert your voice into text for your terminal sessions."
         LSApplicationQueriesSchemes:
           - cf1app
         UIApplicationSceneManifest:
