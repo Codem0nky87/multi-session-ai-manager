@@ -35,7 +35,7 @@ struct HardwareMetricsSheet: View {
                     .clipShape(RoundedRectangle(cornerRadius: 12))
 
                     // GPU Card
-                    if metrics.gpu.utilizationAvailable || metrics.gpu.temperature != nil {
+                    if (metrics.gpu.utilizationAvailable ?? false) || metrics.gpu.temperature != nil {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("GPU")
                                 .font(HerdrTheme.mono(.headline, weight: .bold))
