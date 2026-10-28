@@ -137,7 +137,8 @@ public final class VoiceDictationEngine: ObservableObject {
 
 @MainActor
 public final class AppleSpeechRecognitionService: SpeechRecognitionService {
-    private let recognizer: SFSpeechRecognizer?
+    private var recognizer: SFSpeechRecognizer?
+    private let locale: Locale
     private var audioEngine: AVAudioEngine?
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
@@ -149,7 +150,14 @@ public final class AppleSpeechRecognitionService: SpeechRecognitionService {
     }
 
     public init(locale: Locale = Locale.current) {
-        self.recognizer = SFSpeechRecognizer(locale: locale) ?? SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
+        self.locale = locale
+    }
+
+    private func getOrCreateRecognizer() -> SFSpeechRecognizer? {
+        if let r = recognizer { return r }
+        let r = SFSpeechRecognizer(locale: locale) ?? SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
+        self.recognizer = r
+        return r
     }
 
     public func requestPermissions() async -> Bool {
@@ -181,7 +189,7 @@ public final class AppleSpeechRecognitionService: SpeechRecognitionService {
         onPartialResult: @MainActor @Sendable @escaping (String) -> Void,
         onAudioLevel: @MainActor @Sendable @escaping (Float) -> Void
     ) async throws {
-        guard let recognizer = recognizer, recognizer.isAvailable else {
+        guard let recognizer = getOrCreateRecognizer(), recognizer.isAvailable else {
             throw NSError(domain: "VoiceDictation", code: 1, userInfo: [NSLocalizedDescriptionKey: "Speech recognizer is not available."])
         }
 
