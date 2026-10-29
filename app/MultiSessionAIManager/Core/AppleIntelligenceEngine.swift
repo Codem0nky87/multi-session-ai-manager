@@ -9,8 +9,24 @@ public protocol LanguageModelBackend: Sendable {
     func streamResponse(
         to prompt: String,
         context: String?,
-        history: [AppleIntelligenceEngine.ChatMessage]
+        history: [AppleIntelligenceEngine.ChatMessage],
+        runtimeContext: AppRuntimeContext?
     ) -> AsyncThrowingStream<String, Error>
+}
+
+public extension LanguageModelBackend {
+    func streamResponse(
+        to prompt: String,
+        context: String?,
+        history: [AppleIntelligenceEngine.ChatMessage]
+    ) -> AsyncThrowingStream<String, Error> {
+        streamResponse(
+            to: prompt,
+            context: context,
+            history: history,
+            runtimeContext: nil
+        )
+    }
 }
 
 public final class AppleFoundationModelsBackend: LanguageModelBackend, @unchecked Sendable {
@@ -53,7 +69,8 @@ public final class AppleFoundationModelsBackend: LanguageModelBackend, @unchecke
     public func streamResponse(
         to prompt: String,
         context: String?,
-        history: [AppleIntelligenceEngine.ChatMessage]
+        history: [AppleIntelligenceEngine.ChatMessage],
+        runtimeContext: AppRuntimeContext? = nil
     ) -> AsyncThrowingStream<String, Error> {
         #if canImport(FoundationModels)
         if #available(iOS 26.0, macOS 26.0, *) {
@@ -62,6 +79,9 @@ public final class AppleFoundationModelsBackend: LanguageModelBackend, @unchecke
                     do {
                         let session = LanguageModelSession()
                         var combinedPrompt = ""
+                        if let runtimeContext, !runtimeContext.promptContext.isEmpty {
+                            combinedPrompt += "\(runtimeContext.promptContext)\n\n"
+                        }
                         if let context, !context.isEmpty {
                             combinedPrompt += "Active terminal output context:\n```\n\(context)\n```\n\n"
                         }
@@ -113,6 +133,7 @@ public final class AppleIntelligenceEngine {
         public let timestamp: Date
         public var attachedTerminalContext: String?
         public var isStreaming: Bool
+        public var action: AppAction?
 
         public enum Role: String, Sendable {
             case user
@@ -126,7 +147,8 @@ public final class AppleIntelligenceEngine {
             content: String,
             timestamp: Date = Date(),
             attachedTerminalContext: String? = nil,
-            isStreaming: Bool = false
+            isStreaming: Bool = false,
+            action: AppAction? = nil
         ) {
             self.id = id
             self.role = role
@@ -134,6 +156,7 @@ public final class AppleIntelligenceEngine {
             self.timestamp = timestamp
             self.attachedTerminalContext = attachedTerminalContext
             self.isStreaming = isStreaming
+            self.action = action
         }
     }
 
@@ -153,7 +176,11 @@ public final class AppleIntelligenceEngine {
         availability = backend.checkAvailability()
     }
 
-    public func sendPrompt(_ text: String, terminalContext: String? = nil) async {
+    public func sendPrompt(
+        _ text: String,
+        terminalContext: String? = nil,
+        runtimeContext: AppRuntimeContext? = nil
+    ) async {
         guard availability.isReady else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
@@ -180,7 +207,8 @@ public final class AppleIntelligenceEngine {
                 let stream = backend.streamResponse(
                     to: trimmed,
                     context: terminalContext,
-                    history: messages
+                    history: messages,
+                    runtimeContext: runtimeContext
                 )
                 for try await chunk in stream {
                     guard !Task.isCancelled else { break }
@@ -197,6 +225,9 @@ public final class AppleIntelligenceEngine {
             }
 
             if let index = messages.firstIndex(where: { $0.id == assistantMessageID }) {
+                let extracted = AppActionExtractor.extract(from: messages[index].content)
+                messages[index].content = extracted.cleanText
+                messages[index].action = extracted.action
                 messages[index].isStreaming = false
             }
             isGenerating = false
@@ -210,7 +241,16 @@ public final class AppleIntelligenceEngine {
         generationTask = nil
         isGenerating = false
         if let lastIndex = messages.indices.last, messages[lastIndex].isStreaming {
+            let extracted = AppActionExtractor.extract(from: messages[lastIndex].content)
+            messages[lastIndex].content = extracted.cleanText
+            messages[lastIndex].action = extracted.action
             messages[lastIndex].isStreaming = false
+        }
+    }
+
+    public func dismissAction(for messageID: UUID) {
+        if let index = messages.firstIndex(where: { $0.id == messageID }) {
+            messages[index].action = nil
         }
     }
 

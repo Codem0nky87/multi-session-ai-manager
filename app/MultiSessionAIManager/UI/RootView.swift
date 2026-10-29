@@ -340,7 +340,11 @@ struct RootView: View {
                                 withAnimation(.easeInOut(duration: 0.2)) {
                                     showingIntelligence = false
                                 }
-                            }
+                            },
+                            onApplyAction: { action in
+                                try await actionDispatcher.dispatch(action)
+                            },
+                            runtimeContext: { runtimeContext }
                         )
                         .frame(width: 360)
                         .transition(.move(edge: .trailing))
@@ -502,7 +506,11 @@ struct RootView: View {
                     },
                     onClose: {
                         showingIntelligence = false
-                    }
+                    },
+                    onApplyAction: { action in
+                        try await actionDispatcher.dispatch(action)
+                    },
+                    runtimeContext: { runtimeContext }
                 )
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
@@ -512,7 +520,11 @@ struct RootView: View {
                     onInsertToTerminal: { _ in },
                     onClose: {
                         showingIntelligence = false
-                    }
+                    },
+                    onApplyAction: { action in
+                        try await actionDispatcher.dispatch(action)
+                    },
+                    runtimeContext: { runtimeContext }
                 )
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
@@ -609,6 +621,40 @@ struct RootView: View {
                 toastCenter.success("Relaunched with \(provider.capitalized) (\(model)) on host")
             }
         }
+    }
+
+    func title(for tab: HostTab) -> String {
+        HostTabTitle.title(for: tab, hosts: hostStore.hosts)
+    }
+
+    var runtimeContext: AppRuntimeContext {
+        AppRuntimeContext(
+            hostTabs: tabStore.tabs.map { title(for: $0) },
+            selectedHostTab: selectedTab.map { title(for: $0) },
+            activeHostName: selectedHost?.name,
+            currentDirectory: selectedTab.flatMap { tabs.session(for: $0).incomingPaths.last }
+        )
+    }
+
+    var actionDispatcher: AppActionDispatcher {
+        AppActionDispatcher(
+            tabStore: tabStore,
+            hostStore: hostStore,
+            getActiveSession: { [tabStore, tabs] in
+                guard let id = tabStore.selectedTabID,
+                      let tab = tabStore.tabs.first(where: { $0.id == id }) else {
+                    return nil
+                }
+                return tabs.session(for: tab)
+            },
+            onOpenSheet: { sheet in
+                switch sheet {
+                case .metrics: showingHardwareMetricsSheet = true
+                case .pulse: showingProviderPulseSheet = true
+                case .settings: showingSettings = true
+                }
+            }
+        )
     }
 
     private var selectedTab: HostTab? {

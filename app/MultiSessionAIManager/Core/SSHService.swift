@@ -84,10 +84,11 @@ final class SSHService: @unchecked Sendable {
         ))
     }
 
+    @discardableResult
     func run(
         _ command: String,
-        timeout: Duration,
-        outputLimit: Int
+        timeout: Duration = .seconds(15),
+        outputLimit: Int = 65536
     ) async throws -> SSHCommandResult {
         let shellCmd = isWindows ? WindowsShell.wrapping(command) : Self.provisioningShellCommand(command)
         return try await transport.runCommand(.init(
