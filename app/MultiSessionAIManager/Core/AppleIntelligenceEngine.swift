@@ -248,6 +248,12 @@ public final class AppleIntelligenceEngine {
         }
     }
 
+    public func dismissAction(for messageID: UUID) {
+        if let index = messages.firstIndex(where: { $0.id == messageID }) {
+            messages[index].action = nil
+        }
+    }
+
     public func clearHistory() {
         stopGeneration()
         messages.removeAll()

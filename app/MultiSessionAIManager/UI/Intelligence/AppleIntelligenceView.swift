@@ -6,6 +6,8 @@ public struct AppleIntelligenceView: View {
     public let activeTerminalText: () -> String?
     public let onInsertToTerminal: (String) -> Void
     public let onClose: () -> Void
+    public let onApplyAction: ((AppAction) async throws -> Void)?
+    public let onDismissAction: ((UUID) -> Void)?
 
     @State private var engine: AppleIntelligenceEngine
     @ObservedObject private var voiceEngine: VoiceDictationEngine
@@ -18,13 +20,17 @@ public struct AppleIntelligenceView: View {
         voiceEngine: VoiceDictationEngine = .shared,
         activeTerminalText: @escaping () -> String?,
         onInsertToTerminal: @escaping (String) -> Void,
-        onClose: @escaping () -> Void
+        onClose: @escaping () -> Void,
+        onApplyAction: ((AppAction) async throws -> Void)? = nil,
+        onDismissAction: ((UUID) -> Void)? = nil
     ) {
         self._engine = State(initialValue: engine)
         self.voiceEngine = voiceEngine
         self.activeTerminalText = activeTerminalText
         self.onInsertToTerminal = onInsertToTerminal
         self.onClose = onClose
+        self.onApplyAction = onApplyAction
+        self.onDismissAction = onDismissAction
     }
 
     public static func lineCount(of text: String) -> Int {
@@ -209,7 +215,15 @@ public struct AppleIntelligenceView: View {
                         ForEach(engine.messages) { message in
                             AppleIntelligenceMessageView(
                                 message: message,
-                                onInsertToTerminal: onInsertToTerminal
+                                onInsertToTerminal: onInsertToTerminal,
+                                onApplyAction: onApplyAction,
+                                onDismissAction: { id in
+                                    if let onDismissAction {
+                                        onDismissAction(id)
+                                    } else {
+                                        engine.dismissAction(for: id)
+                                    }
+                                }
                             )
                             .id(message.id)
                         }

@@ -3,15 +3,21 @@ import SwiftUI
 public struct AppleIntelligenceMessageView: View {
     public let message: AppleIntelligenceEngine.ChatMessage
     public let onInsertToTerminal: (String) -> Void
+    public let onApplyAction: ((AppAction) async throws -> Void)?
+    public let onDismissAction: ((UUID) -> Void)?
 
     @State private var copiedCodeID: String? = nil
 
     public init(
         message: AppleIntelligenceEngine.ChatMessage,
-        onInsertToTerminal: @escaping (String) -> Void
+        onInsertToTerminal: @escaping (String) -> Void,
+        onApplyAction: ((AppAction) async throws -> Void)? = nil,
+        onDismissAction: ((UUID) -> Void)? = nil
     ) {
         self.message = message
         self.onInsertToTerminal = onInsertToTerminal
+        self.onApplyAction = onApplyAction
+        self.onDismissAction = onDismissAction
     }
 
     public var body: some View {
@@ -101,6 +107,18 @@ public struct AppleIntelligenceMessageView: View {
                         .fill(HerdrTheme.accent)
                         .frame(width: 8, height: 8)
                         .opacity(0.8)
+                }
+
+                if let action = message.action {
+                    AppActionCardView(
+                        action: action,
+                        onApply: {
+                            try await onApplyAction?(action)
+                        },
+                        onDismiss: {
+                            onDismissAction?(message.id)
+                        }
+                    )
                 }
             }
         }
