@@ -61,7 +61,8 @@ public final class VoiceDictationEngine: ObservableObject {
     }
 
     public nonisolated static func normalizeAudioLevel(rms: Float) -> Float {
-        min(max(rms, 0.0), 1.0)
+        guard !rms.isNaN && !rms.isInfinite else { return 0.0 }
+        return min(max(rms, 0.0), 1.0)
     }
 
     public nonisolated static func convertTextToTerminalBytes(_ text: String) -> [UInt8] {
@@ -196,19 +197,33 @@ public final class AppleSpeechRecognitionService: SpeechRecognitionService {
         teardownAudio()
 
         let audioSession = AVAudioSession.sharedInstance()
-        try audioSession.setCategory(.playAndRecord, mode: .measurement, options: [.duckOthers, .defaultToSpeaker, .allowBluetooth])
+        try audioSession.setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .defaultToSpeaker, .allowBluetooth])
         try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
 
         let engine = AVAudioEngine()
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
 
-        if recognizer.supportsOnDeviceRecognition {
-            request.requiresOnDeviceRecognition = onDeviceOnly
-        }
+        // Default to false so iOS prefers on-device recognition when available,
+        // but gracefully falls back without crashing if local models are not yet downloaded.
+        request.requiresOnDeviceRecognition = false
 
         let inputNode = engine.inputNode
-        let recordingFormat = inputNode.outputFormat(forBus: 0)
+        inputNode.removeTap(onBus: 0)
+
+        var recordingFormat = inputNode.outputFormat(forBus: 0)
+        if recordingFormat.sampleRate <= 0 || recordingFormat.channelCount == 0 {
+            recordingFormat = inputNode.inputFormat(forBus: 0)
+        }
+
+        guard recordingFormat.sampleRate > 0, recordingFormat.channelCount > 0 else {
+            teardownAudio()
+            throw NSError(
+                domain: "VoiceDictation",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "Audio hardware is initializing. Please tap and hold again in a moment."]
+            )
+        }
 
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { buffer, _ in
             request.append(buffer)
@@ -220,16 +235,25 @@ public final class AppleSpeechRecognitionService: SpeechRecognitionService {
             var sum: Float = 0.0
             for i in 0..<frameLength {
                 let sample = channelData[i]
-                sum += sample * sample
+                if !sample.isNaN && !sample.isInfinite {
+                    sum += sample * sample
+                }
             }
             let rms = sqrt(sum / Float(frameLength))
-            Task { @MainActor in
-                onAudioLevel(rms * 12.0)
+            if !rms.isNaN && !rms.isInfinite {
+                Task { @MainActor in
+                    onAudioLevel(rms * 12.0)
+                }
             }
         }
 
-        engine.prepare()
-        try engine.start()
+        do {
+            engine.prepare()
+            try engine.start()
+        } catch {
+            teardownAudio()
+            throw error
+        }
 
         self.audioEngine = engine
         self.recognitionRequest = request

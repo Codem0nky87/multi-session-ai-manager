@@ -629,6 +629,7 @@ struct RootView: View {
 
     var runtimeContext: AppRuntimeContext {
         AppRuntimeContext(
+            availableHosts: hostStore.hosts.map(\.name),
             hostTabs: tabStore.tabs.map { title(for: $0) },
             selectedHostTab: selectedTab.map { title(for: $0) },
             activeHostName: selectedHost?.name,

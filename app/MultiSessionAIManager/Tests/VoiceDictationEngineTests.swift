@@ -31,6 +31,9 @@ import Testing
         #expect(VoiceDictationEngine.normalizeAudioLevel(rms: 0.5) == 0.5)
         #expect(VoiceDictationEngine.normalizeAudioLevel(rms: 1.0) == 1.0)
         #expect(VoiceDictationEngine.normalizeAudioLevel(rms: 2.5) == 1.0)
+        #expect(VoiceDictationEngine.normalizeAudioLevel(rms: Float.nan) == 0.0)
+        #expect(VoiceDictationEngine.normalizeAudioLevel(rms: Float.infinity) == 0.0)
+        #expect(VoiceDictationEngine.normalizeAudioLevel(rms: -Float.infinity) == 0.0)
     }
 
     @Test func convertTextToTerminalBytesPreservesUTF8() {

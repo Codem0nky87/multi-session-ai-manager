@@ -40,6 +40,7 @@ public struct VoiceTranscriptionHUD: View {
     }
 
     public static func barHeight(forIndex index: Int, level: Float) -> CGFloat {
+        guard !level.isNaN && !level.isInfinite else { return 4.0 }
         let base: CGFloat = 6.0
         let multipliers: [CGFloat] = [1.0, 1.4, 1.2, 0.8]
         let factor = index < multipliers.count ? multipliers[index] : 1.0

@@ -20,11 +20,25 @@ import Testing
     @Test func formatsPromptContextWithEmptyHostTabs() {
         let ctx = AppRuntimeContext()
         let prompt = ctx.promptContext
+        #expect(!prompt.contains("Saved SSH Hosts:"))
         #expect(!prompt.contains("Open Host Tabs:"))
         #expect(!prompt.contains("Active Host:"))
         #expect(!prompt.contains("Working Directory:"))
         #expect(prompt.contains("You are the Apple Intelligence assistant"))
         #expect(prompt.contains("```action"))
+    }
+
+    @Test func formatsPromptContextWithAvailableHosts() {
+        let ctx = AppRuntimeContext(
+            availableHosts: ["IronMentorMac", "Forge", "Spark"],
+            hostTabs: ["Forge"],
+            selectedHostTab: "Forge",
+            activeHostName: "Forge"
+        )
+        let prompt = ctx.promptContext
+        #expect(prompt.contains("Saved SSH Hosts: [IronMentorMac, Forge, Spark]"))
+        #expect(prompt.contains("open_host_tab"))
+        #expect(prompt.contains("saved remote SSH servers"))
     }
 
     @Test func chatMessageHoldsExtractedAction() {

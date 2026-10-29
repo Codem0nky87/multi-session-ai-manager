@@ -30,5 +30,7 @@ import Testing
             #expect(heightMid >= heightMin)
             #expect(heightMax >= heightMid && heightMax <= 24.0)
         }
+        #expect(VoiceTranscriptionHUD.barHeight(forIndex: 0, level: Float.nan) == 4.0)
+        #expect(VoiceTranscriptionHUD.barHeight(forIndex: 0, level: Float.infinity) == 4.0)
     }
 }
