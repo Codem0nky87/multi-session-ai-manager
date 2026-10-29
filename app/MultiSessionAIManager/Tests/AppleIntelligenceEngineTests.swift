@@ -8,6 +8,7 @@ final class MockLanguageModelBackend: LanguageModelBackend, @unchecked Sendable 
     var delayNanoseconds: UInt64
     var lastPrompt: String?
     var lastContext: String?
+    var lastRuntimeContext: AppRuntimeContext?
 
     init(
         state: AppleIntelligenceEngine.AvailabilityState = .available,
@@ -31,10 +32,12 @@ final class MockLanguageModelBackend: LanguageModelBackend, @unchecked Sendable 
     func streamResponse(
         to prompt: String,
         context: String?,
-        history: [AppleIntelligenceEngine.ChatMessage]
+        history: [AppleIntelligenceEngine.ChatMessage],
+        runtimeContext: AppRuntimeContext? = nil
     ) -> AsyncThrowingStream<String, Error> {
         self.lastPrompt = prompt
         self.lastContext = context
+        self.lastRuntimeContext = runtimeContext
         let chunks = streamChunks
         let delay = delayNanoseconds
 
