@@ -73,4 +73,32 @@ import SwiftUI
         #expect(AppleIntelligenceEngine.AvailabilityState.notEnabled(reason: "test").isReady == false)
         #expect(AppleIntelligenceEngine.AvailabilityState.unsupported(reason: "test").isReady == false)
     }
+
+    @Test func runtimeContextQueriedWhenSendingPrompt() async {
+        let mockBackend = MockLanguageModelBackend(available: true)
+        let engine = AppleIntelligenceEngine(backend: mockBackend)
+        var runtimeContextQueried = false
+        let expectedContext = AppRuntimeContext(
+            hostTabs: ["MacTab", "LinuxTab"],
+            selectedHostTab: "MacTab",
+            activeHostName: "Mac",
+            currentDirectory: "/Users/rufus/Projects/app"
+        )
+
+        let view = AppleIntelligenceView(
+            engine: engine,
+            activeTerminalText: { nil },
+            onInsertToTerminal: { _ in },
+            onClose: {},
+            runtimeContext: {
+                runtimeContextQueried = true
+                return expectedContext
+            }
+        )
+
+        #expect(view.runtimeContext != nil)
+        await view.send(prompt: "split pane down")
+        #expect(runtimeContextQueried == true)
+        #expect(mockBackend.lastRuntimeContext == expectedContext)
+    }
 }

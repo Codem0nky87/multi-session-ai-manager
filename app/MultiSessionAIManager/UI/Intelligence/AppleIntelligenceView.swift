@@ -8,6 +8,7 @@ public struct AppleIntelligenceView: View {
     public let onClose: () -> Void
     public let onApplyAction: ((AppAction) async throws -> Void)?
     public let onDismissAction: ((UUID) -> Void)?
+    public let runtimeContext: (() -> AppRuntimeContext?)?
 
     @State private var engine: AppleIntelligenceEngine
     @ObservedObject private var voiceEngine: VoiceDictationEngine
@@ -22,7 +23,8 @@ public struct AppleIntelligenceView: View {
         onInsertToTerminal: @escaping (String) -> Void,
         onClose: @escaping () -> Void,
         onApplyAction: ((AppAction) async throws -> Void)? = nil,
-        onDismissAction: ((UUID) -> Void)? = nil
+        onDismissAction: ((UUID) -> Void)? = nil,
+        runtimeContext: (() -> AppRuntimeContext?)? = nil
     ) {
         self._engine = State(initialValue: engine)
         self.voiceEngine = voiceEngine
@@ -31,6 +33,7 @@ public struct AppleIntelligenceView: View {
         self.onClose = onClose
         self.onApplyAction = onApplyAction
         self.onDismissAction = onDismissAction
+        self.runtimeContext = runtimeContext
     }
 
     public static func lineCount(of text: String) -> Int {
@@ -465,6 +468,17 @@ public struct AppleIntelligenceView: View {
         }
     }
 
+    func send(prompt: String, context: String? = nil) async {
+        guard engine.availability.isReady else { return }
+        let textToSend = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !textToSend.isEmpty else { return }
+        await engine.sendPrompt(
+            textToSend,
+            terminalContext: context,
+            runtimeContext: runtimeContext?()
+        )
+    }
+
     private func sendMessage() {
         guard engine.availability.isReady else { return }
         let textToSend = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -477,7 +491,7 @@ public struct AppleIntelligenceView: View {
         attachedContext = nil
 
         Task {
-            await engine.sendPrompt(textToSend, terminalContext: contextToSend)
+            await send(prompt: textToSend, context: contextToSend)
         }
     }
 }
