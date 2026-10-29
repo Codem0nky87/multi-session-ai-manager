@@ -63,6 +63,12 @@ struct TerminalQuickKeyBar: View {
             textKey("ctrl", id: "ctrl", active: controller.isCtrlArmed) {
                 controller.toggleCtrl()
             }
+            textKey("^/", id: "ctrl-slash") {
+                send(EscapeSequences.ctrlSlash)
+            }
+            textKey("^c", id: "ctrl-c") {
+                send(EscapeSequences.ctrlC)
+            }
             symbolKey("shift", id: "shift", active: isShiftArmed) {
                 isShiftArmed.toggle()
             }

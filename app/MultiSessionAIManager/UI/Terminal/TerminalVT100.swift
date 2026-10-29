@@ -45,6 +45,8 @@ enum EscapeSequences {
     static let meta      = "\u{1b}".utf8Array
     static let tab       = "\t".utf8Array
     static let `return`  = "\r".utf8Array
+    static let ctrlC     = [UInt8(0x03)]
+    static let ctrlSlash = [UInt8(0x1F)]
 
     static let up        = "\u{1b}[A".utf8Array
     static let upApp     = "\u{1b}OA".utf8Array

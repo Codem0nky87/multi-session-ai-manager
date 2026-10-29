@@ -23,4 +23,9 @@ import Testing
     @Test func backtabIsShiftTab() {
         #expect(EscapeSequences.backtab == Array("\u{1b}[Z".utf8))
     }
+
+    @Test func ctrlShortcutsUseStandardAsciiCodes() {
+        #expect(EscapeSequences.ctrlC == [0x03])
+        #expect(EscapeSequences.ctrlSlash == [0x1F])
+    }
 }
