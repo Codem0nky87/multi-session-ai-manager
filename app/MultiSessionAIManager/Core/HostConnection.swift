@@ -19,7 +19,7 @@ final class HostConnection {
     let host: Host
     let knownHosts: KnownHostsStore
     private let keyStore: KeyStore
-    private let service: SSHService
+    let service: SSHService
     private(set) var state: State = .idle
     private var operationGeneration: UInt64 = 0
 
