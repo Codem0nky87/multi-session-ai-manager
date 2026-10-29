@@ -23,6 +23,20 @@ import Testing
         #expect(!result.cleanText.contains("\"split_pane\""))
     }
 
+    @Test func extractsSplitPaneActionRightWithoutStagedCommand() {
+        let raw = """
+        ```action
+        {
+          "type": "split_pane",
+          "direction": "right"
+        }
+        ```
+        """
+        let result = AppActionExtractor.extract(from: raw)
+        #expect(result.action == .splitPane(direction: .right, stagedCommand: nil))
+        #expect(result.cleanText.isEmpty)
+    }
+
     @Test func extractsSwitchHostTabAction() {
         let raw = """
         Switching to the Foundry host tab.
@@ -50,6 +64,19 @@ import Testing
         """
         let result = AppActionExtractor.extract(from: raw)
         #expect(result.action == .createHerdrTab(label: "build", stagedCommand: "cargo check"))
+    }
+
+    @Test func extractsCreateHerdrTabWithTargetFallback() {
+        let raw = """
+        ```action
+        {
+          "type": "create_herdr_tab",
+          "target": "server-logs"
+        }
+        ```
+        """
+        let result = AppActionExtractor.extract(from: raw)
+        #expect(result.action == .createHerdrTab(label: "server-logs", stagedCommand: nil))
     }
 
     @Test func extractsClosePaneAction() {
@@ -94,8 +121,7 @@ import Testing
     }
 
     @Test func extractsOpenAppSheetAction() {
-        let raw = """
-        Opening metrics sheet.
+        let rawMetrics = """
         ```action
         {
           "type": "open_sheet",
@@ -103,8 +129,36 @@ import Testing
         }
         ```
         """
-        let result = AppActionExtractor.extract(from: raw)
-        #expect(result.action == .openAppSheet(sheet: .metrics))
+        #expect(AppActionExtractor.extract(from: rawMetrics).action == .openAppSheet(sheet: .metrics))
+
+        let rawPulse = """
+        ```action
+        {
+          "type": "open_sheet",
+          "sheet": "pulse"
+        }
+        ```
+        """
+        #expect(AppActionExtractor.extract(from: rawPulse).action == .openAppSheet(sheet: .pulse))
+
+        let rawSettings = """
+        ```action
+        {
+          "type": "open_sheet",
+          "sheet": "settings"
+        }
+        ```
+        """
+        #expect(AppActionExtractor.extract(from: rawSettings).action == .openAppSheet(sheet: .settings))
+
+        let rawDefault = """
+        ```action
+        {
+          "type": "open_sheet"
+        }
+        ```
+        """
+        #expect(AppActionExtractor.extract(from: rawDefault).action == .openAppSheet(sheet: .settings))
     }
 
     @Test func handlesTextWithoutAction() {
@@ -124,5 +178,31 @@ import Testing
         let result = AppActionExtractor.extract(from: raw)
         #expect(result.action == nil)
         #expect(result.cleanText.contains("Trying action:"))
+    }
+
+    @Test func handlesUnknownActionTypeGracefully() {
+        let raw = """
+        ```action
+        {
+          "type": "unknown_future_command"
+        }
+        ```
+        """
+        let result = AppActionExtractor.extract(from: raw)
+        #expect(result.action == nil)
+        #expect(result.cleanText.isEmpty)
+    }
+
+    @Test func handlesEmptyHostTargetsGracefully() {
+        let raw = """
+        ```action
+        {
+          "type": "switch_host_tab",
+          "target": ""
+        }
+        ```
+        """
+        let result = AppActionExtractor.extract(from: raw)
+        #expect(result.action == nil)
     }
 }
