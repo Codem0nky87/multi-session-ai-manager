@@ -1,0 +1,128 @@
+import Foundation
+import Testing
+@testable import MultiSessionAIManager
+
+@Suite struct AppActionExtractorTests {
+    @Test func extractsSplitPaneActionWithStagedCommandAndStripsBlock() {
+        let raw = """
+        I will split the window and run the tests for you.
+        ```action
+        {
+          "type": "split_pane",
+          "direction": "down",
+          "staged_command": "pytest -v"
+        }
+        ```
+        Let me know if you need anything else!
+        """
+        let result = AppActionExtractor.extract(from: raw)
+        #expect(result.action == .splitPane(direction: .down, stagedCommand: "pytest -v"))
+        #expect(result.cleanText.contains("I will split the window"))
+        #expect(result.cleanText.contains("Let me know if you need anything else!"))
+        #expect(!result.cleanText.contains("```action"))
+        #expect(!result.cleanText.contains("\"split_pane\""))
+    }
+
+    @Test func extractsSwitchHostTabAction() {
+        let raw = """
+        Switching to the Foundry host tab.
+        ```action
+        {
+          "type": "switch_host_tab",
+          "target": "Foundry"
+        }
+        ```
+        """
+        let result = AppActionExtractor.extract(from: raw)
+        #expect(result.action == .switchHostTab(name: "Foundry"))
+        #expect(!result.cleanText.contains("```action"))
+    }
+
+    @Test func extractsCreateHerdrTabAction() {
+        let raw = """
+        ```action
+        {
+          "type": "create_herdr_tab",
+          "label": "build",
+          "staged_command": "cargo check"
+        }
+        ```
+        """
+        let result = AppActionExtractor.extract(from: raw)
+        #expect(result.action == .createHerdrTab(label: "build", stagedCommand: "cargo check"))
+    }
+
+    @Test func extractsClosePaneAction() {
+        let raw = """
+        Closing the pane.
+        ```action
+        {
+          "type": "close_pane"
+        }
+        ```
+        """
+        let result = AppActionExtractor.extract(from: raw)
+        #expect(result.action == .closePane)
+        #expect(result.cleanText == "Closing the pane.")
+    }
+
+    @Test func extractsZoomPaneAction() {
+        let raw = """
+        Zooming pane.
+        ```action
+        {
+          "type": "zoom_pane"
+        }
+        ```
+        """
+        let result = AppActionExtractor.extract(from: raw)
+        #expect(result.action == .zoomPane)
+    }
+
+    @Test func extractsOpenHostTabAction() {
+        let raw = """
+        Opening Mac mini host.
+        ```action
+        {
+          "type": "open_host_tab",
+          "target": "Mac mini"
+        }
+        ```
+        """
+        let result = AppActionExtractor.extract(from: raw)
+        #expect(result.action == .openHostTab(hostName: "Mac mini"))
+    }
+
+    @Test func extractsOpenAppSheetAction() {
+        let raw = """
+        Opening metrics sheet.
+        ```action
+        {
+          "type": "open_sheet",
+          "sheet": "metrics"
+        }
+        ```
+        """
+        let result = AppActionExtractor.extract(from: raw)
+        #expect(result.action == .openAppSheet(sheet: .metrics))
+    }
+
+    @Test func handlesTextWithoutAction() {
+        let raw = "Here is regular advice without any action blocks."
+        let result = AppActionExtractor.extract(from: raw)
+        #expect(result.action == nil)
+        #expect(result.cleanText == raw)
+    }
+
+    @Test func handlesMalformedActionJsonGracefully() {
+        let raw = """
+        Trying action:
+        ```action
+        { not valid json }
+        ```
+        """
+        let result = AppActionExtractor.extract(from: raw)
+        #expect(result.action == nil)
+        #expect(result.cleanText.contains("Trying action:"))
+    }
+}
