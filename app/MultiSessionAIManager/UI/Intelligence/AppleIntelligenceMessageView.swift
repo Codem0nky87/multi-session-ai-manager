@@ -1,6 +1,6 @@
 import SwiftUI
 
-public struct CopilotMessageView: View {
+public struct AppleIntelligenceMessageView: View {
     public let message: AppleIntelligenceEngine.ChatMessage
     public let onInsertToTerminal: (String) -> Void
 
@@ -30,7 +30,7 @@ public struct CopilotMessageView: View {
                     Image(systemName: "apple.intelligence")
                         .font(.caption)
                         .foregroundStyle(HerdrTheme.accent)
-                    Text("On-Device Copilot")
+                    Text("Apple Intelligence")
                         .font(.caption2.weight(.medium))
                         .foregroundStyle(HerdrTheme.subtext)
                     Spacer()

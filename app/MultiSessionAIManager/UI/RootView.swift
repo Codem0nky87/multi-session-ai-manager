@@ -103,7 +103,7 @@ struct RootView: View {
     @State private var showingPicker = false
     @State private var showingSettings = false
     @State private var showingFileSend = false
-    @State private var showingCopilot = false
+    @State private var showingIntelligence = false
     @State private var selectedProviderForDetail: ProviderQuota? = nil
     @State private var showingHardwareMetricsSheet = false
     @State private var showingProviderPulseSheet = false
@@ -203,11 +203,11 @@ struct RootView: View {
 
                     Button {
                         withAnimation(.easeInOut(duration: 0.2)) {
-                            showingCopilot.toggle()
+                            showingIntelligence.toggle()
                         }
                     } label: {
                         Image(systemName: "apple.intelligence")
-                            .foregroundStyle(showingCopilot ? HerdrTheme.accent : HerdrTheme.subtext)
+                            .foregroundStyle(showingIntelligence ? HerdrTheme.accent : HerdrTheme.subtext)
                             .frame(
                                 width: HerdrChromeMetrics.hostTabBarHeight,
                                 height: HerdrChromeMetrics.hostTabBarHeight
@@ -215,8 +215,8 @@ struct RootView: View {
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("On-Device Copilot")
-                    .accessibilityIdentifier("msam.copilot.toggle")
+                    .accessibilityLabel("Apple Intelligence")
+                    .accessibilityIdentifier("msam.intelligence.toggle")
                     .background(HerdrTheme.panel, ignoresSafeAreaEdges: [])
                 }
                 // Phone (compact width): the metrics bar and the five toolbar
@@ -254,18 +254,18 @@ struct RootView: View {
                     .accessibilityLabel("AI Provider Pulse")
 
                     Button {
-                        showingCopilot = true
+                        showingIntelligence = true
                     } label: {
                         Image(systemName: "apple.intelligence")
-                            .foregroundStyle(showingCopilot ? HerdrTheme.accent : HerdrTheme.subtext)
+                            .foregroundStyle(showingIntelligence ? HerdrTheme.accent : HerdrTheme.subtext)
                             .frame(width: HerdrChromeMetrics.hostTabBarHeight, height: HerdrChromeMetrics.hostTabBarHeight)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("On-Device Copilot")
-                    .accessibilityIdentifier("msam.compact.copilot")
+                    .accessibilityLabel("Apple Intelligence")
+                    .accessibilityIdentifier("msam.compact.intelligence")
 
                     Menu {
-                        Button("On-Device Copilot") { showingCopilot = true }
+                        Button("Apple Intelligence") { showingIntelligence = true }
                         Button(selection.isSelecting ? "Exit text selection" : "Select text") {
                             if selection.isSelecting { selection.exit() } else { selection.isSelecting = true }
                         }
@@ -327,9 +327,9 @@ struct RootView: View {
                     .ignoresSafeArea(.container, edges: .bottom)
                     .id(tab.id)
 
-                    if showingCopilot && !isCompact {
+                    if showingIntelligence && !isCompact {
                         Divider().background(HerdrTheme.selection)
-                        OnDeviceCopilotView(
+                        AppleIntelligenceView(
                             activeTerminalText: {
                                 tabs.session(for: tab).terminal.visibleText()
                             },
@@ -338,7 +338,7 @@ struct RootView: View {
                             },
                             onClose: {
                                 withAnimation(.easeInOut(duration: 0.2)) {
-                                    showingCopilot = false
+                                    showingIntelligence = false
                                 }
                             }
                         )
@@ -489,11 +489,11 @@ struct RootView: View {
             }
         }
         .sheet(isPresented: Binding(
-            get: { isCompact && showingCopilot },
-            set: { showingCopilot = $0 }
+            get: { isCompact && showingIntelligence },
+            set: { showingIntelligence = $0 }
         )) {
             if let tab = selectedTab {
-                OnDeviceCopilotView(
+                AppleIntelligenceView(
                     activeTerminalText: {
                         tabs.session(for: tab).terminal.visibleText()
                     },
@@ -501,17 +501,17 @@ struct RootView: View {
                         tabs.session(for: tab).terminal.feedInputToPTY(Array(snippet.utf8))
                     },
                     onClose: {
-                        showingCopilot = false
+                        showingIntelligence = false
                     }
                 )
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
             } else {
-                OnDeviceCopilotView(
+                AppleIntelligenceView(
                     activeTerminalText: { nil },
                     onInsertToTerminal: { _ in },
                     onClose: {
-                        showingCopilot = false
+                        showingIntelligence = false
                     }
                 )
                 .presentationDetents([.medium, .large])

@@ -2,7 +2,7 @@ import SwiftUI
 import AudioToolbox
 import UIKit
 
-public struct OnDeviceCopilotView: View {
+public struct AppleIntelligenceView: View {
     public let activeTerminalText: () -> String?
     public let onInsertToTerminal: (String) -> Void
     public let onClose: () -> Void
@@ -36,13 +36,13 @@ public struct OnDeviceCopilotView: View {
     public static func placeholder(for state: AppleIntelligenceEngine.AvailabilityState) -> String {
         switch state {
         case .available:
-            return "Ask on-device copilot..."
+            return "Ask Apple Intelligence..."
         case .downloading:
             return "Model assets are downloading..."
         case .notEnabled:
             return "Enable Apple Intelligence in Settings..."
         case .unsupported:
-            return "Copilot unsupported on this device"
+            return "Unavailable on this device"
         case .checking:
             return "Checking availability..."
         }
@@ -84,7 +84,7 @@ public struct OnDeviceCopilotView: View {
         .onAppear {
             engine.checkAvailability()
         }
-        .accessibilityIdentifier("msam.copilot.view")
+        .accessibilityIdentifier("msam.intelligence.view")
     }
 
     // MARK: - Header
@@ -95,7 +95,7 @@ public struct OnDeviceCopilotView: View {
                 .foregroundStyle(HerdrTheme.accent)
 
             VStack(alignment: .leading, spacing: 1) {
-                Text("On-Device Copilot")
+                Text("Intelligence")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(HerdrTheme.text)
 
@@ -126,7 +126,7 @@ public struct OnDeviceCopilotView: View {
                     .font(.system(size: 20))
                     .foregroundStyle(HerdrTheme.subtext)
             }
-            .accessibilityLabel("Close Copilot")
+            .accessibilityLabel("Close Intelligence")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
@@ -207,7 +207,7 @@ public struct OnDeviceCopilotView: View {
                 } else {
                     LazyVStack(spacing: 14) {
                         ForEach(engine.messages) { message in
-                            CopilotMessageView(
+                            AppleIntelligenceMessageView(
                                 message: message,
                                 onInsertToTerminal: onInsertToTerminal
                             )

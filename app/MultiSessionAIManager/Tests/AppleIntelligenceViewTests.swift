@@ -3,10 +3,10 @@ import Foundation
 import SwiftUI
 @testable import MultiSessionAIManager
 
-@Suite @MainActor struct OnDeviceCopilotViewTests {
+@Suite @MainActor struct AppleIntelligenceViewTests {
     @Test func codeBlockInsertionDeliversSnippetWithoutNewline() {
         var insertedCode: String?
-        let _ = CopilotMessageView(
+        let _ = AppleIntelligenceMessageView(
             message: AppleIntelligenceEngine.ChatMessage(
                 role: .assistant,
                 content: "Run this command:\n```bash\ngit status --short\n```"
@@ -29,13 +29,13 @@ import SwiftUI
         }
     }
 
-    @Test func copilotViewInitialization() {
+    @Test func intelligenceViewInitialization() {
         let mockBackend = MockLanguageModelBackend(available: true)
         let engine = AppleIntelligenceEngine(backend: mockBackend)
         var closeCalled = false
         var insertCalledWith: String?
 
-        let view = OnDeviceCopilotView(
+        let view = AppleIntelligenceView(
             engine: engine,
             activeTerminalText: { "line 1\nline 2\nline 3" },
             onInsertToTerminal: { insertCalledWith = $0 },
@@ -51,19 +51,19 @@ import SwiftUI
 
     @Test func terminalContextLineCounter() {
         let context = "line 1\nline 2\nline 3\nline 4"
-        let lines = OnDeviceCopilotView.lineCount(of: context)
+        let lines = AppleIntelligenceView.lineCount(of: context)
         #expect(lines == 4)
 
-        #expect(OnDeviceCopilotView.lineCount(of: "") == 0)
-        #expect(OnDeviceCopilotView.lineCount(of: "single line") == 1)
+        #expect(AppleIntelligenceView.lineCount(of: "") == 0)
+        #expect(AppleIntelligenceView.lineCount(of: "single line") == 1)
     }
 
     @Test func availabilityPlaceholders() {
-        #expect(OnDeviceCopilotView.placeholder(for: .available) == "Ask on-device copilot...")
-        #expect(OnDeviceCopilotView.placeholder(for: .downloading(reason: "")) == "Model assets are downloading...")
-        #expect(OnDeviceCopilotView.placeholder(for: .notEnabled(reason: "")) == "Enable Apple Intelligence in Settings...")
-        #expect(OnDeviceCopilotView.placeholder(for: .unsupported(reason: "")) == "Copilot unsupported on this device")
-        #expect(OnDeviceCopilotView.placeholder(for: .checking) == "Checking availability...")
+        #expect(AppleIntelligenceView.placeholder(for: .available) == "Ask Apple Intelligence...")
+        #expect(AppleIntelligenceView.placeholder(for: .downloading(reason: "")) == "Model assets are downloading...")
+        #expect(AppleIntelligenceView.placeholder(for: .notEnabled(reason: "")) == "Enable Apple Intelligence in Settings...")
+        #expect(AppleIntelligenceView.placeholder(for: .unsupported(reason: "")) == "Unavailable on this device")
+        #expect(AppleIntelligenceView.placeholder(for: .checking) == "Checking availability...")
     }
 
     @Test func availabilityStateIsReady() {

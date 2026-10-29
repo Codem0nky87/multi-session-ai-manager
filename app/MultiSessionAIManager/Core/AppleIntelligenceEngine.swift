@@ -31,7 +31,7 @@ public final class AppleFoundationModelsBackend: LanguageModelBackend, @unchecke
                     )
                 case .appleIntelligenceNotEnabled:
                     return .notEnabled(
-                        reason: "Apple Intelligence is turned off. Turn it on in Settings > Apple Intelligence & Siri to use On-Device Copilot."
+                        reason: "Apple Intelligence is turned off. Turn it on in Settings > Apple Intelligence & Siri to use Apple Intelligence."
                     )
                 case .modelNotReady:
                     return .downloading(
