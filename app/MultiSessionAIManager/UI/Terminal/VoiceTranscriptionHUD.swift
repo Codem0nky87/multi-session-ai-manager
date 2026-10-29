@@ -18,7 +18,7 @@ public struct VoiceTranscriptionHUD: View {
 
     // MARK: - Static Helpers for Testability
 
-    public static func shouldDisplay(for state: VoiceDictationState) -> Bool {
+    public nonisolated static func shouldDisplay(for state: VoiceDictationState) -> Bool {
         switch state {
         case .listening, .processing:
             return true
@@ -27,7 +27,7 @@ public struct VoiceTranscriptionHUD: View {
         }
     }
 
-    public static func displayText(for state: VoiceDictationState) -> String {
+    public nonisolated static func displayText(for state: VoiceDictationState) -> String {
         switch state {
         case .listening(let text, _):
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -39,7 +39,7 @@ public struct VoiceTranscriptionHUD: View {
         }
     }
 
-    public static func barHeight(forIndex index: Int, level: Float) -> CGFloat {
+    public nonisolated static func barHeight(forIndex index: Int, level: Float) -> CGFloat {
         guard !level.isNaN && !level.isInfinite else { return 4.0 }
         let base: CGFloat = 6.0
         let multipliers: [CGFloat] = [1.0, 1.4, 1.2, 0.8]
