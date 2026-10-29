@@ -5,7 +5,7 @@ import FoundationModels
 #endif
 
 public protocol LanguageModelBackend: Sendable {
-    func isAvailable() -> Bool
+    func checkAvailability() -> AppleIntelligenceEngine.AvailabilityState
     func streamResponse(
         to prompt: String,
         context: String?,
@@ -16,13 +16,38 @@ public protocol LanguageModelBackend: Sendable {
 public final class AppleFoundationModelsBackend: LanguageModelBackend, @unchecked Sendable {
     public init() {}
 
-    public func isAvailable() -> Bool {
+    public func checkAvailability() -> AppleIntelligenceEngine.AvailabilityState {
         #if canImport(FoundationModels)
         if #available(iOS 26.0, macOS 26.0, *) {
-            return SystemLanguageModel.default.isAvailable
+            let model = SystemLanguageModel.default
+            switch model.availability {
+            case .available:
+                return .available
+            case .unavailable(let reason):
+                switch reason {
+                case .deviceNotEligible:
+                    return .unsupported(
+                        reason: "Apple Intelligence is required for on-device foundation models. Available on M-series iPads and iPhone 15 Pro / iPhone 16+."
+                    )
+                case .appleIntelligenceNotEnabled:
+                    return .notEnabled(
+                        reason: "Apple Intelligence is turned off. Turn it on in Settings > Apple Intelligence & Siri to use On-Device Copilot."
+                    )
+                case .modelNotReady:
+                    return .downloading(
+                        reason: "Apple Intelligence model assets are downloading or preparing. Connect to Wi-Fi and power to complete download."
+                    )
+                @unknown default:
+                    return .unsupported(
+                        reason: "Apple Intelligence foundation model is unavailable: \(reason)"
+                    )
+                }
+            }
         }
         #endif
-        return false
+        return .unsupported(
+            reason: "Apple Intelligence is required for on-device foundation models. Available on M-series iPads and iPhone 15 Pro / iPhone 16+."
+        )
     }
 
     public func streamResponse(
@@ -72,7 +97,13 @@ public final class AppleIntelligenceEngine {
     public enum AvailabilityState: Equatable, Sendable {
         case checking
         case available
+        case downloading(reason: String)
+        case notEnabled(reason: String)
         case unsupported(reason: String)
+
+        public var isReady: Bool {
+            self == .available
+        }
     }
 
     public struct ChatMessage: Identifiable, Equatable, Sendable {
@@ -119,16 +150,11 @@ public final class AppleIntelligenceEngine {
     }
 
     public func checkAvailability() {
-        if backend.isAvailable() {
-            availability = .available
-        } else {
-            availability = .unsupported(
-                reason: "Apple Intelligence is required for on-device foundation models. Available on M-series iPads and iPhone 15 Pro / iPhone 16+."
-            )
-        }
+        availability = backend.checkAvailability()
     }
 
     public func sendPrompt(_ text: String, terminalContext: String? = nil) async {
+        guard availability.isReady else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 

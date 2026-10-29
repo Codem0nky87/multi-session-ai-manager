@@ -6,7 +6,7 @@ import SwiftUI
 @Suite @MainActor struct OnDeviceCopilotViewTests {
     @Test func codeBlockInsertionDeliversSnippetWithoutNewline() {
         var insertedCode: String?
-        let view = CopilotMessageView(
+        let _ = CopilotMessageView(
             message: AppleIntelligenceEngine.ChatMessage(
                 role: .assistant,
                 content: "Run this command:\n```bash\ngit status --short\n```"
@@ -56,5 +56,21 @@ import SwiftUI
 
         #expect(OnDeviceCopilotView.lineCount(of: "") == 0)
         #expect(OnDeviceCopilotView.lineCount(of: "single line") == 1)
+    }
+
+    @Test func availabilityPlaceholders() {
+        #expect(OnDeviceCopilotView.placeholder(for: .available) == "Ask on-device copilot...")
+        #expect(OnDeviceCopilotView.placeholder(for: .downloading(reason: "")) == "Model assets are downloading...")
+        #expect(OnDeviceCopilotView.placeholder(for: .notEnabled(reason: "")) == "Enable Apple Intelligence in Settings...")
+        #expect(OnDeviceCopilotView.placeholder(for: .unsupported(reason: "")) == "Copilot unsupported on this device")
+        #expect(OnDeviceCopilotView.placeholder(for: .checking) == "Checking availability...")
+    }
+
+    @Test func availabilityStateIsReady() {
+        #expect(AppleIntelligenceEngine.AvailabilityState.available.isReady == true)
+        #expect(AppleIntelligenceEngine.AvailabilityState.checking.isReady == false)
+        #expect(AppleIntelligenceEngine.AvailabilityState.downloading(reason: "test").isReady == false)
+        #expect(AppleIntelligenceEngine.AvailabilityState.notEnabled(reason: "test").isReady == false)
+        #expect(AppleIntelligenceEngine.AvailabilityState.unsupported(reason: "test").isReady == false)
     }
 }

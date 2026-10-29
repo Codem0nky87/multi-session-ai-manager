@@ -383,7 +383,9 @@ struct RootView: View {
         }
         .onChange(of: scenePhase) { _, phase in
             updateRecoveryContext()
-            guard phase == .active, let tab = selectedTab else { return }
+            guard phase == .active else { return }
+            AppleIntelligenceEngine.shared.checkAvailability()
+            guard let tab = selectedTab else { return }
             Task { await tabs.session(for: tab).ensureLive() }
         }
         .sheet(isPresented: $showingPicker) {

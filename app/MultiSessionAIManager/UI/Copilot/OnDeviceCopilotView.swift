@@ -33,8 +33,29 @@ public struct OnDeviceCopilotView: View {
         return trimmed.components(separatedBy: "\n").count
     }
 
+    public static func placeholder(for state: AppleIntelligenceEngine.AvailabilityState) -> String {
+        switch state {
+        case .available:
+            return "Ask on-device copilot..."
+        case .downloading:
+            return "Model assets are downloading..."
+        case .notEnabled:
+            return "Enable Apple Intelligence in Settings..."
+        case .unsupported:
+            return "Copilot unsupported on this device"
+        case .checking:
+            return "Checking availability..."
+        }
+    }
+
+    private var inputPlaceholder: String {
+        Self.placeholder(for: engine.availability)
+    }
+
     private var canSend: Bool {
-        !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !engine.isGenerating
+        engine.availability.isReady &&
+        !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        !engine.isGenerating
     }
 
     private var isRecordingVoice: Bool {
@@ -48,9 +69,7 @@ public struct OnDeviceCopilotView: View {
             header
             Divider().background(HerdrTheme.selection)
 
-            if case .unsupported(let reason) = engine.availability {
-                unsupportedBanner(reason: reason)
-            }
+            availabilityBanner
 
             messagesScrollView
 
@@ -62,6 +81,9 @@ public struct OnDeviceCopilotView: View {
             inputBar
         }
         .background(HerdrTheme.background)
+        .onAppear {
+            engine.checkAvailability()
+        }
         .accessibilityIdentifier("msam.copilot.view")
     }
 
@@ -111,22 +133,69 @@ public struct OnDeviceCopilotView: View {
         .background(HerdrTheme.panel)
     }
 
-    // MARK: - Unsupported Device Banner
-    private func unsupportedBanner(reason: String) -> some View {
+    // MARK: - Availability Banner
+    @ViewBuilder
+    private var availabilityBanner: some View {
+        switch engine.availability {
+        case .available, .checking:
+            EmptyView()
+        case .downloading(let reason):
+            statusBanner(
+                icon: "arrow.down.circle.fill",
+                color: HerdrTheme.accent,
+                reason: reason,
+                showSpinner: true
+            )
+        case .notEnabled(let reason):
+            statusBanner(
+                icon: "gearshape.fill",
+                color: HerdrTheme.yellow,
+                reason: reason,
+                showSpinner: false
+            )
+        case .unsupported(let reason):
+            statusBanner(
+                icon: "exclamationmark.triangle.fill",
+                color: .orange,
+                reason: reason,
+                showSpinner: false
+            )
+        }
+    }
+
+    private func statusBanner(icon: String, color: Color, reason: String, showSpinner: Bool) -> some View {
         HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.subheadline)
-                .foregroundStyle(.orange)
+            if showSpinner {
+                ProgressView()
+                    .scaleEffect(0.8)
+                    .frame(width: 16, height: 16)
+            } else {
+                Image(systemName: icon)
+                    .font(.subheadline)
+                    .foregroundStyle(color)
+            }
 
             Text(reason)
                 .font(.caption)
                 .foregroundStyle(HerdrTheme.text)
+                .fixedSize(horizontal: false, vertical: true)
 
             Spacer()
+
+            Button(action: {
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                engine.checkAvailability()
+            }) {
+                Image(systemName: "arrow.clockwise")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(HerdrTheme.subtext)
+                    .padding(4)
+            }
+            .accessibilityLabel("Check Again")
         }
         .padding(10)
-        .background(Color.orange.opacity(0.12))
-        .overlay(Rectangle().stroke(Color.orange.opacity(0.3), lineWidth: 1))
+        .background(color.opacity(0.12))
+        .overlay(Rectangle().stroke(color.opacity(0.3), lineWidth: 1))
     }
 
     // MARK: - Messages View
@@ -169,11 +238,11 @@ public struct OnDeviceCopilotView: View {
             Spacer(minLength: 40)
             Image(systemName: "apple.intelligence")
                 .font(.system(size: 44, weight: .light))
-                .foregroundStyle(HerdrTheme.accent)
+                .foregroundStyle(engine.availability.isReady ? HerdrTheme.accent : HerdrTheme.muted)
 
             Text("Local Apple Intelligence")
                 .font(.headline)
-                .foregroundStyle(HerdrTheme.text)
+                .foregroundStyle(engine.availability.isReady ? HerdrTheme.text : HerdrTheme.muted)
 
             Text("Ask questions, explain terminal output, or draft shell commands. All processing happens 100% on-device.")
                 .font(.subheadline)
@@ -195,6 +264,8 @@ public struct OnDeviceCopilotView: View {
             }
             .padding(.top, 10)
             .padding(.horizontal, 16)
+            .opacity(engine.availability.isReady ? 1.0 : 0.45)
+            .allowsHitTesting(engine.availability.isReady)
 
             Spacer(minLength: 40)
         }
@@ -202,6 +273,7 @@ public struct OnDeviceCopilotView: View {
 
     private func suggestionButton(icon: String, title: String, action: @escaping () -> Void) -> some View {
         Button(action: {
+            guard engine.availability.isReady else { return }
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
             action()
         }) {
@@ -222,6 +294,7 @@ public struct OnDeviceCopilotView: View {
             .background(HerdrTheme.panel, in: RoundedRectangle(cornerRadius: 8))
         }
         .buttonStyle(.plain)
+        .disabled(!engine.availability.isReady)
     }
 
     // MARK: - Attached Context Pill
@@ -259,23 +332,29 @@ public struct OnDeviceCopilotView: View {
             Button(action: attachTerminalContext) {
                 Image(systemName: attachedContext == nil ? "terminal" : "terminal.fill")
                     .font(.system(size: 16))
-                    .foregroundStyle(attachedContext == nil ? HerdrTheme.subtext : HerdrTheme.accent)
+                    .foregroundStyle(
+                        !engine.availability.isReady
+                            ? HerdrTheme.muted
+                            : (attachedContext == nil ? HerdrTheme.subtext : HerdrTheme.accent)
+                    )
                     .frame(width: 32, height: 32)
                     .background(HerdrTheme.selection, in: Circle())
             }
+            .disabled(!engine.availability.isReady)
             .accessibilityLabel("Attach Terminal Output")
 
             // Push-to-talk voice button
             voiceKey
 
             // Text input
-            TextField("Ask on-device copilot...", text: $inputText, axis: .vertical)
+            TextField(inputPlaceholder, text: $inputText, axis: .vertical)
                 .lineLimit(1...5)
                 .font(.body)
-                .foregroundStyle(HerdrTheme.text)
+                .foregroundStyle(engine.availability.isReady ? HerdrTheme.text : HerdrTheme.muted)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
                 .background(HerdrTheme.selection, in: RoundedRectangle(cornerRadius: 12))
+                .disabled(!engine.availability.isReady)
                 .onSubmit {
                     if canSend {
                         sendMessage()
@@ -297,7 +376,7 @@ public struct OnDeviceCopilotView: View {
                 Button(action: sendMessage) {
                     Image(systemName: "arrow.up.circle.fill")
                         .font(.system(size: 28))
-                        .foregroundStyle(canSend ? HerdrTheme.accent : HerdrTheme.muted)
+                        .foregroundStyle(canSend ? HerdrTheme.accent : HerdrTheme.muted.opacity(0.5))
                 }
                 .disabled(!canSend)
                 .accessibilityLabel("Send Message")
@@ -306,6 +385,7 @@ public struct OnDeviceCopilotView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(HerdrTheme.panel)
+        .opacity(engine.availability.isReady ? 1.0 : 0.6)
     }
 
     // MARK: - Voice Push-To-Talk Button
@@ -313,7 +393,11 @@ public struct OnDeviceCopilotView: View {
         Button(action: {}) {
             Image(systemName: "mic.fill")
                 .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(isRecordingVoice ? Color.white : HerdrTheme.subtext)
+                .foregroundStyle(
+                    !engine.availability.isReady
+                        ? HerdrTheme.muted
+                        : (isRecordingVoice ? Color.white : HerdrTheme.subtext)
+                )
                 .frame(width: 32, height: 32)
                 .background(
                     isRecordingVoice ? Color.red.opacity(0.85) : HerdrTheme.selection,
@@ -321,9 +405,11 @@ public struct OnDeviceCopilotView: View {
                 )
         }
         .buttonStyle(.plain)
+        .disabled(!engine.availability.isReady)
         .simultaneousGesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { _ in
+                    guard engine.availability.isReady else { return }
                     if !isVoicePressed {
                         isVoicePressed = true
                         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
@@ -333,7 +419,7 @@ public struct OnDeviceCopilotView: View {
                     }
                 }
                 .onEnded { value in
-                    guard isVoicePressed else { return }
+                    guard engine.availability.isReady, isVoicePressed else { return }
                     isVoicePressed = false
 
                     if abs(value.translation.height) > 50 || abs(value.translation.width) > 50 {
@@ -358,6 +444,7 @@ public struct OnDeviceCopilotView: View {
 
     // MARK: - Actions
     private func attachTerminalContext() {
+        guard engine.availability.isReady else { return }
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         if let text = activeTerminalText(), !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             attachedContext = text
@@ -365,6 +452,7 @@ public struct OnDeviceCopilotView: View {
     }
 
     private func sendMessage() {
+        guard engine.availability.isReady else { return }
         let textToSend = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !textToSend.isEmpty else { return }
 

@@ -3,20 +3,29 @@ import Foundation
 @testable import MultiSessionAIManager
 
 final class MockLanguageModelBackend: LanguageModelBackend, @unchecked Sendable {
-    var available: Bool
+    var state: AppleIntelligenceEngine.AvailabilityState
     var streamChunks: [String]
     var delayNanoseconds: UInt64
     var lastPrompt: String?
     var lastContext: String?
 
-    init(available: Bool = true, streamChunks: [String] = ["Hello", " world!"], delayNanoseconds: UInt64 = 0) {
-        self.available = available
+    init(
+        state: AppleIntelligenceEngine.AvailabilityState = .available,
+        available: Bool = true,
+        streamChunks: [String] = ["Hello", " world!"],
+        delayNanoseconds: UInt64 = 0
+    ) {
+        if !available {
+            self.state = .unsupported(reason: "Mock unsupported device")
+        } else {
+            self.state = state
+        }
         self.streamChunks = streamChunks
         self.delayNanoseconds = delayNanoseconds
     }
 
-    func isAvailable() -> Bool {
-        available
+    func checkAvailability() -> AppleIntelligenceEngine.AvailabilityState {
+        state
     }
 
     func streamResponse(
@@ -51,6 +60,7 @@ final class MockLanguageModelBackend: LanguageModelBackend, @unchecked Sendable 
 
         engine.checkAvailability()
         #expect(engine.availability == .available)
+        #expect(engine.availability.isReady == true)
         #expect(engine.messages.isEmpty)
         #expect(!engine.isGenerating)
     }
@@ -60,11 +70,41 @@ final class MockLanguageModelBackend: LanguageModelBackend, @unchecked Sendable 
         let engine = AppleIntelligenceEngine(backend: mock)
 
         engine.checkAvailability()
-        if case .unsupported = engine.availability {
-            // expected
+        #expect(engine.availability.isReady == false)
+        if case .unsupported(let reason) = engine.availability {
+            #expect(!reason.isEmpty)
         } else {
             Issue.record("Expected .unsupported availability state")
         }
+    }
+
+    @Test func downloadingAndNotEnabledBackendStates() {
+        let mockDownloading = MockLanguageModelBackend(state: .downloading(reason: "Downloading assets..."))
+        let engineDownloading = AppleIntelligenceEngine(backend: mockDownloading)
+        #expect(engineDownloading.availability.isReady == false)
+        if case .downloading(let reason) = engineDownloading.availability {
+            #expect(reason == "Downloading assets...")
+        } else {
+            Issue.record("Expected .downloading state")
+        }
+
+        let mockNotEnabled = MockLanguageModelBackend(state: .notEnabled(reason: "Turn on in Settings"))
+        let engineNotEnabled = AppleIntelligenceEngine(backend: mockNotEnabled)
+        #expect(engineNotEnabled.availability.isReady == false)
+        if case .notEnabled(let reason) = engineNotEnabled.availability {
+            #expect(reason == "Turn on in Settings")
+        } else {
+            Issue.record("Expected .notEnabled state")
+        }
+    }
+
+    @Test func sendPromptBlockedWhenNotReady() async {
+        let mock = MockLanguageModelBackend(available: false)
+        let engine = AppleIntelligenceEngine(backend: mock)
+
+        await engine.sendPrompt("Hello?")
+        #expect(engine.messages.isEmpty)
+        #expect(!engine.isGenerating)
     }
 
     @Test func sendPromptAppendsUserAndStreamsAssistantMessage() async throws {
