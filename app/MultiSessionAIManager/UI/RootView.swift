@@ -103,6 +103,7 @@ struct RootView: View {
     @State private var showingPicker = false
     @State private var showingSettings = false
     @State private var showingFileSend = false
+    @State private var showingCopilot = false
     @State private var selectedProviderForDetail: ProviderQuota? = nil
     @State private var showingHardwareMetricsSheet = false
     @State private var showingProviderPulseSheet = false
@@ -199,6 +200,24 @@ struct RootView: View {
                     .accessibilityLabel("Send a file to host")
                     .accessibilityIdentifier("msam.send.file")
                     .background(HerdrTheme.panel, ignoresSafeAreaEdges: [])
+
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            showingCopilot.toggle()
+                        }
+                    } label: {
+                        Image(systemName: "apple.intelligence")
+                            .foregroundStyle(showingCopilot ? HerdrTheme.accent : HerdrTheme.subtext)
+                            .frame(
+                                width: HerdrChromeMetrics.hostTabBarHeight,
+                                height: HerdrChromeMetrics.hostTabBarHeight
+                            )
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("On-Device Copilot")
+                    .accessibilityIdentifier("msam.copilot.toggle")
+                    .background(HerdrTheme.panel, ignoresSafeAreaEdges: [])
                 }
                 // Phone (compact width): the metrics bar and the five toolbar
                 // buttons cannot share 390pt with the tab strip, so every
@@ -234,7 +253,19 @@ struct RootView: View {
                     .buttonStyle(.plain)
                     .accessibilityLabel("AI Provider Pulse")
 
+                    Button {
+                        showingCopilot = true
+                    } label: {
+                        Image(systemName: "apple.intelligence")
+                            .foregroundStyle(showingCopilot ? HerdrTheme.accent : HerdrTheme.subtext)
+                            .frame(width: HerdrChromeMetrics.hostTabBarHeight, height: HerdrChromeMetrics.hostTabBarHeight)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("On-Device Copilot")
+                    .accessibilityIdentifier("msam.compact.copilot")
+
                     Menu {
+                        Button("On-Device Copilot") { showingCopilot = true }
                         Button(selection.isSelecting ? "Exit text selection" : "Select text") {
                             if selection.isSelecting { selection.exit() } else { selection.isSelecting = true }
                         }
@@ -281,19 +312,40 @@ struct RootView: View {
             .background(HerdrTheme.panel, ignoresSafeAreaEdges: [])
 
             if let tab = selectedTab {
-                HostTerminalView(
-                    session: tabs.session(for: tab),
-                    selection: selection,
-                    theme: tab.themeID.map { TerminalTheme.byID($0) },
-                    isCompact: isCompact,
-                    keyboard: keyboard
-                )
-                .padding(.horizontal, HerdrChromeMetrics.terminalEdgeInset)
-                // The home-indicator inset is dead space under a terminal --
-                // there is no control down there to keep clear of it, and the
-                // rows it costs are rows of the remote TUI.
-                .ignoresSafeArea(.container, edges: .bottom)
-                .id(tab.id)
+                HStack(spacing: 0) {
+                    HostTerminalView(
+                        session: tabs.session(for: tab),
+                        selection: selection,
+                        theme: tab.themeID.map { TerminalTheme.byID($0) },
+                        isCompact: isCompact,
+                        keyboard: keyboard
+                    )
+                    .padding(.horizontal, HerdrChromeMetrics.terminalEdgeInset)
+                    // The home-indicator inset is dead space under a terminal --
+                    // there is no control down there to keep clear of it, and the
+                    // rows it costs are rows of the remote TUI.
+                    .ignoresSafeArea(.container, edges: .bottom)
+                    .id(tab.id)
+
+                    if showingCopilot && !isCompact {
+                        Divider().background(HerdrTheme.selection)
+                        OnDeviceCopilotView(
+                            activeTerminalText: {
+                                tabs.session(for: tab).terminal.visibleText()
+                            },
+                            onInsertToTerminal: { snippet in
+                                tabs.session(for: tab).terminal.feedInputToPTY(Array(snippet.utf8))
+                            },
+                            onClose: {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    showingCopilot = false
+                                }
+                            }
+                        )
+                        .frame(width: 360)
+                        .transition(.move(edge: .trailing))
+                    }
+                }
             } else {
                 EmptyHostState { showingPicker = true }
             }
@@ -432,6 +484,36 @@ struct RootView: View {
                         handleSessionRollover(provider: provider, autoApprove: autoApprove, terminal: targetTerm)
                     }
                 )
+            }
+        }
+        .sheet(isPresented: Binding(
+            get: { isCompact && showingCopilot },
+            set: { showingCopilot = $0 }
+        )) {
+            if let tab = selectedTab {
+                OnDeviceCopilotView(
+                    activeTerminalText: {
+                        tabs.session(for: tab).terminal.visibleText()
+                    },
+                    onInsertToTerminal: { snippet in
+                        tabs.session(for: tab).terminal.feedInputToPTY(Array(snippet.utf8))
+                    },
+                    onClose: {
+                        showingCopilot = false
+                    }
+                )
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+            } else {
+                OnDeviceCopilotView(
+                    activeTerminalText: { nil },
+                    onInsertToTerminal: { _ in },
+                    onClose: {
+                        showingCopilot = false
+                    }
+                )
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
             }
         }
         .overlay {
