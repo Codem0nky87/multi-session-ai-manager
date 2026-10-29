@@ -1,0 +1,381 @@
+import SwiftUI
+import AudioToolbox
+import UIKit
+
+public struct OnDeviceCopilotView: View {
+    public let activeTerminalText: () -> String?
+    public let onInsertToTerminal: (String) -> Void
+    public let onClose: () -> Void
+
+    @State private var engine: AppleIntelligenceEngine
+    @ObservedObject private var voiceEngine: VoiceDictationEngine
+    @State private var inputText: String = ""
+    @State private var attachedContext: String? = nil
+    @State private var isVoicePressed: Bool = false
+
+    public init(
+        engine: AppleIntelligenceEngine = .shared,
+        voiceEngine: VoiceDictationEngine = .shared,
+        activeTerminalText: @escaping () -> String?,
+        onInsertToTerminal: @escaping (String) -> Void,
+        onClose: @escaping () -> Void
+    ) {
+        self._engine = State(initialValue: engine)
+        self.voiceEngine = voiceEngine
+        self.activeTerminalText = activeTerminalText
+        self.onInsertToTerminal = onInsertToTerminal
+        self.onClose = onClose
+    }
+
+    public static func lineCount(of text: String) -> Int {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return 0 }
+        return trimmed.components(separatedBy: "\n").count
+    }
+
+    private var canSend: Bool {
+        !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !engine.isGenerating
+    }
+
+    private var isRecordingVoice: Bool {
+        if case .listening = voiceEngine.state { return true }
+        if case .processing = voiceEngine.state { return true }
+        return false
+    }
+
+    public var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider().background(HerdrTheme.selection)
+
+            if case .unsupported(let reason) = engine.availability {
+                unsupportedBanner(reason: reason)
+            }
+
+            messagesScrollView
+
+            if let context = attachedContext {
+                attachedContextPill(context: context)
+            }
+
+            Divider().background(HerdrTheme.selection)
+            inputBar
+        }
+        .background(HerdrTheme.background)
+        .accessibilityIdentifier("msam.copilot.view")
+    }
+
+    // MARK: - Header
+    private var header: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "apple.intelligence")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(HerdrTheme.accent)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text("On-Device Copilot")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(HerdrTheme.text)
+
+                Text("Apple Foundation Models • Private")
+                    .font(.caption2)
+                    .foregroundStyle(HerdrTheme.subtext)
+            }
+
+            Spacer()
+
+            if !engine.messages.isEmpty {
+                Button(action: {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    engine.clearHistory()
+                    attachedContext = nil
+                }) {
+                    Image(systemName: "trash")
+                        .font(.system(size: 14))
+                        .foregroundStyle(HerdrTheme.subtext)
+                        .padding(6)
+                        .background(HerdrTheme.panel, in: Circle())
+                }
+                .accessibilityLabel("Clear Conversation")
+            }
+
+            Button(action: onClose) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 20))
+                    .foregroundStyle(HerdrTheme.subtext)
+            }
+            .accessibilityLabel("Close Copilot")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(HerdrTheme.panel)
+    }
+
+    // MARK: - Unsupported Device Banner
+    private func unsupportedBanner(reason: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.subheadline)
+                .foregroundStyle(.orange)
+
+            Text(reason)
+                .font(.caption)
+                .foregroundStyle(HerdrTheme.text)
+
+            Spacer()
+        }
+        .padding(10)
+        .background(Color.orange.opacity(0.12))
+        .overlay(Rectangle().stroke(Color.orange.opacity(0.3), lineWidth: 1))
+    }
+
+    // MARK: - Messages View
+    private var messagesScrollView: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                if engine.messages.isEmpty {
+                    emptyStateView
+                } else {
+                    LazyVStack(spacing: 14) {
+                        ForEach(engine.messages) { message in
+                            CopilotMessageView(
+                                message: message,
+                                onInsertToTerminal: onInsertToTerminal
+                            )
+                            .id(message.id)
+                        }
+                    }
+                    .padding(12)
+                }
+            }
+            .onChange(of: engine.messages.count) { _, _ in
+                if let lastID = engine.messages.last?.id {
+                    withAnimation {
+                        proxy.scrollTo(lastID, anchor: .bottom)
+                    }
+                }
+            }
+            .onChange(of: engine.messages.last?.content) { _, _ in
+                if let lastID = engine.messages.last?.id {
+                    proxy.scrollTo(lastID, anchor: .bottom)
+                }
+            }
+        }
+    }
+
+    // MARK: - Empty State
+    private var emptyStateView: some View {
+        VStack(spacing: 12) {
+            Spacer(minLength: 40)
+            Image(systemName: "apple.intelligence")
+                .font(.system(size: 44, weight: .light))
+                .foregroundStyle(HerdrTheme.accent)
+
+            Text("Local Apple Intelligence")
+                .font(.headline)
+                .foregroundStyle(HerdrTheme.text)
+
+            Text("Ask questions, explain terminal output, or draft shell commands. All processing happens 100% on-device.")
+                .font(.subheadline)
+                .foregroundStyle(HerdrTheme.subtext)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 24)
+
+            VStack(alignment: .leading, spacing: 8) {
+                suggestionButton(icon: "terminal", title: "Explain terminal output", action: {
+                    attachTerminalContext()
+                    inputText = "Explain this terminal output and suggest the fix."
+                })
+                suggestionButton(icon: "magnifyingglass", title: "Find processes using high CPU", action: {
+                    inputText = "What command shows top CPU consuming processes in Linux/macOS?"
+                })
+                suggestionButton(icon: "doc.badge.gearshape", title: "Write a cleanup script", action: {
+                    inputText = "Write a one-liner to delete all dangling docker containers and images."
+                })
+            }
+            .padding(.top, 10)
+            .padding(.horizontal, 16)
+
+            Spacer(minLength: 40)
+        }
+    }
+
+    private func suggestionButton(icon: String, title: String, action: @escaping () -> Void) -> some View {
+        Button(action: {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            action()
+        }) {
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.caption)
+                    .foregroundStyle(HerdrTheme.accent)
+                Text(title)
+                    .font(.caption)
+                    .foregroundStyle(HerdrTheme.text)
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.caption2)
+                    .foregroundStyle(HerdrTheme.subtext)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(HerdrTheme.panel, in: RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: - Attached Context Pill
+    private func attachedContextPill(context: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "terminal.fill")
+                .font(.caption)
+                .foregroundStyle(HerdrTheme.accent)
+
+            Text("Attached Context: \(Self.lineCount(of: context)) lines")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(HerdrTheme.text)
+
+            Spacer()
+
+            Button(action: {
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                attachedContext = nil
+            }) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(HerdrTheme.subtext)
+            }
+            .accessibilityLabel("Remove Attached Context")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(HerdrTheme.panel)
+    }
+
+    // MARK: - Input Bar
+    private var inputBar: some View {
+        HStack(alignment: .bottom, spacing: 8) {
+            // Attach terminal context button
+            Button(action: attachTerminalContext) {
+                Image(systemName: attachedContext == nil ? "terminal" : "terminal.fill")
+                    .font(.system(size: 16))
+                    .foregroundStyle(attachedContext == nil ? HerdrTheme.subtext : HerdrTheme.accent)
+                    .frame(width: 32, height: 32)
+                    .background(HerdrTheme.selection, in: Circle())
+            }
+            .accessibilityLabel("Attach Terminal Output")
+
+            // Push-to-talk voice button
+            voiceKey
+
+            // Text input
+            TextField("Ask on-device copilot...", text: $inputText, axis: .vertical)
+                .lineLimit(1...5)
+                .font(.body)
+                .foregroundStyle(HerdrTheme.text)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(HerdrTheme.selection, in: RoundedRectangle(cornerRadius: 12))
+                .onSubmit {
+                    if canSend {
+                        sendMessage()
+                    }
+                }
+
+            // Send / Stop button
+            if engine.isGenerating {
+                Button(action: {
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    engine.stopGeneration()
+                }) {
+                    Image(systemName: "stop.circle.fill")
+                        .font(.system(size: 28))
+                        .foregroundStyle(.red)
+                }
+                .accessibilityLabel("Stop Generating")
+            } else {
+                Button(action: sendMessage) {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: 28))
+                        .foregroundStyle(canSend ? HerdrTheme.accent : HerdrTheme.muted)
+                }
+                .disabled(!canSend)
+                .accessibilityLabel("Send Message")
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(HerdrTheme.panel)
+    }
+
+    // MARK: - Voice Push-To-Talk Button
+    private var voiceKey: some View {
+        Button(action: {}) {
+            Image(systemName: "mic.fill")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(isRecordingVoice ? Color.white : HerdrTheme.subtext)
+                .frame(width: 32, height: 32)
+                .background(
+                    isRecordingVoice ? Color.red.opacity(0.85) : HerdrTheme.selection,
+                    in: Circle()
+                )
+        }
+        .buttonStyle(.plain)
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { _ in
+                    if !isVoicePressed {
+                        isVoicePressed = true
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        Task {
+                            await voiceEngine.startRecording()
+                        }
+                    }
+                }
+                .onEnded { value in
+                    guard isVoicePressed else { return }
+                    isVoicePressed = false
+
+                    if abs(value.translation.height) > 50 || abs(value.translation.width) > 50 {
+                        UINotificationFeedbackGenerator().notificationOccurred(.warning)
+                        voiceEngine.cancelRecording()
+                    } else {
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        Task {
+                            if let text = await voiceEngine.stopRecording() {
+                                if inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                    inputText = text
+                                } else {
+                                    inputText += " " + text
+                                }
+                            }
+                        }
+                    }
+                }
+        )
+        .accessibilityLabel("Hold to Dictate")
+    }
+
+    // MARK: - Actions
+    private func attachTerminalContext() {
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        if let text = activeTerminalText(), !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            attachedContext = text
+        }
+    }
+
+    private func sendMessage() {
+        let textToSend = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !textToSend.isEmpty else { return }
+
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        let contextToSend = attachedContext
+
+        inputText = ""
+        attachedContext = nil
+
+        Task {
+            await engine.sendPrompt(textToSend, terminalContext: contextToSend)
+        }
+    }
+}
