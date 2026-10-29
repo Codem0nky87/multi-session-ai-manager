@@ -45,6 +45,7 @@ struct TerminalEmulatorView: View {
     /// Shared terminal appearance — drives the live render font size.
     @Environment(TerminalSettings.self) private var settings
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.openURL) private var openURL
 
     private var effectiveTheme: TerminalTheme {
         theme ?? settings.theme
@@ -53,6 +54,7 @@ struct TerminalEmulatorView: View {
     @State private var localKeyInputController = KeyInputController()
     @State private var isMounted = false
     @State private var visibilityOwner = TerminalVisibilityOwner()
+    @State private var detectedLinkURL: URL? = nil
 
     private var resolvedInputController: KeyInputController {
         inputController ?? localKeyInputController
@@ -213,6 +215,33 @@ struct TerminalEmulatorView: View {
                     pinchStartSize = nil
                 }
         )
+        .confirmationDialog(
+            "Terminal Link",
+            isPresented: Binding(
+                get: { detectedLinkURL != nil },
+                set: { if !$0 { detectedLinkURL = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let url = detectedLinkURL {
+                Button("Open in Safari") {
+                    openURL(url)
+                    detectedLinkURL = nil
+                }
+                Button("Copy Clean Link") {
+                    UIPasteboard.general.url = url
+                    UIPasteboard.general.string = url.absoluteString
+                    detectedLinkURL = nil
+                }
+                Button("Cancel", role: .cancel) {
+                    detectedLinkURL = nil
+                }
+            }
+        } message: {
+            if let url = detectedLinkURL {
+                Text(url.absoluteString)
+            }
+        }
         .onDisappear {
             isMounted = false
             emulator.removeVisibilityOwner(visibilityOwner)
@@ -446,7 +475,7 @@ struct TerminalEmulatorView: View {
     }
 
     /// A tap focuses the keyboard and optionally forwards a left-button click to
-    /// the remote pane. The recognizer coexists with the scroll view's pan gesture.
+    /// the remote pane. If a URL is tapped, an action menu is presented instead.
     private func handleTerminalTap(at location: CGPoint) {
         guard !selecting else {
             // a tap outside the selection clears it, rather than being forwarded
@@ -455,6 +484,15 @@ struct TerminalEmulatorView: View {
         }
         onTap()
         clearSelection()
+
+        // Check if a link was tapped
+        let cell = cellAt(location)
+        if let linkURL = emulator.link(atRow: cell.row, col: cell.col) {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            detectedLinkURL = linkURL
+            return
+        }
+
         if TerminalTouchPolicy.focusesKeyboard(isSelecting: selecting, inputEnabled: inputEnabled) {
             resolvedInputController.focus()
         }

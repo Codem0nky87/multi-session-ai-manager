@@ -750,4 +750,35 @@ final class TestTerminalFrameClock: TerminalFrameClock {
         #expect(e.renderGeneration == 1)
         #expect(!clock.isRunning)
     }
+
+    @Test func linkDetectionAtCellFindsSingleLineURL() async {
+        let clock = TestTerminalFrameClock()
+        let e = TerminalEmulator(cols: 50, rows: 6, frameClock: clock)
+        e.feed(Data("Visit https://example.com/docs for info\r\n".utf8))
+        await Task.yield()
+        clock.fire()
+
+        let foundURL = e.link(atRow: 0, col: 12)
+        #expect(foundURL == URL(string: "https://example.com/docs"))
+
+        let nonLink = e.link(atRow: 0, col: 2)
+        #expect(nonLink == nil)
+    }
+
+    @Test func linkDetectionUnwrapsMultiLineWrappedURL() async {
+        let clock = TestTerminalFrameClock()
+        let longURL = "https://example.com/a/very/long/path/that/wraps/across/lines"
+        let e = TerminalEmulator(cols: 18, rows: 6, frameClock: clock)
+        e.feed(Data((longURL + "\r\n").utf8))
+        await Task.yield()
+        clock.fire()
+
+        // Cell on row 1 (the continuation row) should resolve to the full unwrapped URL
+        let wrappedLink = e.link(atRow: 1, col: 3)
+        #expect(wrappedLink == URL(string: longURL))
+
+        // Cell on row 0 should also resolve to the full unwrapped URL
+        let firstRowLink = e.link(atRow: 0, col: 5)
+        #expect(firstRowLink == URL(string: longURL))
+    }
 }

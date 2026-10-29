@@ -513,6 +513,32 @@ final class TerminalEmulator {
             .replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression)
     }
 
+    /// Returns a hyperlink or implicit URL at the given cell coordinates, unwrapping
+    /// text that spans across terminal line wraps.
+    func link(atRow row: Int, col: Int) -> URL? {
+        guard row >= 0, col >= 0, col < cols else { return nil }
+        guard let linkText = terminal.link(
+            at: .buffer(Position(col: col, row: row)),
+            mode: .explicitAndImplicit
+        ) else {
+            return nil
+        }
+        let trimmed = linkText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let parsedURL = URL(string: trimmed)
+            ?? URL(string: trimmed.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")
+        guard let url = parsedURL, let scheme = url.scheme?.lowercased() else {
+            return nil
+        }
+
+        // Support standard schemes
+        if ["http", "https", "mailto", "file"].contains(scheme) {
+            return url
+        }
+        return nil
+    }
+
     // MARK: - I/O
 
     /// Feed inbound PTY bytes. Safe from any thread: only appends to a lock-guarded
