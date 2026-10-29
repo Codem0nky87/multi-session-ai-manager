@@ -260,6 +260,7 @@ final class HostMetricsModel {
         let network: NetworkMetrics?
         let providers: [String: ProviderQuota]?
         let terminalAgents: [TerminalAgentSession]?
+        let installedIntegrations: [String]?
 
         init(
             cpu: CPUMetrics? = nil,
@@ -268,7 +269,8 @@ final class HostMetricsModel {
             disk: DiskMetrics? = nil,
             network: NetworkMetrics? = nil,
             providers: [String: ProviderQuota]? = nil,
-            terminalAgents: [TerminalAgentSession]? = nil
+            terminalAgents: [TerminalAgentSession]? = nil,
+            installedIntegrations: [String]? = nil
         ) {
             self.cpu = cpu
             self.memory = memory
@@ -277,11 +279,13 @@ final class HostMetricsModel {
             self.network = network
             self.providers = providers
             self.terminalAgents = terminalAgents
+            self.installedIntegrations = installedIntegrations
         }
 
         enum CodingKeys: String, CodingKey {
             case cpu, memory, gpu, disk, network, providers
             case terminalAgents = "terminal_agents"
+            case installedIntegrations = "installed_integrations"
         }
     }
     
@@ -371,7 +375,11 @@ final class HostMetricsModel {
             uploadHistory = history(uploadHistory, appending: max(0, newNet.uploadSpeed))
         }
         if let provs = payload.providers {
-            pulse.update(providers: provs, terminals: payload.terminalAgents ?? [])
+            pulse.update(
+                providers: provs,
+                terminals: payload.terminalAgents ?? [],
+                installedIntegrations: payload.installedIntegrations
+            )
         }
     }
 }

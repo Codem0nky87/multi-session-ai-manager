@@ -430,25 +430,95 @@ def collect_antigravity_quota(home_dir: Path | str | None = None, agy_bin: str =
     }
 
 
+HERDR_HOOK_FALLBACKS = {
+    "claude": ".claude/hooks/herdr-agent-state.sh",
+    "codex": ".codex/herdr-agent-state.sh",
+    "antigravity-cli": ".gemini/config/hooks/herdr-agent-state.sh",
+    "hermes": ".hermes/plugins/herdr-agent-state/__init__.py",
+    "copilot": ".copilot/hooks/herdr-agent-state.sh",
+    "pi": ".pi/agent/extensions/herdr-agent-state.ts",
+    "omp": ".omp/agent/extensions/herdr-omp-agent-state.ts",
+}
+
+
+def get_installed_herdr_integrations(home_dir: Path | str | None = None, herdr_bin: str = "herdr", env: dict | None = None) -> set[str]:
+    """Query Herdr for installed agent integrations.
+
+    Runs `herdr integration status` and returns targets whose status is not 'not installed'.
+    If the herdr CLI is unavailable, checks known integration hook paths.
+    """
+    home = Path(home_dir).expanduser() if home_dir else Path.home()
+    proc_env = _get_process_env(home, env)
+    exe = _find_bin(home, herdr_bin, proc_env) or herdr_bin
+
+    installed = set()
+    try:
+        res = subprocess.run([exe, "integration", "status"], capture_output=True, text=True, timeout=6, env=proc_env)
+        if res.returncode == 0:
+            for raw_line in res.stdout.splitlines():
+                line = raw_line.strip()
+                if ":" in line:
+                    target, rest = line.split(":", 1)
+                    target = target.strip().lower()
+                    rest = rest.strip().lower()
+                    if not rest.startswith("not installed"):
+                        installed.add(target)
+            return installed
+    except Exception:
+        pass
+
+    # Fallback to inspecting hook files directly
+    for target, rel_path in HERDR_HOOK_FALLBACKS.items():
+        hook_path = home / rel_path
+        if hook_path.is_file() and hook_path.stat().st_size > 0:
+            installed.add(target)
+
+    return installed
+
+
 def collect_hermes_quota(home_dir: Path | str | None = None, hermes_bin: str = "hermes", env: dict | None = None) -> dict:
     """Query Hermes usage."""
     home = Path(home_dir).expanduser() if home_dir else Path.home()
     proc_env = _get_process_env(home, env)
     exe = _find_bin(home, hermes_bin, proc_env) or hermes_bin
     try:
-        res = subprocess.run([exe, "usage"], capture_output=True, text=True, timeout=8, env=proc_env)
-        out = res.stdout if res.returncode == 0 else ""
+        res = subprocess.run([exe, "usage", "--json"], capture_output=True, text=True, timeout=8, env=proc_env)
+        if res.returncode == 0:
+            try:
+                data = json.loads(res.stdout)
+                used = float(data.get("used_percent", 0.0))
+                state = "RATE_LIMITED" if used >= 100.0 else "HEALTHY"
+                return {
+                    "state": state,
+                    "used_percent": used,
+                    "resets_at": data.get("resets_at"),
+                    "plan": data.get("plan", "custom"),
+                    "windows": data.get("windows", []),
+                    "reset_credits": data.get("reset_credits"),
+                }
+            except Exception:
+                pass
+            return {
+                "state": "HEALTHY",
+                "used_percent": 0.0,
+                "resets_at": None,
+                "plan": "custom",
+                "windows": [],
+                "reset_credits": None,
+            }
+        combined = f"{res.stdout} {res.stderr}".lower()
+        if "login" in combined or "auth" in combined or "credential" in combined:
+            return {"state": "SIGN_IN_REQUIRED", "used_percent": 0.0, "resets_at": None, "plan": "custom", "windows": [], "reset_credits": None}
+        return {"state": "UNAVAILABLE", "used_percent": 0.0, "resets_at": None, "plan": "custom", "windows": [], "reset_credits": None}
     except Exception:
-        out = ""
-
-    return {
-        "state": "HEALTHY",
-        "used_percent": 0.0,
-        "resets_at": None,
-        "plan": "custom",
-        "windows": [],
-        "reset_credits": None,
-    }
+        return {
+            "state": "UNAVAILABLE",
+            "used_percent": 0.0,
+            "resets_at": None,
+            "plan": "custom",
+            "windows": [],
+            "reset_credits": None,
+        }
 
 
 def collect_terminal_agents(home_dir: Path | str | None = None, herdr_bin: str = "herdr", env: dict | None = None) -> list[dict]:
@@ -685,20 +755,27 @@ def analyze_session_task(transcript_path: str, target_provider: str = "codex", h
 def collect_provider_telemetry(home_dir: Path | str | None = None, env: dict | None = None) -> dict:
     """Main entrypoint called by msam-host-agent to sample provider quotas and terminal sessions."""
     home = Path(home_dir).expanduser() if home_dir else Path.home()
-    claude_creds = home / ".claude" / ".credentials.json"
+    installed = get_installed_herdr_integrations(home_dir=home, env=env)
 
-    claude = collect_claude_quota(claude_creds)
-    codex = collect_codex_quota()
-    antigravity = collect_antigravity_quota(home_dir=home, env=env)
-    hermes = collect_hermes_quota(home_dir=home, env=env)
+    providers = {}
+
+    if "claude" in installed:
+        claude_creds = home / ".claude" / ".credentials.json"
+        providers["claude_code"] = collect_claude_quota(claude_creds)
+
+    if "codex" in installed:
+        providers["codex"] = collect_codex_quota()
+
+    if "antigravity-cli" in installed:
+        providers["antigravity"] = collect_antigravity_quota(home_dir=home, env=env)
+
+    if "hermes" in installed:
+        providers["hermes"] = collect_hermes_quota(home_dir=home, env=env)
+
     terminals = collect_terminal_agents(home_dir=home, env=env)
 
     return {
-        "providers": {
-            "claude_code": claude,
-            "codex": codex,
-            "antigravity": antigravity,
-            "hermes": hermes,
-        },
+        "installed_integrations": sorted(list(installed)),
+        "providers": providers,
         "terminal_agents": terminals,
     }

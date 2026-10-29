@@ -232,6 +232,54 @@ class ProviderPulseTests(unittest.TestCase):
             self.assertEqual(res["effort"], "medium")
             self.assertFalse(res["is_complex"])
 
+    def test_get_installed_herdr_integrations_falls_back_to_hook_files(self):
+        # Create hook files on tmp_path
+        claude_hook = self.tmp_path / ".claude" / "hooks" / "herdr-agent-state.sh"
+        claude_hook.parent.mkdir(parents=True, exist_ok=True)
+        claude_hook.write_text("#!/bin/sh\n")
+
+        agy_hook = self.tmp_path / ".gemini" / "config" / "hooks" / "herdr-agent-state.sh"
+        agy_hook.parent.mkdir(parents=True, exist_ok=True)
+        agy_hook.write_text("#!/bin/sh\n")
+
+        with patch("subprocess.run", side_effect=FileNotFoundError):
+            installed = self.pulse_module.get_installed_herdr_integrations(home_dir=self.tmp_path)
+            self.assertEqual(installed, {"claude", "antigravity-cli"})
+            self.assertNotIn("hermes", installed)
+
+    def test_collect_hermes_quota_returns_unavailable_on_failure(self):
+        with patch("subprocess.run", side_effect=FileNotFoundError):
+            res = self.pulse_module.collect_hermes_quota(home_dir=self.tmp_path)
+            self.assertEqual(res["state"], "UNAVAILABLE")
+        status_output = (
+            "pi: not installed (/home/rufus/.pi/agent/extensions/herdr-agent-state.ts)\n"
+            "omp: not installed (/home/rufus/.omp/agent/extensions/herdr-omp-agent-state.ts)\n"
+            "claude: current (v11) (/home/rufus/.claude/hooks/herdr-agent-state.sh)\n"
+            "codex: current (v10) (/home/rufus/.codex/herdr-agent-state.sh)\n"
+            "copilot: not installed (/home/rufus/.copilot/hooks/herdr-agent-state.sh)\n"
+            "hermes: not installed (/home/rufus/.hermes/plugins/herdr-agent-state/__init__.py)\n"
+            "antigravity-cli: current (v4) (/home/rufus/.gemini/config/hooks/herdr-agent-state.sh)\n"
+        )
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout=status_output)
+            installed = self.pulse_module.get_installed_herdr_integrations(home_dir=self.tmp_path)
+            self.assertEqual(installed, {"claude", "codex", "antigravity-cli"})
+            self.assertNotIn("hermes", installed)
+            self.assertNotIn("pi", installed)
+
+    def test_collect_provider_telemetry_excludes_uninstalled_integrations(self):
+        with patch.object(self.pulse_module, "get_installed_herdr_integrations", return_value={"claude", "antigravity-cli"}):
+            with patch.object(self.pulse_module, "collect_claude_quota", return_value={"state": "HEALTHY", "used_percent": 10.0}):
+                with patch.object(self.pulse_module, "collect_antigravity_quota", return_value={"state": "HEALTHY", "used_percent": 20.0}):
+                    with patch.object(self.pulse_module, "collect_terminal_agents", return_value=[]):
+                        telemetry = self.pulse_module.collect_provider_telemetry(home_dir=self.tmp_path)
+                        provs = telemetry["providers"]
+                        self.assertIn("claude_code", provs)
+                        self.assertIn("antigravity", provs)
+                        self.assertNotIn("hermes", provs)
+                        self.assertNotIn("codex", provs)
+                        self.assertEqual(telemetry.get("installed_integrations"), ["antigravity-cli", "claude"])
+
 
 
 if __name__ == '__main__':

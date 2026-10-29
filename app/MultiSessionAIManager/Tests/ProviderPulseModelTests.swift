@@ -70,6 +70,23 @@ import Testing
         #expect(terminals.first?.transcriptPath == "/home/rufus/.claude/projects/test/01a.jsonl")
     }
 
+    @Test func activeProvidersFiltersByInstalledIntegrations() {
+        let pulse = ProviderPulseModel()
+        let p1 = ProviderQuota(name: "claude_code", usedPercent: 10.0)
+        let p2 = ProviderQuota(name: "codex", usedPercent: 20.0)
+        let p3 = ProviderQuota(name: "hermes", usedPercent: 0.0)
+
+        // When installedIntegrations is specified, only installed providers are active
+        pulse.update(
+            providers: ["claude_code": p1, "codex": p2, "hermes": p3],
+            terminals: [],
+            installedIntegrations: ["claude", "antigravity-cli"]
+        )
+
+        #expect(pulse.activeProviders.count == 1)
+        #expect(pulse.activeProviders.first?.name == "claude_code")
+    }
+
     @Test func formatsResetDateInLocalTimezoneWithFractionalSeconds() throws {
         // Raw ISO8601 with microseconds and UTC timezone
         let raw = "2026-10-28T17:00:00.299728+00:00"

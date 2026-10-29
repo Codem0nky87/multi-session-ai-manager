@@ -153,10 +153,15 @@ public struct TerminalAgentSession: Decodable, Equatable, Identifiable, Sendable
 public final class ProviderPulseModel {
     public private(set) var providers: [String: ProviderQuota] = [:]
     public private(set) var terminalAgents: [TerminalAgentSession] = []
+    public private(set) var installedIntegrations: [String] = []
 
     public init() {}
 
-    public func update(providers: [String: ProviderQuota], terminals: [TerminalAgentSession]) {
+    public func update(
+        providers: [String: ProviderQuota],
+        terminals: [TerminalAgentSession],
+        installedIntegrations: [String]? = nil
+    ) {
         var named: [String: ProviderQuota] = [:]
         for (key, var val) in providers {
             val.name = key
@@ -164,18 +169,41 @@ public final class ProviderPulseModel {
         }
         self.providers = named
         self.terminalAgents = terminals
+        if let installedIntegrations {
+            self.installedIntegrations = installedIntegrations
+        }
+    }
+
+    private func isIntegrationInstalled(for providerKey: String) -> Bool {
+        guard !installedIntegrations.isEmpty else { return true }
+        switch providerKey {
+        case "claude_code", "claude":
+            return installedIntegrations.contains("claude")
+        case "codex":
+            return installedIntegrations.contains("codex")
+        case "antigravity", "agy":
+            return installedIntegrations.contains("antigravity-cli") ||
+                   installedIntegrations.contains("antigravity") ||
+                   installedIntegrations.contains("agy")
+        case "hermes":
+            return installedIntegrations.contains("hermes")
+        default:
+            return installedIntegrations.contains(providerKey)
+        }
     }
 
     public var activeProviders: [ProviderQuota] {
         let order = ["claude_code", "codex", "antigravity", "hermes"]
         var list: [ProviderQuota] = []
         for key in order {
-            if let p = providers[key] {
+            if let p = providers[key], isIntegrationInstalled(for: key) {
                 list.append(p)
             }
         }
         for (key, p) in providers where !order.contains(key) {
-            list.append(p)
+            if isIntegrationInstalled(for: key) {
+                list.append(p)
+            }
         }
         return list
     }
