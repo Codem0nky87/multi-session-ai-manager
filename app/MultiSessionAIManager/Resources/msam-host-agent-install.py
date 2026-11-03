@@ -144,8 +144,16 @@ def service_path(legacy=False):
 def write_service():
     STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
     if sys.platform == 'darwin':
+        mac_path = os.pathsep.join([
+            str(HOME / '.local/bin'),
+            str(HOME / '.gemini/antigravity-cli/bin'),
+            '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'
+        ])
         definition = {'Label': LABEL, 'ProgramArguments': command('serve'),
-                      'EnvironmentVariables': {'MSAM_HOST_HOME': str(HOME)},
+                      'EnvironmentVariables': {
+                          'MSAM_HOST_HOME': str(HOME),
+                          'PATH': mac_path,
+                      },
                       'RunAtLoad': True, 'KeepAlive': True, 'ProcessType': 'Background',
                       'StandardOutPath': str(STATE / 'service.stdout.log'),
                       'StandardErrorPath': str(STATE / 'service.stderr.log')}
@@ -160,9 +168,15 @@ def write_service():
     else:
         def quote(value):
             return '"' + str(value).replace('\\', '\\\\').replace('"', '\\"').replace('%', '%%') + '"'
-        content = '[Unit]\nDescription=MSAM host agent (agents, updates, metrics)\n\n[Service]\nType=simple\n'
+        extra_path = os.pathsep.join([
+            str(HOME / '.local/bin'),
+            str(HOME / '.gemini/antigravity-cli/bin'),
+            '/usr/local/sbin', '/usr/local/bin', '/usr/sbin', '/usr/bin', '/sbin', '/bin'
+        ])
+        content = '[Unit]\nDescription=MSAM host agent (agents, updates, metrics)\nAfter=network.target\n\n[Service]\nType=simple\n'
         content += 'ExecStart=' + ' '.join(quote(v) for v in command('serve')) + '\n'
         content += 'Environment=' + quote('MSAM_HOST_HOME=' + str(HOME)) + '\n'
+        content += 'Environment=' + quote('PATH=' + extra_path) + '\n'
         content += 'Restart=on-failure\nRestartSec=2\nKillMode=process\nTimeoutStopSec=20\nNoNewPrivileges=true\n\n[Install]\nWantedBy=default.target\n'
         service_path().parent.mkdir(parents=True, exist_ok=True)
         service_path().write_text(content)

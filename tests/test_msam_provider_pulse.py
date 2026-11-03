@@ -282,5 +282,45 @@ class ProviderPulseTests(unittest.TestCase):
 
 
 
+    def test_query_codex_app_server_times_out_and_kills_process(self):
+        import subprocess, time
+        # Start a process that sleeps and never produces JSON-RPC output
+        dummy_proc = subprocess.Popen(["sleep", "10"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        with patch("subprocess.Popen", return_value=dummy_proc):
+            t0 = time.time()
+            with self.assertRaises((TimeoutError, Exception)):
+                self.pulse_module.query_codex_app_server(codex_bin="mock-codex", timeout=0.5)
+            elapsed = time.time() - t0
+            self.assertLess(elapsed, 3.0, "query_codex_app_server must not block past timeout")
+            self.assertIsNotNone(dummy_proc.poll(), "Process must be terminated on timeout")
+
+    def test_collect_codex_quota_resolves_bin_from_home_and_passes_env(self):
+        bin_dir = self.tmp_path / ".local" / "bin"
+        bin_dir.mkdir(parents=True)
+        codex_mock = bin_dir / "codex"
+        codex_mock.write_text("#!/bin/sh\nexit 0\n")
+        codex_mock.chmod(0o755)
+
+        test_env = {"PATH": "/usr/bin:/bin"}
+        with patch.object(self.pulse_module, "query_codex_app_server", return_value=({}, {})) as mock_query:
+            self.pulse_module.collect_codex_quota(home_dir=self.tmp_path, env=test_env)
+            self.assertTrue(mock_query.called)
+            called_bin, called_env = mock_query.call_args.kwargs.get("codex_bin") or mock_query.call_args.args[0], mock_query.call_args.kwargs.get("env")
+            self.assertEqual(called_bin, str(codex_mock))
+            self.assertIn(str(bin_dir), called_env.get("PATH", ""))
+
+    def test_collect_provider_telemetry_passes_home_and_env_to_codex(self):
+        test_env = {"PATH": "/usr/bin"}
+        with patch.object(self.pulse_module, "get_installed_herdr_integrations", return_value={"codex"}):
+            with patch.object(self.pulse_module, "collect_codex_quota", return_value={"state": "HEALTHY", "used_percent": 5.0}) as mock_codex:
+                with patch.object(self.pulse_module, "collect_terminal_agents", return_value=[]):
+                    res = self.pulse_module.collect_provider_telemetry(home_dir=self.tmp_path, env=test_env)
+                    self.assertTrue(mock_codex.called)
+                    kwargs = mock_codex.call_args.kwargs
+                    self.assertEqual(kwargs.get("home_dir"), self.tmp_path)
+                    self.assertEqual(kwargs.get("env"), test_env)
+                    self.assertIn("codex", res["providers"])
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -134,7 +134,7 @@ def load_pulse():
 def analyze_task(transcript_path, target_provider='codex'):
     pulse = load_pulse()
     if pulse:
-        return pulse.analyze_session_task(transcript_path, target_provider, home_dir=HOME)
+        return pulse.analyze_session_task(transcript_path, target_provider, home_dir=HOME, env=environment())
     return {'model': 'gpt-6.1-sol', 'effort': 'medium', 'summary': 'Default recommendation'}
 
 
@@ -213,15 +213,22 @@ def background_inventory():
 
 
 def background_provider_pulse():
-    pulse = load_pulse()
-    if not pulse:
-        return
     while not STOP.is_set():
         try:
-            telemetry = pulse.collect_provider_telemetry(home_dir=HOME, env=environment())
-            atomic_json(STATE / 'providers.json', telemetry)
+            pulse = load_pulse()
+            if pulse:
+                telemetry = pulse.collect_provider_telemetry(home_dir=HOME, env=environment())
+                atomic_json(STATE / 'providers.json', telemetry)
+                (STATE / 'providers-error.json').unlink(missing_ok=True)
+            else:
+                atomic_json(STATE / 'providers-error.json', {
+                    'error': 'msam-provider-pulse module unavailable',
+                    'at': time.time(),
+                })
         except Exception as error:
-            atomic_json(STATE / 'providers.json', {'error': str(error), 'providers': {}, 'terminal_agents': []})
+            atomic_json(STATE / 'providers-error.json', {'error': str(error), 'at': time.time()})
+            if not (STATE / 'providers.json').exists():
+                atomic_json(STATE / 'providers.json', {'error': str(error), 'providers': {}, 'terminal_agents': []})
         STOP.wait(30)
 
 
@@ -253,6 +260,7 @@ def singleton(path):
 
 
 def serve():
+    os.environ.update(environment())
     STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
     module = load_module('metrics', 'msam-metrics.py')
     with singleton(STATE / 'daemon.lock'):
@@ -308,6 +316,7 @@ def main():
         HOME = Path(options.home)
         STATE = HOME / '.local/state/msam-host-agent'
         UPDATER_STATE = HOME / '.local/state/msam-agent-updater'
+    os.environ.update(environment())
     if options.command == 'serve':
         for sig in (signal.SIGTERM, signal.SIGINT):
             signal.signal(sig, lambda *_: STOP.set())

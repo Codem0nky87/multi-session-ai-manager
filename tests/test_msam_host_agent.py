@@ -281,6 +281,46 @@ class HostAgentTests(unittest.TestCase):
         self.assertEqual(rec["model"], "gpt-6.1-sol")
         self.assertEqual(rec["effort"], "high")
 
+    def test_service_definition_includes_path_and_network_target(self):
+        with patch.object(self.installer.sys, 'platform', 'linux'):
+            self.installer.write_service()
+            content = self.installer.service_path().read_text()
+            self.assertIn('After=network.target', content)
+            self.assertIn('Environment="PATH=', content)
+            self.assertIn('.local/bin', content)
+        with patch.object(self.installer.sys, 'platform', 'darwin'):
+            self.installer.write_service()
+            import plistlib
+            plist = plistlib.loads(self.installer.service_path().read_bytes())
+            self.assertIn('PATH', plist['EnvironmentVariables'])
+            self.assertIn('.local/bin', plist['EnvironmentVariables']['PATH'])
+
+    def test_background_provider_pulse_retries_and_preserves_providers_on_error(self):
+        state_dir = self.home / '.local/state/msam-host-agent'
+        state_dir.mkdir(parents=True, exist_ok=True)
+        providers_file = state_dir / 'providers.json'
+        error_file = state_dir / 'providers-error.json'
+
+        # Seed valid existing providers
+        initial_telemetry = {'providers': {'codex': {'state': 'HEALTHY', 'used_percent': 25.0}}, 'terminal_agents': []}
+        self.agent.atomic_json(providers_file, initial_telemetry)
+
+        mock_pulse = unittest.mock.MagicMock()
+        mock_pulse.collect_provider_telemetry.side_effect = RuntimeError("network unreachable at boot")
+
+        with patch.object(self.agent, 'load_pulse', return_value=mock_pulse), \
+             patch.object(self.agent.STOP, 'is_set', side_effect=[False, True]), \
+             patch.object(self.agent.STOP, 'wait'):
+            self.agent.background_provider_pulse()
+
+        # Existing providers.json must NOT be overwritten with empty providers
+        cached = json.loads(providers_file.read_text())
+        self.assertEqual(cached['providers']['codex']['used_percent'], 25.0)
+        # providers-error.json must record the error
+        self.assertTrue(error_file.exists())
+        err_data = json.loads(error_file.read_text())
+        self.assertIn("network unreachable at boot", err_data['error'])
+
 
 class WindowsUpdaterTests(unittest.TestCase):
     def setUp(self):

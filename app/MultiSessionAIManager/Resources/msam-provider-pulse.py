@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -203,7 +204,7 @@ def collect_claude_quota(credentials_path: Path | str, cache_path: Path | str | 
     return result
 
 
-def query_codex_app_server(codex_bin: str = "codex", timeout: float = 15.0) -> tuple[dict, dict]:
+def query_codex_app_server(codex_bin: str = "codex", env: dict | None = None, timeout: float = 15.0) -> tuple[dict, dict]:
     """Execute stdio JSON-RPC handshake with codex app-server to read rate limits and usage."""
     proc = subprocess.Popen(
         [codex_bin, "app-server", "--stdio"],
@@ -211,44 +212,73 @@ def query_codex_app_server(codex_bin: str = "codex", timeout: float = 15.0) -> t
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         text=True,
+        env=env,
     )
 
-    def send(msg: dict):
-        proc.stdin.write(json.dumps(msg) + "\n")
-        proc.stdin.flush()
+    result_holder: dict[str, tuple[dict, dict]] = {}
+    error_holder: dict[str, Exception] = {}
 
-    def receive(req_id: int) -> dict:
-        while True:
-            line = proc.stdout.readline()
-            if not line:
-                raise RuntimeError("Codex app-server closed stream")
-            event = json.loads(line)
-            if event.get("id") == req_id:
-                if "error" in event:
-                    raise RuntimeError(event["error"])
-                return event.get("result", {})
+    def run_rpc():
+        def send(msg: dict):
+            if proc.stdin and not proc.stdin.closed:
+                proc.stdin.write(json.dumps(msg) + "\n")
+                proc.stdin.flush()
 
-    try:
-        send({"id": 1, "method": "initialize", "params": {"clientInfo": {"name": "msam", "version": "2.4.1"}}})
-        receive(1)
-        send({"method": "initialized"})
-        send({"id": 2, "method": "account/rateLimits/read"})
-        limits = receive(2)
-        send({"id": 3, "method": "account/usage/read"})
-        usage = receive(3)
-        return limits, usage
-    finally:
-        proc.terminate()
+        def receive(req_id: int) -> dict:
+            while True:
+                if not proc.stdout or proc.stdout.closed:
+                    raise RuntimeError("Codex app-server closed stream")
+                line = proc.stdout.readline()
+                if not line:
+                    raise RuntimeError("Codex app-server closed stream")
+                event = json.loads(line)
+                if event.get("id") == req_id:
+                    if "error" in event:
+                        raise RuntimeError(event["error"])
+                    return event.get("result", {})
+
         try:
-            proc.wait(timeout=2.0)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+            send({"id": 1, "method": "initialize", "params": {"clientInfo": {"name": "msam", "version": "2.4.1"}}})
+            receive(1)
+            send({"method": "initialized"})
+            send({"id": 2, "method": "account/rateLimits/read"})
+            limits = receive(2)
+            send({"id": 3, "method": "account/usage/read"})
+            usage = receive(3)
+            result_holder["data"] = (limits, usage)
+        except Exception as exc:
+            error_holder["error"] = exc
 
+    worker = threading.Thread(target=run_rpc, daemon=True)
+    worker.start()
+    worker.join(timeout=timeout)
 
-def collect_codex_quota(codex_bin: str = "codex") -> dict:
-    """Read Codex rate limits and reset credits."""
     try:
-        limits, usage = query_codex_app_server(codex_bin=codex_bin)
+        if worker.is_alive():
+            proc.kill()
+            worker.join(timeout=2.0)
+            raise TimeoutError(f"Codex app-server query timed out after {timeout}s")
+        if "error" in error_holder:
+            raise error_holder["error"]
+        if "data" not in result_holder:
+            raise RuntimeError("Codex app-server query failed to return data")
+        return result_holder["data"]
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+
+
+def collect_codex_quota(home_dir: Path | str | None = None, codex_bin: str = "codex", env: dict | None = None) -> dict:
+    """Read Codex rate limits and reset credits."""
+    home = Path(home_dir).expanduser() if home_dir else Path.home()
+    proc_env = _get_process_env(home, env)
+    exe = _find_bin(home, codex_bin, proc_env) or codex_bin
+    try:
+        limits, usage = query_codex_app_server(codex_bin=exe, env=proc_env, timeout=15.0)
     except Exception:
         return {
             "state": "UNAVAILABLE",
@@ -764,7 +794,7 @@ def collect_provider_telemetry(home_dir: Path | str | None = None, env: dict | N
         providers["claude_code"] = collect_claude_quota(claude_creds)
 
     if "codex" in installed:
-        providers["codex"] = collect_codex_quota()
+        providers["codex"] = collect_codex_quota(home_dir=home, env=env)
 
     if "antigravity-cli" in installed:
         providers["antigravity"] = collect_antigravity_quota(home_dir=home, env=env)
