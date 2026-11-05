@@ -5,7 +5,9 @@ import os
 from pathlib import Path
 import plistlib
 import subprocess
+import sys
 import tempfile
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -917,6 +919,231 @@ Combined Power (CPU + GPU + ANE): 4340 mW
             self.assertEqual(len(samples_collected), 2)
 
         db.close()
+
+    def test_parse_period(self):
+        now = 1762330000.0
+        # 1 hour = 3600s
+        start, end = m.parse_period("1h", now=now)
+        self.assertEqual(end, now)
+        self.assertEqual(start, now - 3600.0)
+
+        # 24 hours = 86400s
+        start, end = m.parse_period("24h", now=now)
+        self.assertEqual(end, now)
+        self.assertEqual(start, now - 86400.0)
+
+        # 7 days = 7 * 86400s
+        start, end = m.parse_period("7d", now=now)
+        self.assertEqual(end, now)
+        self.assertEqual(start, now - (7 * 86400.0))
+
+        # 30 days = 30 * 86400s
+        start, end = m.parse_period("30d", now=now)
+        self.assertEqual(end, now)
+        self.assertEqual(start, now - (30 * 86400.0))
+
+        # Invalid formats
+        for invalid in ["", "xyz", "24x", "-1h", "100"]:
+            with self.assertRaises(ValueError):
+                m.parse_period(invalid, now=now)
+
+    def test_metrics_history_db_get_report_data_aggregations(self):
+        db_path = self.root / 'test_report_agg.db'
+        db = m.MetricsHistoryDB(db_path=str(db_path))
+        try:
+            t0 = 10000.0
+            # 3 samples over 1 hour (3600s): t=0, t=1800, t=3600
+            db.record_sample(
+                timestamp=t0,
+                cpu_util=20.0, cpu_temp=40.0, cpu_watts=30.0,
+                mem_used_gb=8.0, mem_total_gb=16.0,
+                gpu_util=10.0, gpu_temp=50.0, gpu_watts=20.0,
+                net_down_kbps=100.0, net_up_kbps=20.0,
+                system_watts=50.0, power_source='rapl+nvml'
+            )
+            db.record_sample(
+                timestamp=t0 + 1800.0,
+                cpu_util=40.0, cpu_temp=50.0, cpu_watts=50.0,
+                mem_used_gb=10.0, mem_total_gb=16.0,
+                gpu_util=30.0, gpu_temp=60.0, gpu_watts=40.0,
+                net_down_kbps=300.0, net_up_kbps=60.0,
+                system_watts=90.0, power_source='rapl+nvml'
+            )
+            db.record_sample(
+                timestamp=t0 + 3600.0,
+                cpu_util=60.0, cpu_temp=60.0, cpu_watts=70.0,
+                mem_used_gb=12.0, mem_total_gb=16.0,
+                gpu_util=50.0, gpu_temp=70.0, gpu_watts=60.0,
+                net_down_kbps=500.0, net_up_kbps=100.0,
+                system_watts=130.0, power_source='rapl+nvml'
+            )
+
+            data = db.get_report_data(t0, t0 + 3600.0, cost_per_kwh=0.20)
+
+            # Period
+            self.assertEqual(data['period']['sample_count'], 3)
+            self.assertEqual(data['period']['start_time'], t0)
+            self.assertEqual(data['period']['end_time'], t0 + 3600.0)
+
+            # CPU: avg 40, min 20, max 60, avg_temp 50, avg_watts 50, max_watts 70
+            self.assertAlmostEqual(data['cpu']['avg_util'], 40.0, places=1)
+            self.assertAlmostEqual(data['cpu']['min_util'], 20.0, places=1)
+            self.assertAlmostEqual(data['cpu']['max_util'], 60.0, places=1)
+            self.assertAlmostEqual(data['cpu']['avg_temp'], 50.0, places=1)
+            self.assertAlmostEqual(data['cpu']['max_temp'], 60.0, places=1)
+            self.assertAlmostEqual(data['cpu']['avg_watts'], 50.0, places=1)
+            self.assertAlmostEqual(data['cpu']['max_watts'], 70.0, places=1)
+
+            # Memory: avg 10.0, max 12.0, total 16.0
+            self.assertAlmostEqual(data['memory']['avg_used_gb'], 10.0, places=1)
+            self.assertAlmostEqual(data['memory']['max_used_gb'], 12.0, places=1)
+            self.assertAlmostEqual(data['memory']['total_gb'], 16.0, places=1)
+
+            # GPU: avg 30, min 10, max 50, avg_temp 60, avg_watts 40, max_watts 60
+            self.assertAlmostEqual(data['gpu']['avg_util'], 30.0, places=1)
+            self.assertAlmostEqual(data['gpu']['min_util'], 10.0, places=1)
+            self.assertAlmostEqual(data['gpu']['max_util'], 50.0, places=1)
+            self.assertAlmostEqual(data['gpu']['avg_temp'], 60.0, places=1)
+            self.assertAlmostEqual(data['gpu']['avg_watts'], 40.0, places=1)
+            self.assertAlmostEqual(data['gpu']['max_watts'], 60.0, places=1)
+
+            # Network: peak_down 500, peak_up 100, avg_down 300, avg_up 60
+            self.assertAlmostEqual(data['network']['peak_down_kbps'], 500.0, places=1)
+            self.assertAlmostEqual(data['network']['peak_up_kbps'], 100.0, places=1)
+            self.assertAlmostEqual(data['network']['avg_down_kbps'], 300.0, places=1)
+            self.assertAlmostEqual(data['network']['avg_up_kbps'], 60.0, places=1)
+            # Volume:
+            # interval 1: (100+300)/2 * 1800 = 360000 KB
+            # interval 2: (300+500)/2 * 1800 = 720000 KB -> total 1080000 KB = 1054.69 MB
+            self.assertAlmostEqual(data['network']['total_download_mb'], 1080000.0 / 1024.0, places=1)
+            # up: (20+60)/2 * 1800 + (60+100)/2 * 1800 = 72000 + 144000 = 216000 KB = 210.94 MB
+            self.assertAlmostEqual(data['network']['total_upload_mb'], 216000.0 / 1024.0, places=1)
+
+            # Power: avg 90.0, min 50.0, max 130.0
+            self.assertAlmostEqual(data['power']['avg_watts'], 90.0, places=1)
+            self.assertAlmostEqual(data['power']['min_watts'], 50.0, places=1)
+            self.assertAlmostEqual(data['power']['max_watts'], 130.0, places=1)
+
+            # Energy kWh:
+            # interval 1: (50 + 90)/2 * 0.5h / 1000 = 0.035 kWh
+            # interval 2: (90 + 130)/2 * 0.5h / 1000 = 0.055 kWh
+            # Total = 0.090 kWh
+            self.assertAlmostEqual(data['power']['total_kwh'], 0.09, places=4)
+            # Cost: 0.09 kWh * $0.20/kWh = $0.018
+            self.assertAlmostEqual(data['power']['cost'], 0.018, places=4)
+            self.assertEqual(data['power']['cost_per_kwh'], 0.20)
+        finally:
+            db.close()
+
+    def test_generate_metrics_report_formats(self):
+        db_path = self.root / 'test_report_formats.db'
+        db = m.MetricsHistoryDB(db_path=str(db_path))
+        try:
+            t0 = 1000.0
+            db.record_sample(
+                timestamp=t0,
+                cpu_util=25.0, cpu_temp=45.0, cpu_watts=35.0,
+                mem_used_gb=8.0, mem_total_gb=16.0,
+                gpu_util=15.0, gpu_temp=55.0, gpu_watts=25.0,
+                net_down_kbps=150.0, net_up_kbps=50.0,
+                system_watts=60.0, power_source='rapl+nvml'
+            )
+            db.record_sample(
+                timestamp=t0 + 3600.0,
+                cpu_util=35.0, cpu_temp=55.0, cpu_watts=45.0,
+                mem_used_gb=10.0, mem_total_gb=16.0,
+                gpu_util=25.0, gpu_temp=65.0, gpu_watts=35.0,
+                net_down_kbps=250.0, net_up_kbps=70.0,
+                system_watts=80.0, power_source='rapl+nvml'
+            )
+
+            # JSON format returns dict
+            json_report = m.generate_metrics_report(db, start_time=t0, end_time=t0 + 3600.0, format="json", cost_per_kwh=0.15)
+            self.assertIsInstance(json_report, dict)
+            self.assertIn('cpu', json_report)
+            self.assertIn('power', json_report)
+            self.assertEqual(json_report['period']['sample_count'], 2)
+            self.assertAlmostEqual(json_report['power']['total_kwh'], 0.07, places=3)
+            self.assertAlmostEqual(json_report['power']['cost'], 0.07 * 0.15, places=4)
+
+            # Table format returns ASCII string
+            table_report = m.generate_metrics_report(db, start_time=t0, end_time=t0 + 3600.0, format="table", cost_per_kwh=0.15)
+            self.assertIsInstance(table_report, str)
+            self.assertIn("MSAM METRICS REPORT", table_report)
+            self.assertIn("CPU:", table_report)
+            self.assertIn("Power & Energy:", table_report)
+            self.assertIn("0.0700 kWh", table_report)
+
+            # CSV format returns CSV string
+            csv_report = m.generate_metrics_report(db, start_time=t0, end_time=t0 + 3600.0, format="csv", cost_per_kwh=0.15)
+            self.assertIsInstance(csv_report, str)
+            self.assertIn("category,metric,value", csv_report)
+            self.assertIn("power,total_kwh,0.07", csv_report)
+            self.assertIn("cpu,avg_util", csv_report)
+        finally:
+            db.close()
+
+    def test_generate_metrics_report_empty_db(self):
+        db_path = self.root / 'test_report_empty.db'
+        db = m.MetricsHistoryDB(db_path=str(db_path))
+        try:
+            # Query time range with no samples
+            json_report = m.generate_metrics_report(db, start_time=100.0, end_time=200.0, format="json", cost_per_kwh=0.15)
+            self.assertIsInstance(json_report, dict)
+            self.assertEqual(json_report['period']['sample_count'], 0)
+            self.assertEqual(json_report['power']['total_kwh'], 0.0)
+            self.assertEqual(json_report['power']['cost'], 0.0)
+            self.assertIsNone(json_report['cpu']['avg_util'])
+
+            table_report = m.generate_metrics_report(db, start_time=100.0, end_time=200.0, format="table")
+            self.assertIn("(0 samples)", table_report)
+
+            csv_report = m.generate_metrics_report(db, start_time=100.0, end_time=200.0, format="csv")
+            self.assertIn("category,metric,value", csv_report)
+            self.assertIn("period,sample_count,0", csv_report)
+        finally:
+            db.close()
+
+    def test_report_cli_parsing_and_execution(self):
+        db_path = self.root / 'test_report_cli.db'
+        db = m.MetricsHistoryDB(db_path=str(db_path))
+        try:
+            now = time.time()
+            db.record_sample(
+                timestamp=now - 60,
+                cpu_util=20.0, cpu_temp=40.0, cpu_watts=30.0,
+                mem_used_gb=8.0, mem_total_gb=16.0,
+                gpu_util=10.0, gpu_temp=50.0, gpu_watts=20.0,
+                net_down_kbps=100.0, net_up_kbps=20.0,
+                system_watts=50.0, power_source='rapl+nvml'
+            )
+            db.record_sample(
+                timestamp=now,
+                cpu_util=40.0, cpu_temp=50.0, cpu_watts=50.0,
+                mem_used_gb=10.0, mem_total_gb=16.0,
+                gpu_util=30.0, gpu_temp=60.0, gpu_watts=40.0,
+                net_down_kbps=300.0, net_up_kbps=60.0,
+                system_watts=90.0, power_source='rapl+nvml'
+            )
+        finally:
+            db.close()
+
+        # Run CLI report with --format json
+        cmd = [sys.executable, str(PATH), "report", "--db", str(db_path), "--period", "1h", "--format", "json", "--cost-per-kwh", "0.20"]
+        res = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        out = json.loads(res.stdout)
+        self.assertEqual(out['period']['sample_count'], 2)
+        self.assertAlmostEqual(out['power']['cost_per_kwh'], 0.20)
+
+        # Run CLI report with --format table
+        cmd_table = [sys.executable, str(PATH), "report", "--db", str(db_path), "--period", "1h", "--format", "table"]
+        res_table = subprocess.run(cmd_table, capture_output=True, text=True, check=True)
+        self.assertIn("MSAM METRICS REPORT", res_table.stdout)
+
+        # Run CLI report with --format csv
+        cmd_csv = [sys.executable, str(PATH), "report", "--db", str(db_path), "--period", "1h", "--format", "csv"]
+        res_csv = subprocess.run(cmd_csv, capture_output=True, text=True, check=True)
+        self.assertIn("category,metric,value", res_csv.stdout)
 
 
 if __name__ == '__main__':

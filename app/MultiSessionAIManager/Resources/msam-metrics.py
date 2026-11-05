@@ -1625,6 +1625,165 @@ class MetricsHistoryDB:
             self.conn.execute("PRAGMA incremental_vacuum;")
         return pruned_count
 
+    def get_report_data(self, start_time, end_time, cost_per_kwh=None):
+        """Fetches aggregated statistics and sample integration (energy kWh and network volume) between start_time and end_time."""
+        cur = self.conn.cursor()
+
+        # Summary aggregations
+        cur.execute("""
+            SELECT
+                COUNT(*),
+                AVG(cpu_util), MAX(cpu_util), MIN(cpu_util),
+                AVG(cpu_temp), MAX(cpu_temp),
+                AVG(cpu_watts), MAX(cpu_watts),
+                AVG(mem_used_gb), MAX(mem_used_gb), MAX(mem_total_gb),
+                AVG(gpu_util), MAX(gpu_util), MIN(gpu_util),
+                AVG(gpu_temp), MAX(gpu_temp),
+                AVG(gpu_watts), MAX(gpu_watts),
+                AVG(net_down_kbps), MAX(net_down_kbps),
+                AVG(net_up_kbps), MAX(net_up_kbps),
+                AVG(system_watts), MAX(system_watts), MIN(system_watts)
+            FROM metrics_samples
+            WHERE timestamp >= ? AND timestamp <= ?
+        """, (start_time, end_time))
+        row = cur.fetchone()
+
+        (sample_count,
+         avg_cpu_util, max_cpu_util, min_cpu_util,
+         avg_cpu_temp, max_cpu_temp,
+         avg_cpu_watts, max_cpu_watts,
+         avg_mem_used, max_mem_used, max_mem_total,
+         avg_gpu_util, max_gpu_util, min_gpu_util,
+         avg_gpu_temp, max_gpu_temp,
+         avg_gpu_watts, max_gpu_watts,
+         avg_net_down, max_net_down,
+         avg_net_up, max_net_up,
+         avg_sys_watts, max_sys_watts, min_sys_watts) = row
+
+        # Time series integration for kWh and Network Volume
+        cur.execute("""
+            SELECT timestamp, system_watts, net_down_kbps, net_up_kbps
+            FROM metrics_samples
+            WHERE timestamp >= ? AND timestamp <= ?
+            ORDER BY timestamp ASC
+        """, (start_time, end_time))
+        ts_rows = cur.fetchall()
+        cur.close()
+
+        total_kwh = 0.0
+        total_down_kb = 0.0
+        total_up_kb = 0.0
+
+        if len(ts_rows) >= 2:
+            for i in range(1, len(ts_rows)):
+                t_prev, w_prev, down_prev, up_prev = ts_rows[i - 1]
+                t_curr, w_curr, down_curr, up_curr = ts_rows[i]
+                dt = t_curr - t_prev
+                if dt > 0:
+                    dt_hours = dt / 3600.0
+
+                    # Trapezoidal watts integration
+                    if w_curr is not None and w_prev is not None:
+                        w_avg = (w_curr + w_prev) / 2.0
+                    elif w_curr is not None:
+                        w_avg = w_curr
+                    elif w_prev is not None:
+                        w_avg = w_prev
+                    else:
+                        w_avg = 0.0
+                    total_kwh += (w_avg * dt_hours) / 1000.0
+
+                    # Network volume integration
+                    if down_curr is not None and down_prev is not None:
+                        down_avg = (down_curr + down_prev) / 2.0
+                    elif down_curr is not None:
+                        down_avg = down_curr
+                    elif down_prev is not None:
+                        down_avg = down_prev
+                    else:
+                        down_avg = 0.0
+                    total_down_kb += down_avg * dt
+
+                    if up_curr is not None and up_prev is not None:
+                        up_avg = (up_curr + up_prev) / 2.0
+                    elif up_curr is not None:
+                        up_avg = up_curr
+                    elif up_prev is not None:
+                        up_avg = up_prev
+                    else:
+                        up_avg = 0.0
+                    total_up_kb += up_avg * dt
+
+        total_down_mb = total_down_kb / 1024.0
+        total_up_mb = total_up_kb / 1024.0
+
+        cost = None
+        if cost_per_kwh is not None:
+            cost = round(total_kwh * float(cost_per_kwh), 4)
+
+        return {
+            "period": {
+                "start_time": start_time,
+                "end_time": end_time,
+                "sample_count": sample_count or 0,
+            },
+            "cpu": {
+                "avg_util": round(avg_cpu_util, 2) if avg_cpu_util is not None else None,
+                "max_util": round(max_cpu_util, 2) if max_cpu_util is not None else None,
+                "min_util": round(min_cpu_util, 2) if min_cpu_util is not None else None,
+                "avg_utilization": round(avg_cpu_util, 2) if avg_cpu_util is not None else None,
+                "max_utilization": round(max_cpu_util, 2) if max_cpu_util is not None else None,
+                "min_utilization": round(min_cpu_util, 2) if min_cpu_util is not None else None,
+                "avg_temp": round(avg_cpu_temp, 1) if avg_cpu_temp is not None else None,
+                "max_temp": round(max_cpu_temp, 1) if max_cpu_temp is not None else None,
+                "avg_watts": round(avg_cpu_watts, 2) if avg_cpu_watts is not None else None,
+                "max_watts": round(max_cpu_watts, 2) if max_cpu_watts is not None else None,
+                "peak_watts": round(max_cpu_watts, 2) if max_cpu_watts is not None else None,
+            },
+            "memory": {
+                "avg_used_gb": round(avg_mem_used, 2) if avg_mem_used is not None else None,
+                "max_used_gb": round(max_mem_used, 2) if max_mem_used is not None else None,
+                "peak_used_gb": round(max_mem_used, 2) if max_mem_used is not None else None,
+                "total_gb": round(max_mem_total, 2) if max_mem_total is not None else None,
+            },
+            "gpu": {
+                "avg_util": round(avg_gpu_util, 2) if avg_gpu_util is not None else None,
+                "max_util": round(max_gpu_util, 2) if max_gpu_util is not None else None,
+                "min_util": round(min_gpu_util, 2) if min_gpu_util is not None else None,
+                "avg_utilization": round(avg_gpu_util, 2) if avg_gpu_util is not None else None,
+                "max_utilization": round(max_gpu_util, 2) if max_gpu_util is not None else None,
+                "min_utilization": round(min_gpu_util, 2) if min_gpu_util is not None else None,
+                "avg_temp": round(avg_gpu_temp, 1) if avg_gpu_temp is not None else None,
+                "max_temp": round(max_gpu_temp, 1) if max_gpu_temp is not None else None,
+                "avg_watts": round(avg_gpu_watts, 2) if avg_gpu_watts is not None else None,
+                "max_watts": round(max_gpu_watts, 2) if max_gpu_watts is not None else None,
+                "peak_watts": round(max_gpu_watts, 2) if max_gpu_watts is not None else None,
+            },
+            "network": {
+                "total_download_mb": round(total_down_mb, 2),
+                "total_upload_mb": round(total_up_mb, 2),
+                "total_down_mb": round(total_down_mb, 2),
+                "total_up_mb": round(total_up_mb, 2),
+                "peak_down_kbps": round(max_net_down, 2) if max_net_down is not None else None,
+                "peak_up_kbps": round(max_net_up, 2) if max_net_up is not None else None,
+                "peak_download_kbps": round(max_net_down, 2) if max_net_down is not None else None,
+                "peak_upload_kbps": round(max_net_up, 2) if max_net_up is not None else None,
+                "avg_down_kbps": round(avg_net_down, 2) if avg_net_down is not None else None,
+                "avg_up_kbps": round(avg_net_up, 2) if avg_net_up is not None else None,
+                "avg_download_kbps": round(avg_net_down, 2) if avg_net_down is not None else None,
+                "avg_upload_kbps": round(avg_net_up, 2) if avg_net_up is not None else None,
+            },
+            "power": {
+                "avg_watts": round(avg_sys_watts, 2) if avg_sys_watts is not None else None,
+                "max_watts": round(max_sys_watts, 2) if max_sys_watts is not None else None,
+                "min_watts": round(min_sys_watts, 2) if min_sys_watts is not None else None,
+                "peak_watts": round(max_sys_watts, 2) if max_sys_watts is not None else None,
+                "total_kwh": round(total_kwh, 4),
+                "cost": cost,
+                "cost_per_kwh": cost_per_kwh,
+            }
+        }
+
     def close(self):
         """Closes the database connection."""
         if self.conn is not None:
@@ -1698,7 +1857,200 @@ def _sample_loop(interval=2.0, db=None, max_iterations=None, stop_event=None,
             sleep_func(interval)
 
 
+def parse_period(period_str, now=None):
+    """
+    Parses a period string (e.g., '1h', '24h', '7d', '30d') and returns (start_time, end_time) in epoch seconds.
+    """
+    if now is None:
+        now = time.time()
+    if not isinstance(period_str, str) or not period_str:
+        raise ValueError(f"Invalid period: {period_str}. Use e.g. 1h, 24h, 7d, 30d")
+
+    match = re.fullmatch(r'(\d+)([smhdw])', period_str.strip())
+    if not match:
+        raise ValueError(f"Invalid period format: {period_str}. Use e.g. 1h, 24h, 7d, 30d")
+
+    val, unit = int(match.group(1)), match.group(2)
+    multipliers = {
+        's': 1.0,
+        'm': 60.0,
+        'h': 3600.0,
+        'd': 86400.0,
+        'w': 7 * 86400.0,
+    }
+    duration = val * multipliers[unit]
+    return now - duration, now
+
+
+def parse_iso_timestamp(val):
+    """Parses an ISO 8601 string or numeric timestamp into an epoch timestamp (float)."""
+    if val is None:
+        return None
+    if isinstance(val, (int, float)):
+        return float(val)
+    val = str(val).strip()
+    try:
+        return float(val)
+    except ValueError:
+        pass
+    from datetime import datetime
+    try:
+        clean = val.replace('Z', '+00:00')
+        dt = datetime.fromisoformat(clean)
+        return dt.timestamp()
+    except Exception as e:
+        raise ValueError(f"Invalid timestamp format: {val}. Use ISO 8601 format.") from e
+
+
+def generate_metrics_report(db, start_time=None, end_time=None, format="table", cost_per_kwh=None):
+    """
+    Generates a historical metrics report in table, json, or csv format.
+    db may be a MetricsHistoryDB instance, a Path, a path string, or None.
+    """
+    close_db = False
+    if db is None:
+        db = MetricsHistoryDB()
+        close_db = True
+    elif isinstance(db, (str, Path)):
+        db = MetricsHistoryDB(db_path=db)
+        close_db = True
+
+    try:
+        if start_time is None and end_time is None:
+            end_time = time.time()
+            start_time = end_time - 86400.0
+        elif start_time is None:
+            start_time = end_time - 86400.0
+        elif end_time is None:
+            end_time = time.time()
+
+        if isinstance(start_time, str):
+            start_time = parse_iso_timestamp(start_time)
+        if isinstance(end_time, str):
+            end_time = parse_iso_timestamp(end_time)
+
+        data = db.get_report_data(start_time=start_time, end_time=end_time, cost_per_kwh=cost_per_kwh)
+
+        fmt = (format or "table").lower()
+        if fmt == "json":
+            return data
+        elif fmt == "csv":
+            lines = ["category,metric,value"]
+            p = data["period"]
+            from datetime import datetime, timezone
+            start_iso = datetime.fromtimestamp(p["start_time"], tz=timezone.utc).isoformat() if p.get("start_time") else ""
+            end_iso = datetime.fromtimestamp(p["end_time"], tz=timezone.utc).isoformat() if p.get("end_time") else ""
+            lines.append(f"period,start_time,{start_iso}")
+            lines.append(f"period,end_time,{end_iso}")
+            lines.append(f"period,sample_count,{p['sample_count']}")
+
+            for cat, metrics in [("cpu", data["cpu"]), ("memory", data["memory"]),
+                                 ("gpu", data["gpu"]), ("network", data["network"]),
+                                 ("power", data["power"])]:
+                for k, v in metrics.items():
+                    val_str = "" if v is None else str(v)
+                    lines.append(f"{cat},{k},{val_str}")
+            return "\n".join(lines) + "\n"
+        else:
+            # table format
+            from datetime import datetime, timezone
+            p = data["period"]
+            start_str = datetime.fromtimestamp(p["start_time"], tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ") if p.get("start_time") else "N/A"
+            end_str = datetime.fromtimestamp(p["end_time"], tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ") if p.get("end_time") else "N/A"
+            count = p["sample_count"]
+
+            def fmt_val(val, unit="", ndigits=2, fallback="N/A"):
+                if val is None:
+                    return fallback
+                return f"{val:.{ndigits}f}{unit}"
+
+            c = data["cpu"]
+            m = data["memory"]
+            g = data["gpu"]
+            n = data["network"]
+            pw = data["power"]
+
+            lines = [
+                "=" * 60,
+                "                    MSAM METRICS REPORT",
+                "=" * 60,
+                f"Period: {start_str} to {end_str} ({count} samples)",
+                "-" * 60,
+                "CPU:",
+                f"  Utilization:  Avg: {fmt_val(c['avg_util'], '%')} | Max: {fmt_val(c['max_util'], '%')} | Min: {fmt_val(c['min_util'], '%')}",
+                f"  Temperature:  Avg: {fmt_val(c['avg_temp'], '°C', 1)} | Max: {fmt_val(c['max_temp'], '°C', 1)}",
+                f"  Power:        Avg: {fmt_val(c['avg_watts'], ' W')} | Peak: {fmt_val(c['max_watts'], ' W')}",
+                "-" * 60,
+                "Memory:",
+                f"  Used:         Avg: {fmt_val(m['avg_used_gb'], ' GB')} | Peak: {fmt_val(m['max_used_gb'], ' GB')}",
+                f"  Total:        {fmt_val(m['total_gb'], ' GB')}",
+                "-" * 60,
+                "GPU:",
+                f"  Utilization:  Avg: {fmt_val(g['avg_util'], '%')} | Max: {fmt_val(g['max_util'], '%')} | Min: {fmt_val(g['min_util'], '%')}",
+                f"  Temperature:  Avg: {fmt_val(g['avg_temp'], '°C', 1)} | Max: {fmt_val(g['max_temp'], '°C', 1)}",
+                f"  Power:        Avg: {fmt_val(g['avg_watts'], ' W')} | Peak: {fmt_val(g['max_watts'], ' W')}",
+                "-" * 60,
+                "Network:",
+                f"  Total Volume: Down: {fmt_val(n['total_download_mb'], ' MB')} | Up: {fmt_val(n['total_upload_mb'], ' MB')}",
+                f"  Peak Speed:   Down: {fmt_val(n['peak_down_kbps'], ' KB/s')} | Up: {fmt_val(n['peak_up_kbps'], ' KB/s')}",
+                f"  Avg Speed:    Down: {fmt_val(n['avg_down_kbps'], ' KB/s')} | Up: {fmt_val(n['avg_up_kbps'], ' KB/s')}",
+                "-" * 60,
+                "Power & Energy:",
+                f"  System Power: Avg: {fmt_val(pw['avg_watts'], ' W')} | Max: {fmt_val(pw['max_watts'], ' W')} | Min: {fmt_val(pw['min_watts'], ' W')}",
+                f"  Total Energy: {pw['total_kwh']:.4f} kWh",
+            ]
+            if pw['cost'] is not None and pw['cost_per_kwh'] is not None:
+                lines.append(f"  Est. Cost:    ${pw['cost']:.4f} (@ ${pw['cost_per_kwh']:.4f}/kWh)")
+            lines.append("=" * 60)
+            return "\n".join(lines)
+    finally:
+        if close_db:
+            db.close()
+
+
+def run_report_cli(argv):
+    import argparse
+    parser = argparse.ArgumentParser(prog="msam-metrics report", description="Historical usage and power reporting")
+    parser.add_argument("--period", help="Time period, e.g. 1h, 24h, 7d, 30d (default: 24h)")
+    parser.add_argument("--from", dest="from_time", help="Start time in ISO format or unix timestamp")
+    parser.add_argument("--to", dest="to_time", help="End time in ISO format or unix timestamp")
+    parser.add_argument("--format", choices=["table", "json", "csv"], default="table", help="Output format")
+    parser.add_argument("--cost-per-kwh", type=float, help="Electricity cost rate per kWh")
+    parser.add_argument("--db", help="Path to SQLite metrics database")
+    args = parser.parse_args(argv)
+
+    start_time = None
+    end_time = None
+
+    if args.period:
+        start_time, end_time = parse_period(args.period)
+    if args.from_time:
+        start_time = parse_iso_timestamp(args.from_time)
+    if args.to_time:
+        end_time = parse_iso_timestamp(args.to_time)
+
+    db_path = args.db if args.db else default_metrics_db_path()
+    db = MetricsHistoryDB(db_path=db_path)
+    try:
+        report = generate_metrics_report(
+            db=db,
+            start_time=start_time,
+            end_time=end_time,
+            format=args.format,
+            cost_per_kwh=args.cost_per_kwh
+        )
+        if isinstance(report, dict):
+            print(json.dumps(report, indent=2))
+        else:
+            print(report)
+    finally:
+        db.close()
+
+
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "report":
+        run_report_cli(sys.argv[2:])
+        return
     # If run with --loop, print metrics every 2 seconds
     loop = len(sys.argv) > 1 and sys.argv[1] == "--loop"
     _sample_loop(interval=2.0 if loop else None, max_iterations=None if loop else 1)

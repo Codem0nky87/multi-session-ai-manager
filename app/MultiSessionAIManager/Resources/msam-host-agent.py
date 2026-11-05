@@ -3,6 +3,7 @@
 import argparse
 import contextlib
 import errno
+import http.server
 import importlib.util
 import json
 import os
@@ -12,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 
 VERSION = '1.1.2'
 ROOT = Path(__file__).resolve().parent
@@ -302,6 +304,88 @@ def stream_metrics(loop):
         if not loop:
             return
         time.sleep(0.5)
+
+
+class RequestHandler(http.server.BaseHTTPRequestHandler):
+    """HTTP request handler for MSAM host agent API endpoints."""
+
+    def log_message(self, format, *args):
+        if os.environ.get('MSAM_DEBUG'):
+            super().log_message(format, *args)
+
+    def do_GET(self):
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        query = urllib.parse.parse_qs(parsed.query)
+
+        if path == '/api/metrics/report':
+            period = query.get('period', [None])[0]
+            from_time = query.get('from', [None])[0]
+            to_time = query.get('to', [None])[0]
+            fmt = query.get('format', ['json'])[0]
+            cost_str = query.get('cost_per_kwh', [None])[0]
+
+            metrics_mod = load_module('metrics', 'msam-metrics.py')
+
+            start_time = None
+            end_time = None
+            try:
+                cost_per_kwh = float(cost_str) if cost_str is not None else None
+                if period:
+                    start_time, end_time = metrics_mod.parse_period(period)
+                if from_time:
+                    start_time = metrics_mod.parse_iso_timestamp(from_time)
+                if to_time:
+                    end_time = metrics_mod.parse_iso_timestamp(to_time)
+            except ValueError as e:
+                self.send_response(400)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({'error': str(e)}).encode('utf-8'))
+                return
+
+            db_target = getattr(self.server, 'db_path', None) or getattr(self.server, 'db', None)
+            if db_target is None:
+                db_target = metrics_mod.default_metrics_db_path()
+
+            if isinstance(db_target, metrics_mod.MetricsHistoryDB):
+                db = db_target
+                close_db = False
+            else:
+                db = metrics_mod.MetricsHistoryDB(db_path=db_target)
+                close_db = True
+
+            try:
+                report = metrics_mod.generate_metrics_report(
+                    db=db,
+                    start_time=start_time,
+                    end_time=end_time,
+                    format=fmt,
+                    cost_per_kwh=cost_per_kwh
+                )
+            finally:
+                if close_db:
+                    db.close()
+
+            self.send_response(200)
+            if fmt == 'json' or isinstance(report, dict):
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                body = json.dumps(report) if isinstance(report, dict) else report
+                self.wfile.write(body.encode('utf-8'))
+            elif fmt == 'csv':
+                self.send_header('Content-Type', 'text/csv')
+                self.end_headers()
+                self.wfile.write(report.encode('utf-8'))
+            else:
+                self.send_header('Content-Type', 'text/plain; charset=utf-8')
+                self.end_headers()
+                self.wfile.write(report.encode('utf-8'))
+        else:
+            self.send_response(404)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'error': 'Not found'}).encode('utf-8'))
 
 
 def main():

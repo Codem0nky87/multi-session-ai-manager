@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -320,6 +321,80 @@ class HostAgentTests(unittest.TestCase):
         self.assertTrue(error_file.exists())
         err_data = json.loads(error_file.read_text())
         self.assertIn("network unreachable at boot", err_data['error'])
+
+    def test_http_metrics_report_endpoint(self):
+        import http.server
+        import urllib.request
+        import urllib.error
+
+        # Create temporary metrics DB with sample data
+        metrics_mod = module('msam-metrics.py')
+        db_path = self.home / '.local/state/msam/metrics-history.db'
+        db = metrics_mod.MetricsHistoryDB(db_path=db_path)
+        now = time.time()
+        db.record_sample(
+            timestamp=now - 100,
+            cpu_util=25.0, cpu_temp=45.0, cpu_watts=30.0,
+            mem_used_gb=8.0, mem_total_gb=16.0,
+            gpu_util=15.0, gpu_temp=50.0, gpu_watts=20.0,
+            net_down_kbps=100.0, net_up_kbps=20.0,
+            system_watts=50.0, power_source='rapl+nvml'
+        )
+        db.record_sample(
+            timestamp=now,
+            cpu_util=35.0, cpu_temp=55.0, cpu_watts=40.0,
+            mem_used_gb=10.0, mem_total_gb=16.0,
+            gpu_util=25.0, gpu_temp=60.0, gpu_watts=30.0,
+            net_down_kbps=200.0, net_up_kbps=40.0,
+            system_watts=70.0, power_source='rapl+nvml'
+        )
+        db.close()
+
+        handler_class = self.agent.RequestHandler
+        server = http.server.HTTPServer(('127.0.0.1', 0), handler_class)
+        server.db_path = db_path
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+        port = server.server_port
+        base_url = f"http://127.0.0.1:{port}"
+
+        try:
+            # 1. Successful GET /api/metrics/report?period=24h
+            url = f"{base_url}/api/metrics/report?period=24h"
+            req = urllib.request.Request(url)
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                self.assertEqual(resp.status, 200)
+                self.assertEqual(resp.headers.get_content_type(), 'application/json')
+                data = json.loads(resp.read().decode('utf-8'))
+                self.assertIn('period', data)
+                self.assertIn('power', data)
+                self.assertEqual(data['period']['sample_count'], 2)
+
+            # 2. GET /api/metrics/report with cost_per_kwh and period=1h
+            url = f"{base_url}/api/metrics/report?period=1h&cost_per_kwh=0.20"
+            with urllib.request.urlopen(url, timeout=5) as resp:
+                self.assertEqual(resp.status, 200)
+                data = json.loads(resp.read().decode('utf-8'))
+                self.assertIsNotNone(data['power']['cost'])
+
+            # 3. Invalid period parameter handling -> 400 Bad Request
+            url_invalid = f"{base_url}/api/metrics/report?period=invalid_period_xyz"
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                urllib.request.urlopen(url_invalid, timeout=5)
+            self.assertEqual(ctx.exception.code, 400)
+            err_body = json.loads(ctx.exception.read().decode('utf-8'))
+            ctx.exception.close()
+            self.assertIn('error', err_body)
+
+            # 4. Unknown route -> 404 Not Found
+            url_404 = f"{base_url}/api/unknown"
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                urllib.request.urlopen(url_404, timeout=5)
+            self.assertEqual(ctx.exception.code, 404)
+            ctx.exception.close()
+        finally:
+            server.shutdown()
+            server.server_close()
 
 
 class WindowsUpdaterTests(unittest.TestCase):
