@@ -160,23 +160,23 @@
   - `HostMetricsModel.power: PowerMetrics`
   - `HostMetricsModel.powerHistory: [Double]`
 
-- [ ] **Step 1: Write failing Swift unit tests for `PowerMetrics`**
+- [x] **Step 1: Write failing Swift unit tests for `PowerMetrics`**
   - Test decoding payload with and without `power`, `cpu.powerWatts`, `gpu.powerWatts`.
   - Test `formattedTotalWatts` formatting logic (<100W vs >=100W vs nil).
   - Test `powerHistory` rolling window (capped at 30 items).
 
-- [ ] **Step 2: Run Swift tests to verify failure**
+- [x] **Step 2: Run Swift tests to verify failure**
   - Run `ssh IronMentorMac 'cd ~/Projects/multi-session-ai-manager/app/MultiSessionAIManager && xcodebuild test -scheme MultiSessionAIManager -destination "platform=iOS Simulator,name=iPhone 17"'`.
 
-- [ ] **Step 3: Implement Swift model changes in `HostMetricsModel.swift`**
+- [x] **Step 3: Implement Swift model changes in `HostMetricsModel.swift`**
   - Define `PowerMetrics` struct with `totalWatts`, `cpuWatts`, `gpuWatts`, `source`.
   - Add `powerWatts` to `CPUMetrics` and `GPUMetrics`.
   - Update `MetricsPayload` and `HostMetricsModel.update(from:)`.
 
-- [ ] **Step 4: Run Swift tests to verify pass**
+- [x] **Step 4: Run Swift tests to verify pass**
   - Confirm tests compile and pass.
 
-- [ ] **Step 5: Commit changes**
+- [x] **Step 5: Commit changes**
   - Git commit: `feat(ios-model): add PowerMetrics model and history tracking`.
 
 ---
