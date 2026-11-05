@@ -132,6 +132,7 @@ function Get-Metrics {
 
     $gpuName = ""
     $gpuMemoryUsed = 0.0; $gpuMemoryTotal = 0.0; $gpuTemperature = 0.0
+    $gpuPowerWatts = $null
     try {
         $gpu = Get-CimInstance Win32_VideoController | Select-Object -First 1
         if ($null -ne $gpu) {
@@ -141,15 +142,52 @@ function Get-Metrics {
     try {
         $smi = Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue
         if ($smi) {
-            $readings = @(& $smi.Source --query-gpu=name,utilization.gpu,temperature.gpu,memory.used,memory.total --format=csv,noheader,nounits 2>$null)
+            $readings = @(& $smi.Source --query-gpu=name,utilization.gpu,temperature.gpu,memory.used,memory.total,power.draw --format=csv,noheader,nounits 2>$null)
             if ($LASTEXITCODE -eq 0 -and $readings.Count -gt 0) {
                 $values = $readings[0] -split ',\s*'
                 $gpuName = $values[0]; $gpuUtil = [double]$values[1]
                 $gpuAvailable = $true
                 $gpuTemperature = [double]$values[2]; $gpuMemoryUsed = [double]$values[3]; $gpuMemoryTotal = [double]$values[4]
+                $totalGpuPower = 0.0
+                $hasGpuPower = $false
+                foreach ($line in $readings) {
+                    $parts = $line -split ',\s*'
+                    if ($parts.Count -ge 6) {
+                        $pVal = 0.0
+                        $clean = $parts[5].Trim()
+                        if ([double]::TryParse($clean, [System.Globalization.NumberStyles]::Float, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$pVal)) {
+                            $totalGpuPower += $pVal
+                            $hasGpuPower = $true
+                        } elseif ([double]::TryParse($clean, [ref]$pVal)) {
+                            $totalGpuPower += $pVal
+                            $hasGpuPower = $true
+                        }
+                    }
+                }
+                if ($hasGpuPower) {
+                    $gpuPowerWatts = [math]::Round($totalGpuPower, 2)
+                }
             }
         }
     } catch {}
+
+    $batteryPowerWatts = $null
+    try {
+        $batt = Get-CimInstance -Namespace root\WMI -ClassName BatteryStatus -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($batt -and $batt.Discharging -and $batt.DischargeRate -gt 0) {
+            $batteryPowerWatts = [math]::Round([double]$batt.DischargeRate / 1000.0, 2)
+        }
+    } catch {}
+
+    $totalWatts = $null
+    $powerSource = "none"
+    if ($null -ne $batteryPowerWatts) {
+        $totalWatts = $batteryPowerWatts
+        $powerSource = "battery"
+    } elseif ($null -ne $gpuPowerWatts) {
+        $totalWatts = $gpuPowerWatts
+        $powerSource = "nvml"
+    }
 
     $networkCounters = @{}
     try {
@@ -164,6 +202,7 @@ function Get-Metrics {
     $data = @{
         cpu = @{
             temperature = 0.0
+            powerWatts = $null
             utilization = [math]::Round($cpuLoad, 2)
             perCoreUsage = @(if ($activity) { $activity.perCoreUsage })
             systemUsage = if ($activity) { [double]$activity.systemUsage } else { 0.0 }
@@ -201,6 +240,13 @@ function Get-Metrics {
             temperature = $gpuTemperature
             memoryUsed = $gpuMemoryUsed
             memoryTotal = $gpuMemoryTotal
+            powerWatts = $gpuPowerWatts
+        }
+        power = @{
+            totalWatts = $totalWatts
+            cpuWatts = $null
+            gpuWatts = $gpuPowerWatts
+            source = $powerSource
         }
         networkCounters = $networkCounters
     }

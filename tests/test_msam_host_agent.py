@@ -152,6 +152,96 @@ class HostAgentTests(unittest.TestCase):
         self.assertEqual(third['network']['uploadSpeed'], 10)
         self.assertNotIn('networkCounters', third)
 
+    def test_windows_metrics_script_power_telemetry_structure(self):
+        metrics_ps1 = (RESOURCES / 'msam-metrics.ps1').read_text()
+        # Verify nvidia-smi query includes power.draw
+        self.assertIn('power.draw', metrics_ps1, "msam-metrics.ps1 must query nvidia-smi power.draw")
+        # Verify battery discharge rate query via CIM BatteryStatus
+        self.assertIn('BatteryStatus', metrics_ps1, "msam-metrics.ps1 must query WMI BatteryStatus")
+        self.assertIn('DischargeRate', metrics_ps1, "msam-metrics.ps1 must query DischargeRate")
+        # Verify power fields in cpu, gpu, and top-level power object
+        import re
+        self.assertRegex(metrics_ps1, r'cpu\s*=\s*@\{[\s\S]*?powerWatts', "msam-metrics.ps1 must define powerWatts in cpu")
+        self.assertRegex(metrics_ps1, r'gpu\s*=\s*@\{[\s\S]*?powerWatts', "msam-metrics.ps1 must define powerWatts in gpu")
+        self.assertRegex(metrics_ps1, r'power\s*=\s*@\{[\s\S]*?totalWatts[\s\S]*?cpuWatts[\s\S]*?gpuWatts[\s\S]*?source',
+                         "msam-metrics.ps1 must define top-level power hashtable with totalWatts, cpuWatts, gpuWatts, source")
+
+    def test_windows_metrics_payload_power_fields_parsing(self):
+        metrics = module('msam-metrics.py')
+        sample_payload = {
+            'cpu': {
+                'temperature': 45.0,
+                'utilization': 22.5,
+                'powerWatts': None,
+            },
+            'gpu': {
+                'usagePercent': 35.0,
+                'modelName': 'NVIDIA GeForce RTX 4070',
+                'temperature': 52.0,
+                'powerWatts': 85.5,
+            },
+            'power': {
+                'totalWatts': 85.5,
+                'cpuWatts': None,
+                'gpuWatts': 85.5,
+                'source': 'nvml',
+            },
+            'memory': {'used': 8.0, 'total': 32.0, 'usagePercent': 25.0},
+            'networkCounters': {'eth0': {'received': 2048, 'sent': 1024}},
+        }
+        proc = subprocess.CompletedProcess([], 0, json.dumps(sample_payload).encode('utf-8-sig'))
+        self.agent.WINDOWS_NETWORK = None
+        with patch.object(self.agent.os, 'name', 'nt'), patch.object(self.agent.sys, 'platform', 'win32'), \
+                patch.object(self.agent, 'environment', return_value={}), \
+                patch.object(self.agent.subprocess, 'run', return_value=proc), \
+                patch.object(self.agent.time, 'monotonic', return_value=100.0):
+            res = self.agent.sample_metrics(metrics)
+
+        self.assertIn('power', res)
+        self.assertEqual(res['power']['totalWatts'], 85.5)
+        self.assertIsNone(res['power']['cpuWatts'])
+        self.assertEqual(res['power']['gpuWatts'], 85.5)
+        self.assertEqual(res['power']['source'], 'nvml')
+        self.assertIsNone(res['cpu']['powerWatts'])
+        self.assertEqual(res['gpu']['powerWatts'], 85.5)
+
+        # Verify integration with MetricsHistoryDB recording
+        db_path = self.home / '.local/state/msam/metrics-history.db'
+        db = metrics.MetricsHistoryDB(db_path=db_path)
+        db.record_sample_from_metrics(res, timestamp=1700000000.0)
+        cur = db.conn.cursor()
+        cur.execute("SELECT cpu_watts, gpu_watts, system_watts, power_source FROM metrics_samples WHERE timestamp = 1700000000.0")
+        row = cur.fetchone()
+        self.assertEqual(row, (None, 85.5, 85.5, 'nvml'))
+        db.close()
+
+    def test_windows_metrics_battery_and_fallback_power_sources(self):
+        metrics = module('msam-metrics.py')
+        battery_payload = {
+            'cpu': {'utilization': 10.0, 'powerWatts': None},
+            'gpu': {'usagePercent': 0.0, 'powerWatts': None},
+            'power': {'totalWatts': 24.3, 'cpuWatts': None, 'gpuWatts': None, 'source': 'battery'},
+            'networkCounters': {},
+        }
+        none_payload = {
+            'cpu': {'utilization': 5.0, 'powerWatts': None},
+            'gpu': {'usagePercent': 0.0, 'powerWatts': None},
+            'power': {'totalWatts': None, 'cpuWatts': None, 'gpuWatts': None, 'source': 'none'},
+            'networkCounters': {},
+        }
+        for payload, expected_source, expected_watts in [
+            (battery_payload, 'battery', 24.3),
+            (none_payload, 'none', None),
+        ]:
+            proc = subprocess.CompletedProcess([], 0, json.dumps(payload).encode('utf-8-sig'))
+            self.agent.WINDOWS_NETWORK = None
+            with patch.object(self.agent.os, 'name', 'nt'), patch.object(self.agent.sys, 'platform', 'win32'), \
+                    patch.object(self.agent, 'environment', return_value={}), \
+                    patch.object(self.agent.subprocess, 'run', return_value=proc):
+                res = self.agent.sample_metrics(metrics)
+            self.assertEqual(res['power']['source'], expected_source)
+            self.assertEqual(res['power']['totalWatts'], expected_watts)
+
     def test_mac_and_linux_definitions_run_one_unified_daemon(self):
         with patch.object(self.installer.sys, 'platform', 'linux'):
             self.installer.write_service()
