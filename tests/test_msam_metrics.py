@@ -525,6 +525,143 @@ overlay 1000 950 50 95% /scratch
         self.assertTrue({'usagePercent', 'totalGB', 'usedGB', 'disks'} <= set(result))
         self.assertEqual(result['disks'], [])
 
+    def test_linux_rapl_energy_delta_and_rollover(self):
+        # 1. Delta calculation without rollover
+        delta = m.rapl_energy_delta(30_000_000, 10_000_000, 65_532_610_987)
+        self.assertEqual(delta, 20_000_000)
+
+        # 2. Counter rollover handling using max_energy_range_uj
+        # max_range: 65,532,610,987; prev: 65,530,000,000; curr: 17,389,013
+        # Delta = (65,532,610,987 - 65,530,000,000) + 17,389,013 = 2,610,987 + 17,389,013 = 20,000,000
+        delta_rollover = m.rapl_energy_delta(17_389_013, 65_530_000_000, 65_532_610_987)
+        self.assertEqual(delta_rollover, 20_000_000)
+
+        # Without max_range, rollover should return None
+        self.assertIsNone(m.rapl_energy_delta(100, 200, None))
+
+        # 3. Reading sysfs directly
+        self.write('sys/class/powercap/intel-rapl:0/energy_uj', '12345678\n')
+        self.write('sys/class/powercap/intel-rapl:0/max_energy_range_uj', '65532610987\n')
+        rapl = m.read_linux_rapl_energy(str(self.root / 'sys'))
+        self.assertEqual(rapl, (12345678, 65532610987))
+
+        # 4. Fallback to sudo -n cat if permission denied
+        rapl_path = self.root / 'sys/class/powercap/intel-rapl:0/energy_uj'
+        def mock_read_text(self_path):
+            if 'energy_uj' in str(self_path):
+                raise PermissionError('Permission denied')
+            return '65532610987\n'
+        with patch.object(Path, 'read_text', mock_read_text), \
+             patch.object(m.subprocess, 'check_output', return_value=b'98765432\n'):
+            rapl_sudo = m.read_linux_rapl_energy(str(self.root / 'sys'))
+            self.assertEqual(rapl_sudo, (98765432, 65532610987))
+
+    def test_nvidia_nvml_power_parsing_and_amd_fallback(self):
+        # 1. Single GPU
+        with patch.object(m.subprocess, 'check_output', return_value=b'16.36\n'):
+            gpu_watts = m.get_gpu_power()
+            self.assertEqual(gpu_watts, 16.36)
+
+        # 2. Multi-GPU
+        with patch.object(m.subprocess, 'check_output', return_value=b'25.50\n30.25\n'):
+            gpu_watts = m.get_gpu_power()
+            self.assertEqual(gpu_watts, 55.75)
+
+        # 3. [N/A] output
+        with patch.object(m.subprocess, 'check_output', return_value=b'[N/A]\n'):
+            gpu_watts = m.get_gpu_power(str(self.root / 'sys'))
+            self.assertIsNone(gpu_watts)
+
+        # 4. AMD hwmon fallback when nvidia-smi fails
+        self.write('sys/class/drm/card0/device/hwmon/hwmon1/power1_average', '45000000\n')
+        with patch.object(m.subprocess, 'check_output', side_effect=FileNotFoundError):
+            gpu_watts = m.get_gpu_power(str(self.root / 'sys'))
+            self.assertEqual(gpu_watts, 45.0)
+
+    def test_apple_silicon_powermetrics_parsing(self):
+        sample_output = """
+*** Sampled system activity (Thu Nov  5 09:54:22 2026 +0200) (104.10ms elapsed) ***
+
+CPU Power: 4300 mW
+GPU Power: 40 mW
+ANE Power: 0 mW
+Combined Power (CPU + GPU + ANE): 4340 mW
+"""
+        parsed = m.parse_macos_powermetrics(sample_output)
+        self.assertEqual(parsed['cpuWatts'], 4.3)
+        self.assertEqual(parsed['gpuWatts'], 0.04)
+        self.assertEqual(parsed['combinedWatts'], 4.34)
+
+        # Missing or unparseable output
+        empty = m.parse_macos_powermetrics("")
+        self.assertIsNone(empty['cpuWatts'])
+        self.assertIsNone(empty['gpuWatts'])
+        self.assertIsNone(empty['combinedWatts'])
+
+        # read_macos_powermetrics running subprocess
+        with patch.object(m.subprocess, 'check_output', return_value=sample_output.encode()):
+            res = m.read_macos_powermetrics()
+            self.assertEqual(res['combinedWatts'], 4.34)
+
+    def test_linux_battery_discharge_parsing(self):
+        # 1. power_now (uW -> W)
+        self.write('sys/class/power_supply/BAT0/type', 'Battery\n')
+        self.write('sys/class/power_supply/BAT0/status', 'Discharging\n')
+        self.write('sys/class/power_supply/BAT0/power_now', '15000000\n')
+        watts = m.read_linux_battery_power(str(self.root / 'sys'))
+        self.assertEqual(watts, 15.0)
+
+        # 2. current_now * voltage_now fallback (uA * uV -> W)
+        self.write('sys/class/power_supply/BAT1/type', 'Battery\n')
+        self.write('sys/class/power_supply/BAT1/status', 'Discharging\n')
+        self.write('sys/class/power_supply/BAT1/current_now', '2000000\n')
+        self.write('sys/class/power_supply/BAT1/voltage_now', '11000000\n')
+        # Remove BAT0 so BAT1 is evaluated alone
+        (self.root / 'sys/class/power_supply/BAT0/power_now').unlink()
+        (self.root / 'sys/class/power_supply/BAT0/status').write_text('Not charging\n')
+        watts = m.read_linux_battery_power(str(self.root / 'sys'))
+        self.assertEqual(watts, 22.0)
+
+        # 3. Charging status returns None
+        (self.root / 'sys/class/power_supply/BAT1/status').write_text('Charging\n')
+        watts = m.read_linux_battery_power(str(self.root / 'sys'))
+        self.assertIsNone(watts)
+
+    def test_power_sampler_sample_and_get_metrics(self):
+        # Test PowerSampler directly
+        sampler = m.PowerSampler(sys_root=str(self.root / 'sys'))
+        cpu = {'utilization': 15.0}
+        gpu = {'usagePercent': 20.0}
+
+        # Mock RAPL and GPU power
+        with patch.object(m, 'read_linux_rapl_energy', side_effect=[(10_000_000, 65_532_610_987), (30_000_000, 65_532_610_987)]), \
+             patch.object(m, 'get_gpu_power', return_value=16.2), \
+             patch.object(m, 'read_linux_battery_power', return_value=None):
+            # First sample initializes baseline
+            first = sampler.sample(now=10.0, cpu_info=cpu, gpu_info=gpu)
+            # Second sample 1 second later computes delta
+            second = sampler.sample(now=11.0, cpu_info=cpu, gpu_info=gpu)
+
+            self.assertEqual(second['cpuWatts'], 20.0)
+            self.assertEqual(second['gpuWatts'], 16.2)
+            self.assertEqual(second['totalWatts'], 36.2)
+            self.assertEqual(second['source'], 'rapl+nvml')
+            self.assertEqual(cpu.get('powerWatts'), 20.0)
+            self.assertEqual(gpu.get('powerWatts'), 16.2)
+
+        # Test get_metrics includes power structure
+        with patch.object(m, 'get_linux_metrics') as mock_linux:
+            mock_linux.return_value = {
+                'cpu': {'utilization': 10.0, 'powerWatts': 25.0},
+                'gpu': {'usagePercent': 5.0, 'powerWatts': 15.0},
+                'power': {'totalWatts': 40.0, 'cpuWatts': 25.0, 'gpuWatts': 15.0, 'source': 'rapl+nvml'}
+            }
+            metrics = m.get_metrics()
+            self.assertIn('power', metrics)
+            self.assertEqual(metrics['power']['totalWatts'], 40.0)
+            self.assertEqual(metrics['cpu']['powerWatts'], 25.0)
+            self.assertEqual(metrics['gpu']['powerWatts'], 15.0)
+
 
 if __name__ == '__main__':
     unittest.main()

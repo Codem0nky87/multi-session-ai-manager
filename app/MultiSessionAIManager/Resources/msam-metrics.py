@@ -501,7 +501,7 @@ def get_mac_gpu(temperature_c=None):
     gpu = {'usagePercent': 0.0, 'modelName': '', 'cores': 0,
            'temperature': float(temperature_c) if temperature_c is not None else 0.0,
            'memoryUsed': 0.0, 'memoryTotal': 0.0,
-           'utilizationAvailable': False}
+           'utilizationAvailable': False, 'powerWatts': None}
     try:
         output = subprocess.check_output(['ioreg', '-a', '-r', '-c', 'IOAccelerator', '-d', '1'],
                                          stderr=subprocess.DEVNULL, timeout=2)
@@ -806,6 +806,11 @@ def get_mac_metrics():
     except (OSError, subprocess.SubprocessError):
         pass
 
+    global _power_sampler
+    if _power_sampler is None:
+        _power_sampler = PowerSampler()
+    metrics['power'] = _power_sampler.sample(time.monotonic(), metrics.get('cpu'), metrics.get('gpu'))
+
     return metrics
 
 def cpu_defaults():
@@ -815,7 +820,7 @@ def cpu_defaults():
             'freqEfficiency': 0, 'freqPerformance': 0, 'history': [],
             'topProcesses': [], 'loadAverage1m': 0.0, 'loadAverage5m': 0.0,
             'loadAverage15m': 0.0, 'coreCount': 0, 'loadPerCore': 0.0,
-            'perCoreUsage': []}
+            'perCoreUsage': [], 'powerWatts': None}
 
 
 def logical_cpu_ids():
@@ -1107,7 +1112,7 @@ _linux_sampler = None
 def get_linux_gpu():
     gpu = {'usagePercent': 0.0, 'modelName': '', 'cores': 0,
            'temperature': 0.0, 'memoryUsed': 0.0, 'memoryTotal': 0.0,
-           'utilizationAvailable': False}
+           'utilizationAvailable': False, 'powerWatts': None}
     try:
         output = subprocess.check_output([
             'nvidia-smi', '--query-gpu=utilization.gpu,temperature.gpu,memory.used,memory.total,name',
@@ -1159,11 +1164,289 @@ def get_linux_gpu():
     return gpu
 
 
-def get_linux_metrics():
-    global _linux_sampler
-    if _linux_sampler is None:
-        _linux_sampler = LinuxSampler()
-    cpu, network = _linux_sampler.sample()
+def rapl_energy_delta(current_uj, prev_uj, max_range_uj=None):
+    """Calculates RAPL energy delta in microjoules, handling counter rollover."""
+    if current_uj is None or prev_uj is None:
+        return None
+    if current_uj >= prev_uj:
+        return current_uj - prev_uj
+    if max_range_uj is not None and max_range_uj > prev_uj:
+        return (max_range_uj - prev_uj) + current_uj
+    return None
+
+
+def read_linux_rapl_energy(sys_root='/sys'):
+    """Reads RAPL energy_uj and max_energy_range_uj from sysfs (or sudo fallback)."""
+    rapl_dir = Path(sys_root) / 'class/powercap/intel-rapl:0'
+    energy_path = rapl_dir / 'energy_uj'
+    range_path = rapl_dir / 'max_energy_range_uj'
+
+    energy_uj = None
+    try:
+        energy_uj = int(energy_path.read_text().strip())
+    except (OSError, ValueError):
+        try:
+            out = subprocess.check_output(
+                ['sudo', '-n', 'cat', str(energy_path)],
+                stderr=subprocess.DEVNULL, timeout=1
+            ).decode('utf-8').strip()
+            energy_uj = int(out)
+        except (subprocess.SubprocessError, OSError, ValueError):
+            return None
+
+    max_range_uj = None
+    try:
+        max_range_uj = int(range_path.read_text().strip())
+    except (OSError, ValueError):
+        try:
+            out = subprocess.check_output(
+                ['sudo', '-n', 'cat', str(range_path)],
+                stderr=subprocess.DEVNULL, timeout=1
+            ).decode('utf-8').strip()
+            max_range_uj = int(out)
+        except (subprocess.SubprocessError, OSError, ValueError):
+            max_range_uj = None
+
+    return (energy_uj, max_range_uj)
+
+
+def read_linux_battery_power(sys_root='/sys'):
+    """Reads total battery discharge power in Watts from /sys/class/power_supply."""
+    ps_root = Path(sys_root) / 'class/power_supply'
+    if not ps_root.exists():
+        return None
+
+    total_watts = 0.0
+    found = False
+    try:
+        for entry in sorted(ps_root.iterdir()):
+            b_type = ""
+            type_file = entry / 'type'
+            if type_file.exists():
+                try:
+                    b_type = type_file.read_text().strip().lower()
+                except OSError:
+                    pass
+            if 'battery' not in b_type and not entry.name.startswith('BAT'):
+                continue
+
+            status = ""
+            status_file = entry / 'status'
+            if status_file.exists():
+                try:
+                    status = status_file.read_text().strip().lower()
+                except OSError:
+                    pass
+            if status and status != 'discharging':
+                continue
+
+            # 1. Try power_now (in microWatts)
+            power_file = entry / 'power_now'
+            if power_file.exists():
+                try:
+                    p_val = float(power_file.read_text().strip())
+                    if p_val > 0:
+                        total_watts += p_val / 1_000_000.0
+                        found = True
+                        continue
+                except (OSError, ValueError):
+                    pass
+
+            # 2. Try current_now * voltage_now (in microAmps * microVolts -> Watts)
+            curr_file = entry / 'current_now'
+            volt_file = entry / 'voltage_now'
+            if curr_file.exists() and volt_file.exists():
+                try:
+                    c_val = float(curr_file.read_text().strip())
+                    v_val = float(volt_file.read_text().strip())
+                    w_val = (c_val * v_val) / 1_000_000_000_000.0
+                    if w_val > 0:
+                        total_watts += w_val
+                        found = True
+                except (OSError, ValueError):
+                    pass
+    except OSError:
+        pass
+
+    return round(total_watts, 2) if found else None
+
+
+def get_gpu_power(sys_root='/sys'):
+    """Queries GPU power draw in Watts via nvidia-smi or AMD hwmon fallback."""
+    # 1. NVIDIA NVML via nvidia-smi
+    try:
+        out = subprocess.check_output(
+            ['nvidia-smi', '--query-gpu=power.draw', '--format=csv,nounits,noheader'],
+            stderr=subprocess.DEVNULL, timeout=1
+        ).decode('utf-8')
+        total_watts = 0.0
+        found = False
+        for line in out.splitlines():
+            line = line.strip()
+            if not line or line in ('[N/A]', 'N/A', '[Not Supported]', 'Not Supported'):
+                continue
+            try:
+                total_watts += float(line)
+                found = True
+            except ValueError:
+                pass
+        if found:
+            return round(total_watts, 2)
+    except (subprocess.SubprocessError, OSError, ValueError):
+        pass
+
+    # 2. AMD hwmon fallback
+    try:
+        root = Path(sys_root)
+        amd_watts = 0.0
+        found_amd = False
+        for hwmon in sorted(root.glob('class/drm/card*/device/hwmon/hwmon*')):
+            for p_file in ('power1_average', 'power1_input'):
+                p_path = hwmon / p_file
+                if p_path.exists():
+                    try:
+                        val = float(p_path.read_text().strip())
+                        amd_watts += val / 1_000_000.0
+                        found_amd = True
+                        break
+                    except (OSError, ValueError):
+                        continue
+        if found_amd:
+            return round(amd_watts, 2)
+    except OSError:
+        pass
+
+    return None
+
+
+def parse_macos_powermetrics(text):
+    """Parses powermetrics cpu_power sampler text output into Watts."""
+    res = {'cpuWatts': None, 'gpuWatts': None, 'combinedWatts': None}
+    m_cpu = re.search(r'CPU Power:\s*([0-9.]+)\s*mW', text)
+    if m_cpu:
+        res['cpuWatts'] = round(float(m_cpu.group(1)) / 1000.0, 2)
+    m_gpu = re.search(r'GPU Power:\s*([0-9.]+)\s*mW', text)
+    if m_gpu:
+        res['gpuWatts'] = round(float(m_gpu.group(1)) / 1000.0, 2)
+    m_combined = re.search(r'Combined Power.*?:\s*([0-9.]+)\s*mW', text)
+    if m_combined:
+        res['combinedWatts'] = round(float(m_combined.group(1)) / 1000.0, 2)
+    return res
+
+
+def read_macos_powermetrics():
+    """Reads Apple Silicon CPU/GPU/Combined power using powermetrics."""
+    try:
+        out = subprocess.check_output(
+            ['sudo', '-n', 'powermetrics', '-n', '1', '-i', '100', '--samplers', 'cpu_power'],
+            stderr=subprocess.DEVNULL, timeout=2
+        ).decode('utf-8', 'replace')
+        return parse_macos_powermetrics(out)
+    except (subprocess.SubprocessError, OSError):
+        return {'cpuWatts': None, 'gpuWatts': None, 'combinedWatts': None}
+
+
+class PowerSampler:
+    """Multi-platform power telemetry sampler for Linux (RAPL/NVML/battery) and macOS (powermetrics)."""
+    def __init__(self, sys_root='/sys', clock=time.monotonic, sleep=time.sleep):
+        self.sys_root = sys_root
+        self.clock = clock
+        self.sleep = sleep
+        self.prev_rapl = None  # (energy_uj, max_range_uj, timestamp)
+
+    def prime(self):
+        """Optionally capture an initial RAPL baseline for single-shot invocations."""
+        rapl = read_linux_rapl_energy(self.sys_root)
+        if rapl is not None:
+            self.prev_rapl = (rapl[0], rapl[1], self.clock())
+
+    def sample(self, now=None, cpu_info=None, gpu_info=None):
+        if now is None:
+            now = self.clock()
+
+        cpu_watts = None
+        gpu_watts = None
+        total_watts = None
+        source = "none"
+
+        if sys.platform == "darwin":
+            pm = read_macos_powermetrics()
+            cpu_watts = pm.get('cpuWatts')
+            gpu_watts = pm.get('gpuWatts')
+            total_watts = pm.get('combinedWatts')
+            if total_watts is None and (cpu_watts is not None or gpu_watts is not None):
+                total_watts = round((cpu_watts or 0.0) + (gpu_watts or 0.0), 2)
+            if total_watts is not None or cpu_watts is not None or gpu_watts is not None:
+                source = "powermetrics"
+        elif sys.platform == "win32":
+            gpu_watts = get_gpu_power(self.sys_root)
+            if gpu_watts is not None:
+                total_watts = gpu_watts
+                source = "nvml"
+        else:
+            # Linux: check battery first
+            battery_watts = read_linux_battery_power(self.sys_root)
+            rapl = read_linux_rapl_energy(self.sys_root)
+            if rapl is not None:
+                curr_energy, max_range = rapl
+                if self.prev_rapl is not None:
+                    prev_energy, _, prev_time = self.prev_rapl
+                    elapsed = now - prev_time
+                    if elapsed > 0:
+                        delta_uj = rapl_energy_delta(curr_energy, prev_energy, max_range)
+                        if delta_uj is not None:
+                            cpu_watts = round((delta_uj / 1_000_000.0) / elapsed, 2)
+                self.prev_rapl = (curr_energy, max_range, now)
+
+            gpu_watts = get_gpu_power(self.sys_root)
+
+            if battery_watts is not None:
+                total_watts = battery_watts
+                source = "battery"
+            else:
+                if cpu_watts is not None and gpu_watts is not None:
+                    total_watts = round(cpu_watts + gpu_watts, 2)
+                    source = "rapl+nvml"
+                elif cpu_watts is not None:
+                    total_watts = cpu_watts
+                    source = "rapl"
+                elif gpu_watts is not None:
+                    total_watts = gpu_watts
+                    source = "nvml"
+                else:
+                    total_watts = None
+                    source = "none"
+
+        if isinstance(cpu_info, dict):
+            cpu_info['powerWatts'] = cpu_watts
+        if isinstance(gpu_info, dict):
+            gpu_info['powerWatts'] = gpu_watts
+
+        return {
+            'totalWatts': total_watts,
+            'cpuWatts': cpu_watts,
+            'gpuWatts': gpu_watts,
+            'source': source
+        }
+
+
+_power_sampler = None
+
+
+def get_linux_metrics(sampler=None, power_sampler=None):
+    global _linux_sampler, _power_sampler
+    active_sampler = sampler if sampler is not None else (_linux_sampler or LinuxSampler())
+    if sampler is None and _linux_sampler is None:
+        _linux_sampler = active_sampler
+
+    active_power = power_sampler if power_sampler is not None else (_power_sampler or PowerSampler())
+    if power_sampler is None and _power_sampler is None:
+        _power_sampler = active_power
+
+    if active_power.prev_rapl is None:
+        active_power.prime()
+
+    cpu, network = active_sampler.sample()
     metrics = {'cpu': dict(cpu_defaults(), **cpu), 'memory': linux_memory(),
                'disk': get_unix_disks(), 'network': network,
                'gpu': get_linux_gpu()}
@@ -1179,7 +1462,35 @@ def get_linux_metrics():
         metrics['cpu']['uptime'] = f'{int(seconds // 86400)} days, {int(seconds % 86400 // 3600)} hours'
     except (OSError, ValueError, IndexError):
         pass
+    now = time.monotonic()
+    metrics['power'] = active_power.sample(now, metrics['cpu'], metrics['gpu'])
     return metrics
+
+
+def get_metrics():
+    if sys.platform == "darwin":
+        return get_mac_metrics()
+    elif sys.platform == "win32":
+        global _power_sampler
+        if _power_sampler is None:
+            _power_sampler = PowerSampler()
+        cpu = cpu_defaults()
+        gpu = {
+            "usagePercent": 0.0, "modelName": "", "cores": 0,
+            "temperature": 0.0, "memoryUsed": 0.0, "memoryTotal": 0.0,
+            "utilizationAvailable": False, "powerWatts": None
+        }
+        now = time.monotonic()
+        power = _power_sampler.sample(now, cpu, gpu)
+        return {
+            "cpu": cpu,
+            "memory": {"usagePercent": 0.0},
+            "gpu": gpu,
+            "disk": get_windows_disks(),
+            "power": power
+        }
+    else:
+        return get_linux_metrics()
 
 
 def main():
@@ -1187,21 +1498,8 @@ def main():
     loop = len(sys.argv) > 1 and sys.argv[1] == "--loop"
     
     while True:
-        if sys.platform == "darwin":
-            data = get_mac_metrics()
-        elif sys.platform == "win32":
-            # For Windows, we might need a separate function, but for now we'll just mock CPU/RAM
-            data = {
-                "cpu": cpu_defaults(),
-                "memory": {"usagePercent": 0.0},
-                "gpu": {"usagePercent": 0.0, "modelName": "", "cores": 0, "temperature": 0.0, "memoryUsed": 0.0, "memoryTotal": 0.0},
-                "disk": get_windows_disks()
-            }
-        else:
-            data = get_linux_metrics()
-            
+        data = get_metrics()
         print(json.dumps(data), flush=True)
-        
         if not loop:
             break
         time.sleep(2)
