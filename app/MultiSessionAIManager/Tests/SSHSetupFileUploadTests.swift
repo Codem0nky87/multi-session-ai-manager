@@ -25,8 +25,20 @@ struct SSHSetupFileUploadTests {
             }
         }
         await #expect(throws: SSHSetupFileUpload.Failure.self) {
-            try await SSHSetupFileUpload.upload(Data(repeating: 0, count: 65_537), to: "/tmp/helper", using: transport)
+            try await SSHSetupFileUpload.upload(Data(repeating: 0, count: SSHSetupFileUpload.maximumUploadSize + 1), to: "/tmp/helper", using: transport)
         }
         #expect(transport.commandsRun.isEmpty)
+    }
+
+    @Test func chunkedUploadExecutesMultipleChunksForLargeFiles() async throws {
+        let transport = FakeSSHTransport()
+        let host = Host(name: "Test", address: "fixture", username: "alice", keyID: "key", defaultWorkdir: "")
+        try await transport.connect(host: host, key: .init(ed25519Seed: Data(repeating: 1, count: 32))) { _ in true }
+        transport.defaultCommandResponse = "\nMSAM_SETUP_UPLOAD_OK\n"
+        // 100,000 bytes: requires init + 3 chunks (48K, 48K, 4K) + finalize = 5 commands
+        let data = Data(repeating: 0x42, count: 100_000)
+        try await SSHSetupFileUpload.upload(data, to: "/home/alice/large-helper", permissions: 0o700, using: transport)
+        #expect(transport.commandsRun.count == 5)
+        #expect(transport.commandsRun.allSatisfy { $0.contains("MSAM_SETUP_UPLOAD_OK") })
     }
 }

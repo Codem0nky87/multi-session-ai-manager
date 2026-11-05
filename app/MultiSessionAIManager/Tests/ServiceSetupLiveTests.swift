@@ -86,6 +86,11 @@ struct ServiceSetupLiveTests {
         try await service.writeSetupFile(bytes, to: destination, permissions: 0o700)
         #expect(try Data(contentsOf: URL(fileURLWithPath: destination)) == bytes)
         #expect(FileManager.default.isExecutableFile(atPath: destination))
+        let largeBytes = Data((0..<100_000).map { UInt8($0 % 256) })
+        let largeDest = root + "/large-setup-file"
+        try await service.writeSetupFile(largeBytes, to: largeDest, permissions: 0o700)
+        #expect(try Data(contentsOf: URL(fileURLWithPath: largeDest)) == largeBytes)
+        #expect(FileManager.default.isExecutableFile(atPath: largeDest))
         try await service.writeSetupFile(Data(), to: destination, permissions: 0o700)
         #expect(try Data(contentsOf: URL(fileURLWithPath: destination)).isEmpty)
         #expect(FileManager.default.isExecutableFile(atPath: destination), "Replacement must stay executable before any later setup step")
