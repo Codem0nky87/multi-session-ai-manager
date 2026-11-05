@@ -258,4 +258,191 @@ import Testing
         #expect(!model.gpu.hasUtilization)
         #expect(model.gpuHistory.isEmpty)
     }
+
+    @Test func powerMetricsDecodingAndFormattedWatts() throws {
+        // Full payload with all power fields
+        let fullData = Data(#"""
+        {
+            "totalWatts": 125.4,
+            "cpuWatts": 42.5,
+            "gpuWatts": 16.2,
+            "source": "rapl+nvml"
+        }
+        """#.utf8)
+        let full = try JSONDecoder().decode(PowerMetrics.self, from: fullData)
+        #expect(full.totalWatts == 125.4)
+        #expect(full.cpuWatts == 42.5)
+        #expect(full.gpuWatts == 16.2)
+        #expect(full.source == "rapl+nvml")
+        #expect(full.hasPower == true)
+        #expect(full.formattedTotalWatts == "125W")
+
+        // Sub-100W formatting
+        let sub100Data = Data(#"""
+        {
+            "totalWatts": 42.54,
+            "cpuWatts": 30.1,
+            "gpuWatts": 12.4,
+            "source": "powermetrics"
+        }
+        """#.utf8)
+        let sub100 = try JSONDecoder().decode(PowerMetrics.self, from: sub100Data)
+        #expect(sub100.formattedTotalWatts == "42.5W")
+
+        // Null fields
+        let nullData = Data(#"""
+        {
+            "totalWatts": null,
+            "cpuWatts": null,
+            "gpuWatts": null,
+            "source": null
+        }
+        """#.utf8)
+        let nullMetrics = try JSONDecoder().decode(PowerMetrics.self, from: nullData)
+        #expect(nullMetrics.totalWatts == nil)
+        #expect(nullMetrics.cpuWatts == nil)
+        #expect(nullMetrics.gpuWatts == nil)
+        #expect(nullMetrics.source == nil)
+        #expect(nullMetrics.hasPower == false)
+        #expect(nullMetrics.formattedTotalWatts == "—")
+
+        // Empty default
+        let empty = PowerMetrics()
+        #expect(empty.totalWatts == nil)
+        #expect(empty.cpuWatts == nil)
+        #expect(empty.gpuWatts == nil)
+        #expect(empty.source == nil)
+        #expect(empty.hasPower == false)
+        #expect(empty.formattedTotalWatts == "—")
+
+        // Negative or non-finite values
+        var invalid = PowerMetrics(totalWatts: -5.0)
+        #expect(invalid.hasPower == false)
+        #expect(invalid.formattedTotalWatts == "—")
+
+        invalid = PowerMetrics(totalWatts: .nan)
+        #expect(invalid.hasPower == false)
+        #expect(invalid.formattedTotalWatts == "—")
+
+        invalid = PowerMetrics(totalWatts: .infinity)
+        #expect(invalid.hasPower == false)
+        #expect(invalid.formattedTotalWatts == "—")
+    }
+
+    @Test func cpuAndGpuPowerWattsDecodingAndFormatting() throws {
+        let data = Data(#"""
+        {
+            "cpu": {
+                "temperature": 45.0,
+                "utilization": 15.0,
+                "systemUsage": 5.0,
+                "userUsage": 10.0,
+                "idleUsage": 85.0,
+                "efficiencyCoreUsage": 0.0,
+                "performanceCoreUsage": 0.0,
+                "uptime": "1h",
+                "freqAllCores": 0,
+                "freqEfficiency": 0,
+                "freqPerformance": 0,
+                "history": [],
+                "loadAverage1m": 1.0,
+                "loadAverage5m": 1.0,
+                "loadAverage15m": 1.0,
+                "topProcesses": [],
+                "powerWatts": 42.5
+            },
+            "gpu": {
+                "usagePercent": 20.0,
+                "modelName": "NVIDIA RTX",
+                "cores": 3000,
+                "temperature": 55.0,
+                "memoryUsed": 4096.0,
+                "memoryTotal": 16384.0,
+                "powerWatts": 125.0
+            }
+        }
+        """#.utf8)
+        let payload = try JSONDecoder().decode(HostMetricsModel.MetricsPayload.self, from: data)
+        let cpu = try #require(payload.cpu)
+        let gpu = try #require(payload.gpu)
+        #expect(cpu.powerWatts == 42.5)
+        #expect(cpu.formattedPower == "42.5W")
+        #expect(gpu.powerWatts == 125.0)
+        #expect(gpu.formattedPower == "125W")
+
+        // Missing / nil / invalid powerWatts
+        var emptyCpu = CPUMetrics()
+        #expect(emptyCpu.powerWatts == nil)
+        #expect(emptyCpu.formattedPower == nil)
+
+        emptyCpu.powerWatts = -10.0
+        #expect(emptyCpu.formattedPower == nil)
+
+        emptyCpu.powerWatts = Double.nan
+        #expect(emptyCpu.formattedPower == nil)
+
+        emptyCpu.powerWatts = Double.infinity
+        #expect(emptyCpu.formattedPower == nil)
+
+        var emptyGpu = GPUMetrics()
+        #expect(emptyGpu.powerWatts == nil)
+        #expect(emptyGpu.formattedPower == nil)
+
+        emptyGpu.powerWatts = -1.0
+        #expect(emptyGpu.formattedPower == nil)
+    }
+
+    @Test @MainActor func modelUpdateUpdatesPowerAndTracksRollingHistory() throws {
+        let model = HostMetricsModel()
+        #expect(model.power == PowerMetrics())
+        #expect(model.powerHistory.isEmpty)
+
+        // Update with full power payload
+        let sample = try payload(linux: true)
+        var cpuWithPower = try #require(sample.cpu)
+        cpuWithPower.powerWatts = 25.0
+        var gpuWithPower = try #require(sample.gpu)
+        gpuWithPower.powerWatts = 50.0
+        let powerSample = PowerMetrics(totalWatts: 75.0, cpuWatts: 25.0, gpuWatts: 50.0, source: "rapl+nvml")
+        let fullPayload = HostMetricsModel.MetricsPayload(
+            cpu: cpuWithPower,
+            gpu: gpuWithPower,
+            power: powerSample
+        )
+        model.update(from: fullPayload)
+
+        #expect(model.cpu.powerWatts == 25.0)
+        #expect(model.gpu.powerWatts == 50.0)
+        #expect(model.power.totalWatts == 75.0)
+        #expect(model.power.cpuWatts == 25.0)
+        #expect(model.power.gpuWatts == 50.0)
+        #expect(model.power.source == "rapl+nvml")
+        #expect(model.powerHistory == [75.0])
+
+        // Rolling history capped at 30 entries
+        for i in 1...35 {
+            let pData = Data("""
+            {
+                "power": {
+                    "totalWatts": \(Double(i)),
+                    "source": "test"
+                }
+            }
+            """.utf8)
+            let p = try JSONDecoder().decode(HostMetricsModel.MetricsPayload.self, from: pData)
+            model.update(from: p)
+        }
+        #expect(model.powerHistory.count == 30)
+        #expect(model.powerHistory.first == 6.0)
+        #expect(model.powerHistory.last == 35.0)
+
+        // Missing / legacy payload without power resets model.power to default PowerMetrics()
+        // and preserves powerHistory without adding invalid samples
+        let legacyPayload = try payload(linux: false)
+        model.update(from: legacyPayload)
+
+        #expect(model.power == PowerMetrics())
+        #expect(model.powerHistory.count == 30)
+        #expect(model.cpu.powerWatts == nil)
+    }
 }

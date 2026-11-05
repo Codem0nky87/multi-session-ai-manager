@@ -194,8 +194,14 @@ struct CPUMetrics: Decodable {
     
     var history: [Double] = []
     var topProcesses: [ProcessStat] = []
+    var powerWatts: Double?
 
     var utilizationText: String { Self.formatPercent(utilization) }
+
+    var formattedPower: String? {
+        guard let powerWatts, powerWatts.isFinite, powerWatts >= 0 else { return nil }
+        return PowerMetrics.formatWatts(powerWatts)
+    }
 
     static func formatPercent(_ value: Double) -> String {
         guard value.isFinite else { return "—" }
@@ -238,8 +244,14 @@ struct GPUMetrics: Decodable {
     var memoryUsed: Double = 0.0
     var memoryTotal: Double = 0.0
     var utilizationAvailable: Bool?
+    var powerWatts: Double?
 
     var hasUtilization: Bool { utilizationAvailable ?? !modelName.isEmpty }
+
+    var formattedPower: String? {
+        guard let powerWatts, powerWatts.isFinite, powerWatts >= 0 else { return nil }
+        return PowerMetrics.formatWatts(powerWatts)
+    }
 }
 
 struct NetworkMetrics: Decodable {
@@ -247,6 +259,31 @@ struct NetworkMetrics: Decodable {
     var uploadSpeed: Double = 0.0
     var downloadString: String = "0 KB/s"
     var uploadString: String = "0 KB/s"
+}
+
+struct PowerMetrics: Decodable, Equatable {
+    var totalWatts: Double?
+    var cpuWatts: Double?
+    var gpuWatts: Double?
+    var source: String?
+
+    var hasPower: Bool {
+        guard let totalWatts, totalWatts.isFinite, totalWatts >= 0 else { return false }
+        return true
+    }
+
+    var formattedTotalWatts: String {
+        Self.formatWatts(totalWatts)
+    }
+
+    static func formatWatts(_ value: Double?) -> String {
+        guard let value, value.isFinite, value >= 0 else { return "—" }
+        if value >= 100 {
+            return String(format: "%.0fW", value.rounded())
+        } else {
+            return String(format: "%.1fW", value)
+        }
+    }
 }
 
 @MainActor
@@ -258,6 +295,7 @@ final class HostMetricsModel {
         let gpu: GPUMetrics?
         let disk: DiskMetrics?
         let network: NetworkMetrics?
+        let power: PowerMetrics?
         let providers: [String: ProviderQuota]?
         let terminalAgents: [TerminalAgentSession]?
         let installedIntegrations: [String]?
@@ -268,6 +306,7 @@ final class HostMetricsModel {
             gpu: GPUMetrics? = nil,
             disk: DiskMetrics? = nil,
             network: NetworkMetrics? = nil,
+            power: PowerMetrics? = nil,
             providers: [String: ProviderQuota]? = nil,
             terminalAgents: [TerminalAgentSession]? = nil,
             installedIntegrations: [String]? = nil
@@ -277,13 +316,14 @@ final class HostMetricsModel {
             self.gpu = gpu
             self.disk = disk
             self.network = network
+            self.power = power
             self.providers = providers
             self.terminalAgents = terminalAgents
             self.installedIntegrations = installedIntegrations
         }
 
         enum CodingKeys: String, CodingKey {
-            case cpu, memory, gpu, disk, network, providers
+            case cpu, memory, gpu, disk, network, power, providers
             case terminalAgents = "terminal_agents"
             case installedIntegrations = "installed_integrations"
         }
@@ -294,9 +334,11 @@ final class HostMetricsModel {
     var gpu = GPUMetrics()
     var disk = DiskMetrics()
     var network = NetworkMetrics()
+    var power = PowerMetrics()
     var pulse = ProviderPulseModel()
     var memoryHistory: [Double] = []
     var gpuHistory: [Double] = []
+    var powerHistory: [Double] = []
     var diskVolumeHistory: [String: [Double]] = [:]
     var downloadHistory: [Double] = []
     var uploadHistory: [Double] = []
@@ -324,6 +366,7 @@ final class HostMetricsModel {
             cpu.idleUsage = newCPU.idleUsage
             cpu.topProcesses = newCPU.topProcesses
             cpu.uptime = newCPU.uptime
+            cpu.powerWatts = newCPU.powerWatts
         }
         if let newMem = payload.memory {
             memory.usagePercent = newMem.usagePercent
@@ -359,6 +402,7 @@ final class HostMetricsModel {
             gpu.memoryUsed = newGpu.memoryUsed
             gpu.memoryTotal = newGpu.memoryTotal
             gpu.utilizationAvailable = newGpu.utilizationAvailable
+            gpu.powerWatts = newGpu.powerWatts
             if newGpu.hasUtilization {
                 gpuHistory = history(gpuHistory, appending: newGpu.usagePercent)
             } else {
@@ -373,6 +417,14 @@ final class HostMetricsModel {
             hasNetworkSample = true
             downloadHistory = history(downloadHistory, appending: max(0, newNet.downloadSpeed))
             uploadHistory = history(uploadHistory, appending: max(0, newNet.uploadSpeed))
+        }
+        if let newPower = payload.power {
+            power = newPower
+            if let total = newPower.totalWatts, total.isFinite, total >= 0 {
+                powerHistory = history(powerHistory, appending: total)
+            }
+        } else {
+            power = PowerMetrics()
         }
         if let provs = payload.providers {
             pulse.update(
