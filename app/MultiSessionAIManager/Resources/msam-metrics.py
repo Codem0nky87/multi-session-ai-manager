@@ -11,7 +11,7 @@ import re
 import shutil
 from pathlib import Path
 
-METRICS_VERSION = "2.4.2"
+METRICS_VERSION = "2.5.0"
 
 _mac_network_previous = None
 _mac_cpu_previous = None
