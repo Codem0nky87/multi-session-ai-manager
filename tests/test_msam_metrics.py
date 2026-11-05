@@ -662,6 +662,262 @@ Combined Power (CPU + GPU + ANE): 4340 mW
             self.assertEqual(metrics['cpu']['powerWatts'], 25.0)
             self.assertEqual(metrics['gpu']['powerWatts'], 15.0)
 
+    def test_metrics_history_db_initialization_and_schema(self):
+        db_path = self.root / 'nested' / 'metrics-history.db'
+        self.assertFalse(db_path.parent.exists())
+
+        db = m.MetricsHistoryDB(db_path=str(db_path))
+        try:
+            # Check parent directory was created
+            self.assertTrue(db_path.parent.exists())
+
+            # Check WAL mode pragma
+            cur = db.conn.cursor()
+            cur.execute("PRAGMA journal_mode;")
+            journal_mode = cur.fetchone()[0]
+            self.assertEqual(journal_mode.lower(), 'wal')
+
+            # Check table creation
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table';")
+            tables = [row[0] for row in cur.fetchall()]
+            self.assertIn('metrics_samples', tables)
+
+            # Check timestamp index creation
+            cur.execute("SELECT name FROM sqlite_master WHERE type='index';")
+            indices = [row[0] for row in cur.fetchall()]
+            self.assertIn('idx_metrics_samples_timestamp', indices)
+
+            # Check columns
+            cur.execute("PRAGMA table_info(metrics_samples);")
+            columns = {row[1]: row[2].upper() for row in cur.fetchall()}
+            expected_columns = {
+                'timestamp': 'REAL',
+                'cpu_util': 'REAL',
+                'cpu_temp': 'REAL',
+                'cpu_watts': 'REAL',
+                'mem_used_gb': 'REAL',
+                'mem_total_gb': 'REAL',
+                'gpu_util': 'REAL',
+                'gpu_temp': 'REAL',
+                'gpu_watts': 'REAL',
+                'net_down_kbps': 'REAL',
+                'net_up_kbps': 'REAL',
+                'system_watts': 'REAL',
+                'power_source': 'TEXT',
+            }
+            for col, col_type in expected_columns.items():
+                self.assertIn(col, columns)
+                self.assertEqual(columns[col], col_type)
+        finally:
+            db.close()
+
+        # Check default db path resolution
+        with patch.object(m.sys, 'platform', 'linux'), patch.object(Path, 'home', return_value=self.root / 'fakehome'):
+            path = m.default_metrics_db_path()
+            self.assertEqual(path, self.root / 'fakehome' / '.local/state/msam/metrics-history.db')
+
+        with patch.object(m.sys, 'platform', 'win32'), patch.dict(os.environ, {'LOCALAPPDATA': str(self.root / 'fakeappdata')}):
+            path = m.default_metrics_db_path()
+            self.assertEqual(path, self.root / 'fakeappdata' / 'msam/metrics-history.db')
+
+    def test_metrics_history_db_record_sample(self):
+        db_path = self.root / 'test_record.db'
+        db = m.MetricsHistoryDB(db_path=str(db_path))
+        try:
+            ts = 1762330000.5
+            db.record_sample(
+                timestamp=ts,
+                cpu_util=14.5,
+                cpu_temp=48.0,
+                cpu_watts=42.5,
+                mem_used_gb=15.2,
+                mem_total_gb=32.0,
+                gpu_util=18.0,
+                gpu_temp=52.0,
+                gpu_watts=16.2,
+                net_down_kbps=145.5,
+                net_up_kbps=25.0,
+                system_watts=58.7,
+                power_source='rapl+nvml'
+            )
+
+            cur = db.conn.cursor()
+            cur.execute("SELECT * FROM metrics_samples WHERE timestamp = ?", (ts,))
+            row = cur.fetchone()
+            self.assertIsNotNone(row)
+            self.assertEqual(row[0], ts)
+            self.assertEqual(row[1], 14.5)
+            self.assertEqual(row[2], 48.0)
+            self.assertEqual(row[3], 42.5)
+            self.assertEqual(row[4], 15.2)
+            self.assertEqual(row[5], 32.0)
+            self.assertEqual(row[6], 18.0)
+            self.assertEqual(row[7], 52.0)
+            self.assertEqual(row[8], 16.2)
+            self.assertEqual(row[9], 145.5)
+            self.assertEqual(row[10], 25.0)
+            self.assertEqual(row[11], 58.7)
+            self.assertEqual(row[12], 'rapl+nvml')
+
+            # Test record_sample_from_metrics
+            metrics_payload = {
+                'cpu': {'utilization': 25.0, 'temperature': 55.0, 'powerWatts': 30.0},
+                'memory': {'used': 10.5, 'total': 16.0},
+                'gpu': {'usagePercent': 40.0, 'temperature': 60.0, 'powerWatts': 50.0},
+                'network': {'downloadSpeed': 204800.0, 'uploadSpeed': 51200.0},  # Bytes/s -> KB/s (/1024)
+                'power': {'totalWatts': 80.0, 'source': 'powermetrics'}
+            }
+            ts2 = ts + 5.0
+            db.record_sample_from_metrics(metrics_payload, timestamp=ts2)
+            cur.execute("SELECT net_down_kbps, net_up_kbps, system_watts, power_source FROM metrics_samples WHERE timestamp = ?", (ts2,))
+            r2 = cur.fetchone()
+            self.assertEqual(r2[0], 200.0)  # 204800 / 1024
+            self.assertEqual(r2[1], 50.0)   # 51200 / 1024
+            self.assertEqual(r2[2], 80.0)
+            self.assertEqual(r2[3], 'powermetrics')
+
+            # Test NULL values handling
+            ts3 = ts + 10.0
+            db.record_sample(
+                timestamp=ts3,
+                cpu_util=None,
+                cpu_temp=None,
+                cpu_watts=None,
+                mem_used_gb=None,
+                mem_total_gb=None,
+                gpu_util=None,
+                gpu_temp=None,
+                gpu_watts=None,
+                net_down_kbps=None,
+                net_up_kbps=None,
+                system_watts=None,
+                power_source=None
+            )
+            cur.execute("SELECT cpu_util, power_source FROM metrics_samples WHERE timestamp = ?", (ts3,))
+            r3 = cur.fetchone()
+            self.assertIsNone(r3[0])
+            self.assertIsNone(r3[1])
+        finally:
+            db.close()
+
+    def test_metrics_history_db_prune_older_than(self):
+        db_path = self.root / 'test_prune.db'
+        db = m.MetricsHistoryDB(db_path=str(db_path))
+        try:
+            now = 1762330000.0
+            day = 86400.0
+            timestamps = [
+                now - (40 * day),  # > 30 days old: prune
+                now - (31 * day),  # > 30 days old: prune
+                now - (30 * day) - 10,  # > 30 days old: prune
+                now - (29 * day),  # < 30 days old: keep
+                now - (5 * day),   # keep
+                now,               # keep
+            ]
+            for t in timestamps:
+                db.record_sample(
+                    timestamp=t,
+                    cpu_util=10.0, cpu_temp=40.0, cpu_watts=20.0,
+                    mem_used_gb=8.0, mem_total_gb=16.0,
+                    gpu_util=5.0, gpu_temp=35.0, gpu_watts=10.0,
+                    net_down_kbps=100.0, net_up_kbps=10.0,
+                    system_watts=30.0, power_source='rapl'
+                )
+
+            pruned = db.prune_older_than(days=30, now=now)
+            self.assertEqual(pruned, 3)
+
+            cur = db.conn.cursor()
+            cur.execute("SELECT timestamp FROM metrics_samples ORDER BY timestamp ASC")
+            remaining = [r[0] for r in cur.fetchall()]
+            self.assertEqual(len(remaining), 3)
+            self.assertEqual(remaining, [now - (29 * day), now - (5 * day), now])
+        finally:
+            db.close()
+
+    def test_sample_loop_integration_and_periodic_pruning(self):
+        db_path = self.root / 'test_loop.db'
+        db = m.MetricsHistoryDB(db_path=str(db_path))
+
+        samples_collected = []
+        now_val = [1000.0]
+
+        def fake_now():
+            return now_val[0]
+
+        def fake_sleep(sec):
+            now_val[0] += sec
+
+        # Plant an old sample to verify startup pruning runs
+        db.record_sample(
+            timestamp=1000.0 - (35 * 86400),
+            cpu_util=5.0, cpu_temp=30.0, cpu_watts=10.0,
+            mem_used_gb=4.0, mem_total_gb=16.0,
+            gpu_util=0.0, gpu_temp=30.0, gpu_watts=0.0,
+            net_down_kbps=0.0, net_up_kbps=0.0,
+            system_watts=10.0, power_source='battery'
+        )
+
+        sample_metric_payload = {
+            'cpu': {'utilization': 15.0, 'temperature': 45.0, 'powerWatts': 25.0},
+            'memory': {'used': 8.0, 'total': 16.0},
+            'gpu': {'usagePercent': 10.0, 'temperature': 40.0, 'powerWatts': 15.0},
+            'network': {'downloadSpeed': 10240.0, 'uploadSpeed': 5120.0},
+            'power': {'totalWatts': 40.0, 'source': 'rapl+nvml'}
+        }
+
+        with patch.object(m, 'get_metrics', return_value=sample_metric_payload):
+            # Run 3 iterations
+            m._sample_loop(
+                interval=2,
+                db=db,
+                max_iterations=3,
+                on_sample=lambda s: samples_collected.append(s),
+                now_func=fake_now,
+                sleep_func=fake_sleep
+            )
+
+        self.assertEqual(len(samples_collected), 3)
+
+        # Check that the 35-day-old sample was pruned on startup
+        cur = db.conn.cursor()
+        cur.execute("SELECT timestamp FROM metrics_samples ORDER BY timestamp ASC")
+        rows = [r[0] for r in cur.fetchall()]
+        self.assertEqual(len(rows), 3)
+
+        # Test periodic pruning when 1 hour elapses
+        with patch.object(db, 'prune_older_than', wraps=db.prune_older_than) as mock_prune, \
+             patch.object(m, 'get_metrics', return_value=sample_metric_payload):
+            # Startup prune occurs once
+            # Advance time by 3700 seconds (> 1 hour)
+            now_val[0] = 5000.0
+            m._sample_loop(
+                interval=2,
+                db=db,
+                max_iterations=1,
+                on_sample=lambda s: None,
+                now_func=fake_now,
+                sleep_func=fake_sleep
+            )
+            # prune_older_than should have been called on startup and hourly
+            self.assertTrue(mock_prune.called)
+
+        # Clean exception handling: if DB write fails, loop continues without crashing
+        with patch.object(db, 'record_sample_from_metrics', side_effect=Exception("Disk full")):
+            samples_collected.clear()
+            with patch.object(m, 'get_metrics', return_value=sample_metric_payload):
+                m._sample_loop(
+                    interval=1,
+                    db=db,
+                    max_iterations=2,
+                    on_sample=lambda s: samples_collected.append(s),
+                    now_func=fake_now,
+                    sleep_func=fake_sleep
+                )
+            self.assertEqual(len(samples_collected), 2)
+
+        db.close()
+
 
 if __name__ == '__main__':
     unittest.main()

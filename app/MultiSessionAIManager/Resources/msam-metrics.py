@@ -2,6 +2,7 @@
 import os
 import sys
 import json
+import sqlite3
 import subprocess
 import time
 import math
@@ -1493,16 +1494,214 @@ def get_metrics():
         return get_linux_metrics()
 
 
+def default_metrics_db_path():
+    """Returns the default SQLite metrics history database path for the current OS."""
+    if sys.platform == "win32":
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        base = Path(local_app_data) if local_app_data else Path.home() / "AppData" / "Local"
+        return base / "msam" / "metrics-history.db"
+    else:
+        return Path.home() / ".local" / "state" / "msam" / "metrics-history.db"
+
+
+class MetricsHistoryDB:
+    """SQLite time-series storage with rolling 30-day retention for system metrics and power telemetry."""
+
+    def __init__(self, db_path=None):
+        if db_path is None:
+            self.db_path = default_metrics_db_path()
+        elif isinstance(db_path, Path):
+            self.db_path = db_path
+        else:
+            self.db_path = Path(db_path) if db_path != ":memory:" else ":memory:"
+
+        if isinstance(self.db_path, Path):
+            self.db_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            db_target = str(self.db_path)
+        else:
+            db_target = self.db_path
+
+        self.conn = sqlite3.connect(db_target, timeout=10.0)
+        self._init_db()
+
+    def _init_db(self):
+        cur = self.conn.cursor()
+        cur.execute("PRAGMA journal_mode = WAL;")
+        cur.execute("PRAGMA synchronous = NORMAL;")
+        cur.execute("PRAGMA auto_vacuum = INCREMENTAL;")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS metrics_samples (
+                timestamp REAL PRIMARY KEY,          -- Unix epoch (seconds, float precision)
+                cpu_util REAL,                       -- CPU utilization %
+                cpu_temp REAL,                       -- CPU temperature °C
+                cpu_watts REAL,                      -- CPU package Watts
+                mem_used_gb REAL,                    -- Memory used in GB
+                mem_total_gb REAL,                   -- Total system memory in GB
+                gpu_util REAL,                       -- GPU utilization %
+                gpu_temp REAL,                       -- GPU temperature °C
+                gpu_watts REAL,                      -- GPU board Watts
+                net_down_kbps REAL,                  -- Download speed KB/s
+                net_up_kbps REAL,                    -- Upload speed KB/s
+                system_watts REAL,                   -- System total Watts
+                power_source TEXT                    -- Source ("rapl+nvml", "powermetrics", "battery")
+            );
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_metrics_samples_timestamp ON metrics_samples(timestamp);")
+        self.conn.commit()
+        cur.close()
+
+    def record_sample(self, timestamp, cpu_util, cpu_temp, cpu_watts,
+                      mem_used_gb, mem_total_gb, gpu_util, gpu_temp,
+                      gpu_watts, net_down_kbps, net_up_kbps, system_watts,
+                      power_source):
+        """Insert or replace a metric snapshot."""
+        with self.conn:
+            self.conn.execute("""
+                INSERT OR REPLACE INTO metrics_samples (
+                    timestamp, cpu_util, cpu_temp, cpu_watts,
+                    mem_used_gb, mem_total_gb, gpu_util, gpu_temp,
+                    gpu_watts, net_down_kbps, net_up_kbps, system_watts,
+                    power_source
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (timestamp, cpu_util, cpu_temp, cpu_watts,
+                  mem_used_gb, mem_total_gb, gpu_util, gpu_temp,
+                  gpu_watts, net_down_kbps, net_up_kbps, system_watts,
+                  power_source))
+
+    def record_sample_from_metrics(self, metrics, timestamp=None):
+        """Extract fields from a standard get_metrics() dictionary and record the sample."""
+        if timestamp is None:
+            timestamp = time.time()
+        cpu = metrics.get('cpu') or {}
+        mem = metrics.get('memory') or {}
+        gpu = metrics.get('gpu') or {}
+        net = metrics.get('network') or {}
+        power = metrics.get('power') or {}
+
+        cpu_util = cpu.get('utilization')
+        cpu_temp = cpu.get('temperature')
+        cpu_watts = cpu.get('powerWatts')
+
+        mem_used = mem.get('used')
+        mem_total = mem.get('total')
+
+        gpu_util = gpu.get('usagePercent')
+        gpu_temp = gpu.get('temperature')
+        gpu_watts = gpu.get('powerWatts')
+
+        down_speed = net.get('downloadSpeed')
+        net_down = (float(down_speed) / 1024.0) if down_speed is not None else None
+
+        up_speed = net.get('uploadSpeed')
+        net_up = (float(up_speed) / 1024.0) if up_speed is not None else None
+
+        system_watts = power.get('totalWatts')
+        power_source = power.get('source')
+
+        self.record_sample(
+            timestamp=timestamp,
+            cpu_util=cpu_util,
+            cpu_temp=cpu_temp,
+            cpu_watts=cpu_watts,
+            mem_used_gb=mem_used,
+            mem_total_gb=mem_total,
+            gpu_util=gpu_util,
+            gpu_temp=gpu_temp,
+            gpu_watts=gpu_watts,
+            net_down_kbps=net_down,
+            net_up_kbps=net_up,
+            system_watts=system_watts,
+            power_source=power_source,
+        )
+
+    def prune_older_than(self, days=30, now=None):
+        """Prunes metrics samples older than given days. Returns number of rows deleted."""
+        if now is None:
+            now = time.time()
+        cutoff = now - (float(days) * 86400.0)
+        with self.conn:
+            cur = self.conn.execute("DELETE FROM metrics_samples WHERE timestamp < ?", (cutoff,))
+            pruned_count = cur.rowcount
+            self.conn.execute("PRAGMA incremental_vacuum;")
+        return pruned_count
+
+    def close(self):
+        """Closes the database connection."""
+        if self.conn is not None:
+            self.conn.close()
+            self.conn = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+
+def _sample_loop(interval=2.0, db=None, max_iterations=None, stop_event=None,
+                 on_sample=None, now_func=time.time, sleep_func=time.sleep):
+    """Continuous or bounded metrics sampling loop with SQLite historical recording and hourly pruning."""
+    history_db = db
+    if history_db is None:
+        try:
+            history_db = MetricsHistoryDB()
+        except Exception:
+            history_db = None
+
+    # Run initial retention pruning on startup
+    if history_db is not None:
+        try:
+            history_db.prune_older_than(days=30, now=now_func())
+        except Exception:
+            pass
+
+    last_prune = now_func()
+    iterations = 0
+
+    while True:
+        if stop_event is not None and stop_event.is_set():
+            break
+        if max_iterations is not None and iterations >= max_iterations:
+            break
+
+        data = get_metrics()
+        now = now_func()
+
+        if history_db is not None:
+            try:
+                history_db.record_sample_from_metrics(data, timestamp=now)
+            except Exception:
+                pass
+
+            if now - last_prune >= 3600:
+                try:
+                    history_db.prune_older_than(days=30, now=now)
+                except Exception:
+                    pass
+                last_prune = now
+
+        if on_sample is not None:
+            try:
+                on_sample(data)
+            except Exception:
+                pass
+        else:
+            print(json.dumps(data), flush=True)
+
+        iterations += 1
+        if max_iterations is not None and iterations >= max_iterations:
+            break
+        if interval is None:
+            break
+
+        if sleep_func is not None:
+            sleep_func(interval)
+
+
 def main():
     # If run with --loop, print metrics every 2 seconds
     loop = len(sys.argv) > 1 and sys.argv[1] == "--loop"
-    
-    while True:
-        data = get_metrics()
-        print(json.dumps(data), flush=True)
-        if not loop:
-            break
-        time.sleep(2)
+    _sample_loop(interval=2.0 if loop else None, max_iterations=None if loop else 1)
 
 if __name__ == "__main__":
     main()
