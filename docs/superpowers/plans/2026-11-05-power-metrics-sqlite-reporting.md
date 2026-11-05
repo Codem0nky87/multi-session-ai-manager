@@ -196,21 +196,21 @@
 - UI: Popover `PowerMetricsDetailView` showing live Watts, component breakdown, telemetry source, and sparkline.
 - UI: Live wattage in `CPUMetricsDetailView` and `GPUMetricsDetailView`.
 
-- [ ] **Step 1: Implement `PowerMetricsDetailView.swift`**
+- [x] **Step 1: Implement `PowerMetricsDetailView.swift`**
   - Create view with Header, Component Breakdown (CPU, GPU, Other), Source badge, and mini sparkline.
   - Add `#Preview` with mock data.
 
-- [ ] **Step 2: Update `HostMetricsBarView.swift`**
+- [x] **Step 2: Update `HostMetricsBarView.swift`**
   - Insert `Button` with `Image(systemName: "bolt.fill")` and `metricsModel.power.formattedTotalWatts` next to Network button.
   - Wire up `.popover` presenting `PowerMetricsDetailView`.
 
-- [ ] **Step 3: Update `CPUMetricsDetailView.swift` and `GPUMetricsDetailView.swift`**
+- [x] **Step 3: Update `CPUMetricsDetailView.swift` and `GPUMetricsDetailView.swift`**
   - Display live wattage if available.
 
-- [ ] **Step 4: Run full Swift test suite on Mac**
+- [x] **Step 4: Run full Swift test suite on Mac**
   - Run all tests on `IronMentorMac` iOS Simulator and confirm 100% green.
 
-- [ ] **Step 5: Commit changes**
+- [x] **Step 5: Commit changes**
   - Git commit: `feat(ios-ui): add global power glyph, power detail popover, and component wattage`.
 
 ---

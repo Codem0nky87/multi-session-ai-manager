@@ -26,6 +26,9 @@ struct CPUMetricsDetailView: View {
                 MetricsStat(label: "Load · 1 / 5 / 15 min",
                             value: String(format: "%.2f / %.2f / %.2f",
                                           metrics.loadAverage1m, metrics.loadAverage5m, metrics.loadAverage15m))
+                if let power = metrics.formattedPower {
+                    MetricsStat(label: "CPU power", value: power, color: accent)
+                }
             }
             if !metrics.uptime.isEmpty {
                 MetricsStat(label: "Uptime", value: metrics.uptime)

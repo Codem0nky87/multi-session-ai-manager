@@ -13,6 +13,7 @@ struct HostMetricsBarView: View {
     @State private var showingNetworkDetail = false
     @State private var showingDiskDetail = false
     @State private var showingTunnels = false
+    @State private var showingPowerDetail = false
 
     var body: some View {
         HStack(spacing: 16) {
@@ -188,6 +189,30 @@ struct HostMetricsBarView: View {
                                          downloadHistory: metricsModel.downloadHistory,
                                          uploadHistory: metricsModel.uploadHistory,
                                          hasSample: metricsModel.hasNetworkSample)
+                    .presentationCompactAdaptation(.popover)
+            }
+
+            Button {
+                showingPowerDetail.toggle()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "bolt.fill")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(metricsModel.power.hasPower ? Color.yellow : HerdrTheme.muted)
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text("PWR")
+                            .font(HerdrTheme.mono(.caption2, weight: .bold))
+                        Text(metricsModel.power.formattedTotalWatts)
+                            .font(HerdrTheme.mono(.caption, weight: .bold))
+                    }
+                }
+                .foregroundStyle(metricsModel.power.hasPower ? HerdrTheme.subtext : HerdrTheme.muted)
+            }
+            .buttonStyle(.plain)
+            .disabled(!metricsModel.power.hasPower)
+            .accessibilityIdentifier("metrics.power")
+            .popover(isPresented: $showingPowerDetail, arrowEdge: .top) {
+                PowerMetricsDetailView(metrics: metricsModel.power, history: metricsModel.powerHistory)
                     .presentationCompactAdaptation(.popover)
             }
 

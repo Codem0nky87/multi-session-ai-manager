@@ -28,6 +28,9 @@ struct GPUMetricsDetailView: View {
                 if metrics.cores > 0 {
                     MetricsStat(label: "GPU cores", value: "\(metrics.cores)")
                 }
+                if let power = metrics.formattedPower {
+                    MetricsStat(label: "GPU power", value: power, color: accent)
+                }
                 if metrics.memoryTotal > 0 {
                     MetricsStat(label: "VRAM used", value: String(format: "%.2f GiB", metrics.memoryUsed / 1024))
                     MetricsStat(label: "VRAM capacity", value: String(format: "%.2f GiB", metrics.memoryTotal / 1024))

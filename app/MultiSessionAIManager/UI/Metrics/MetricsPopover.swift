@@ -104,7 +104,7 @@ struct MetricsHistoryView: View {
                             .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round))
                     }
                 }
-                .chartYScale(domain: 0...100)
+                .chartYScale(domain: 0...max(100, values.filter(\.isFinite).max() ?? 100))
                 .chartXAxis(.hidden)
                 .chartYAxis(.hidden)
                 .frame(height: 64)
