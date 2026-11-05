@@ -171,6 +171,21 @@ def sample_metrics(module):
     else:
         value['providers'] = {}
         value['terminal_agents'] = []
+
+    if hasattr(module, 'MetricsHistoryDB'):
+        try:
+            if not hasattr(sample_metrics, '_db') or sample_metrics._db is None:
+                sample_metrics._db = module.MetricsHistoryDB()
+                sample_metrics._last_prune = time.time()
+                sample_metrics._db.prune_older_than(days=30)
+            sample_metrics._db.record_sample_from_metrics(value)
+            now = time.time()
+            if now - getattr(sample_metrics, '_last_prune', 0) >= 3600:
+                sample_metrics._last_prune = now
+                sample_metrics._db.prune_older_than(days=30)
+        except Exception:
+            pass
+
     return value
 
 

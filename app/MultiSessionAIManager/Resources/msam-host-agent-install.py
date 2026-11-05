@@ -257,6 +257,7 @@ def migrate_collectors():
         # The old Windows script runs in an app-owned PTY, which the app retires.
         for filename in ('msam-metrics.ps1',):
             (HOME / '.local/bin' / filename).unlink(missing_ok=True)
+        (HOME / '.local/bin/msam-metrics.cmd').write_bytes(('@echo off\r\n"' + sys.executable + '" "' + str(BASE / 'current/msam-metrics.py') + '" %*\r\n').encode('utf-8'))
         return
     spec = importlib.util.spec_from_file_location('metrics_manage', BASE / 'current/msam-metrics-manage.py')
     manager = importlib.util.module_from_spec(spec)
@@ -264,6 +265,9 @@ def migrate_collectors():
     target = HOME / '.local/bin/msam-metrics'
     manager.stop_collectors(target)
     target.unlink(missing_ok=True)
+    launcher = '#!/bin/sh\nexec ' + shlex.quote(sys.executable) + ' ' + shlex.quote(str(BASE / 'current/msam-metrics.py')) + ' "$@"\n'
+    target.write_text(launcher)
+    target.chmod(0o700)
 
 
 def write_launchers():
