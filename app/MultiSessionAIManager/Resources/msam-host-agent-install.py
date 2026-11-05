@@ -177,7 +177,9 @@ def write_service():
         content += 'ExecStart=' + ' '.join(quote(v) for v in command('serve')) + '\n'
         content += 'Environment=' + quote('MSAM_HOST_HOME=' + str(HOME)) + '\n'
         content += 'Environment=' + quote('PATH=' + extra_path) + '\n'
-        content += 'Restart=on-failure\nRestartSec=2\nKillMode=process\nTimeoutStopSec=20\nNoNewPrivileges=true\n\n[Install]\nWantedBy=default.target\n'
+        # Do not set NoNewPrivileges=true because it prevents sudo -n (e.g. reading
+        # root-restricted /sys/class/powercap RAPL energy counters) from acquiring privileges.
+        content += 'Restart=on-failure\nRestartSec=2\nKillMode=process\nTimeoutStopSec=20\n\n[Install]\nWantedBy=default.target\n'
         service_path().parent.mkdir(parents=True, exist_ok=True)
         service_path().write_text(content)
         service_path().chmod(0o600)

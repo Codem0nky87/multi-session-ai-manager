@@ -248,6 +248,7 @@ class HostAgentTests(unittest.TestCase):
             content = self.installer.service_path().read_text()
             self.assertIn('msam-host-agent.py" "serve"', content)
             self.assertNotIn('msam-agent-updater.sh', content)
+            self.assertNotIn('NoNewPrivileges=true', content)
         with patch.object(self.installer.sys, 'platform', 'darwin'):
             self.installer.write_service()
             import plistlib
