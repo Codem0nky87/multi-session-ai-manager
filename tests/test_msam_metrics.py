@@ -1289,6 +1289,56 @@ Combined Power (CPU + GPU + ANE): 4340 mW
             self.assertEqual(sample['gpuTdpWatts'], 285.0)
             self.assertEqual(sample['psuCeilingWatts'], 700.0)
 
+    def test_power_sampler_estimates_cpu_power_when_rapl_missing(self):
+        with patch.object(m, 'get_cpu_tdp', return_value=100.0), \
+             patch.object(m, 'get_gpu_tdp', return_value=None), \
+             patch.object(m, 'read_linux_battery_power', return_value=None), \
+             patch.object(m, 'read_linux_rapl_energy', return_value=None), \
+             patch.object(m, 'get_gpu_power', return_value=None):
+            sampler = m.PowerSampler(sys_root=str(self.root / 'sys'))
+            cpu_info = {'utilization': 50.0}
+            sample = sampler.sample(now=10.0, cpu_info=cpu_info)
+
+            # 100 * 0.10 + 100 * 0.90 * (50/100) = 10 + 45 = 55.0 W
+            self.assertEqual(sample['cpuWatts'], 55.0)
+            self.assertEqual(sample['totalWatts'], 55.0)
+            self.assertEqual(sample['source'], 'est')
+            self.assertEqual(cpu_info['powerWatts'], 55.0)
+
+        # With GPU watts present: source should be nvml+est
+        with patch.object(m, 'get_cpu_tdp', return_value=120.0), \
+             patch.object(m, 'get_gpu_tdp', return_value=300.0), \
+             patch.object(m, 'read_linux_battery_power', return_value=None), \
+             patch.object(m, 'read_linux_rapl_energy', return_value=None), \
+             patch.object(m, 'get_gpu_power', return_value=40.0):
+            sampler = m.PowerSampler(sys_root=str(self.root / 'sys'))
+            cpu_info = {'utilization': 25.0}
+            gpu_info = {}
+            sample = sampler.sample(now=10.0, cpu_info=cpu_info, gpu_info=gpu_info)
+
+            # 120 * 0.10 + 120 * 0.90 * 0.25 = 12 + 27 = 39.0 W; total = 39 + 40 = 79.0 W
+            self.assertEqual(sample['cpuWatts'], 39.0)
+            self.assertEqual(sample['gpuWatts'], 40.0)
+            self.assertEqual(sample['totalWatts'], 79.0)
+            self.assertEqual(sample['source'], 'nvml+est')
+            self.assertEqual(cpu_info['powerWatts'], 39.0)
+            self.assertEqual(gpu_info['powerWatts'], 40.0)
+
+        # Floor of 3.0W when utilization is 0 on low TDP
+        with patch.object(m, 'get_cpu_tdp', return_value=10.0), \
+             patch.object(m, 'get_gpu_tdp', return_value=None), \
+             patch.object(m, 'read_linux_battery_power', return_value=None), \
+             patch.object(m, 'read_linux_rapl_energy', return_value=None), \
+             patch.object(m, 'get_gpu_power', return_value=None):
+            sampler = m.PowerSampler(sys_root=str(self.root / 'sys'))
+            cpu_info = {'utilization': 0.0}
+            sample = sampler.sample(now=10.0, cpu_info=cpu_info)
+            # max(3.0, 1.0) = 3.0
+            self.assertEqual(sample['cpuWatts'], 3.0)
+            self.assertEqual(sample['totalWatts'], 3.0)
+            self.assertEqual(sample['source'], 'est')
+
+
 
 if __name__ == '__main__':
     unittest.main()

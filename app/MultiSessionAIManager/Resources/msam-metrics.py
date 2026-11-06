@@ -1671,6 +1671,21 @@ class PowerSampler:
                     total_watts = None
                     source = "none"
 
+                if cpu_watts is None:
+                    if self.cpu_tdp is not None and isinstance(cpu_info, dict) and cpu_info.get('utilization') is not None:
+                        try:
+                            util = max(0.0, min(100.0, float(cpu_info['utilization'])))
+                            est_cpu = round(max(3.0, (self.cpu_tdp * 0.10) + (self.cpu_tdp * 0.90) * (util / 100.0)), 2)
+                            cpu_watts = est_cpu
+                            if gpu_watts is not None:
+                                total_watts = round(cpu_watts + gpu_watts, 2)
+                                source = "nvml+est"
+                            else:
+                                total_watts = cpu_watts
+                                source = "est"
+                        except (ValueError, TypeError):
+                            pass
+
         if isinstance(cpu_info, dict):
             cpu_info['powerWatts'] = cpu_watts
         if isinstance(gpu_info, dict):

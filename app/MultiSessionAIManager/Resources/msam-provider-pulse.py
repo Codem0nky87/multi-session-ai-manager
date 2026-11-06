@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Host telemetry collector for Provider Pulse quotas, terminal activity, and session task analysis.
 
 Runs inside msam-host-agent on Linux and macOS using Python 3 standard library.
@@ -540,6 +541,52 @@ def _read_hermes_config(home: Path) -> dict:
     return res
 
 
+def _query_hermes_session(home: Path, session_id: str | None = None) -> dict | None:
+    """Query Hermes session details from ~/.hermes/state.db."""
+    db_path = home / '.hermes' / 'state.db'
+    if not db_path.is_file():
+        return None
+    try:
+        import sqlite3
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            cur = conn.cursor()
+            row = None
+            if session_id:
+                cur.execute(
+                    "SELECT id, model, title, input_tokens, output_tokens FROM sessions WHERE id = ? LIMIT 1",
+                    (session_id,)
+                )
+                row = cur.fetchone()
+                if not row:
+                    cur.execute(
+                        "SELECT id, model, title, input_tokens, output_tokens FROM sessions WHERE id LIKE ? ORDER BY started_at DESC LIMIT 1",
+                        (f"%{session_id}%",)
+                    )
+                    row = cur.fetchone()
+            else:
+                cur.execute(
+                    "SELECT id, model, title, input_tokens, output_tokens FROM sessions ORDER BY started_at DESC LIMIT 1"
+                )
+                row = cur.fetchone()
+
+            if not row:
+                return None
+
+            s_id, model, title, in_tok, out_tok = row
+            tokens = (in_tok or 0) + (out_tok or 0)
+            return {
+                "id": s_id,
+                "model": model,
+                "title": title,
+                "tokens": tokens,
+            }
+        finally:
+            conn.close()
+    except Exception:
+        return None
+
+
 def collect_hermes_quota(home_dir: Path | str | None = None, hermes_bin: str = "hermes", env: dict | None = None) -> dict:
     """Query Hermes usage."""
     home = Path(home_dir).expanduser() if home_dir else Path.home()
@@ -549,7 +596,9 @@ def collect_hermes_quota(home_dir: Path | str | None = None, hermes_bin: str = "
     config = _read_hermes_config(home)
     model_conf = config.get("model", {}) if isinstance(config, dict) else {}
     configured_provider = str(model_conf.get("provider", "")).strip().lower()
-    plan_name = configured_provider or "custom"
+    default_model = str(model_conf.get("default", "") or model_conf.get("model", "")).strip()
+    base_plan = configured_provider or "custom"
+    plan_name = f"{base_plan} ({default_model})" if default_model else base_plan
 
     try:
         res = subprocess.run([exe, "usage", "--json"], capture_output=True, text=True, timeout=8, env=proc_env)
@@ -562,7 +611,7 @@ def collect_hermes_quota(home_dir: Path | str | None = None, hermes_bin: str = "
                     "state": state,
                     "used_percent": used,
                     "resets_at": data.get("resets_at"),
-                    "plan": data.get("plan", plan_name),
+                    "plan": data.get("plan") or plan_name,
                     "windows": data.get("windows", []),
                     "reset_credits": data.get("reset_credits"),
                 }
@@ -710,44 +759,67 @@ def collect_terminal_agents(home_dir: Path | str | None = None, herdr_bin: str =
         else:
             norm_provider = agent_type or "unknown"
 
-        session_id = str((a.get("agent_session") or {}).get("value") or "").lower()
-        transcript_path = ""
-        model = None
-        session_tokens = None
-
-        matched_p = index.get((norm_provider, session_id)) or index.get((agent_type, session_id))
-        if matched_p and matched_p.exists():
-            transcript_path = str(matched_p.resolve())
-            try:
-                # Read last 256KB to quickly extract model and token count
-                with matched_p.open('rb') as f:
-                    f.seek(max(0, matched_p.stat().st_size - 256 * 1024))
-                    for line in f.read().splitlines():
-                        try:
-                            ev = json.loads(line)
-                            if norm_provider == 'codex':
-                                if ev.get("type") == "turn_context" and "model" in ev.get("payload", {}):
-                                    model = ev["payload"]["model"]
-                                if ev.get("type") == "event_msg" and ev.get("payload", {}).get("type") == "token_count":
-                                    info = ev["payload"].get("info", {})
-                                    session_tokens = (info.get("total_token_usage") or {}).get("total_tokens")
-                            elif norm_provider == 'claude_code':
-                                msg = ev.get("message") or {}
-                                if "model" in msg:
-                                    model = msg["model"]
-                                usage = msg.get("usage") or {}
-                                if usage:
-                                    session_tokens = sum(usage.values())
-                        except Exception:
-                            continue
-            except Exception:
-                pass
-
         status = str(a.get("agent_status") or "idle")
         is_limit_reached = (status.lower() == "blocked")
         pane_id = str(a.get("pane_id") or "")
         tab_id = str(a.get("tab_id") or "")
         name = str(a.get("name") or pane_id or "terminal")
+
+        session_id = str((a.get("agent_session") or {}).get("value") or "").lower()
+        transcript_path = ""
+        model = None
+        session_tokens = None
+
+        if norm_provider == 'hermes':
+            s = _query_hermes_session(home, session_id if session_id else None)
+            if s:
+                model = s.get("model") or model
+                session_tokens = s.get("tokens") if s.get("tokens") is not None else session_tokens
+                if s.get("title"):
+                    name = s["title"]
+                transcript_path = f"hermes:{s['id']}"
+            else:
+                raw_title = str(a.get("terminal_title") or a.get("terminal_title_stripped") or "").strip()
+                if raw_title and "·" in raw_title:
+                    match = re.match(r"^(.*?)\s*·\s*([a-zA-Z0-9_\-\.]+)(?:\s*·\s*(.*))?$", raw_title)
+                    if match:
+                        fallback_title = match.group(1).strip()
+                        fallback_model = match.group(2).strip()
+                        if fallback_title:
+                            name = fallback_title
+                        if fallback_model:
+                            model = fallback_model
+                if session_id:
+                    transcript_path = f"hermes:{session_id}"
+        else:
+            matched_p = index.get((norm_provider, session_id)) or index.get((agent_type, session_id))
+            if matched_p and matched_p.exists():
+                transcript_path = str(matched_p.resolve())
+                try:
+                    # Read last 256KB to quickly extract model and token count
+                    with matched_p.open('rb') as f:
+                        f.seek(max(0, matched_p.stat().st_size - 256 * 1024))
+                        for line in f.read().splitlines():
+                            try:
+                                ev = json.loads(line)
+                                if norm_provider == 'codex':
+                                    if ev.get("type") == "turn_context" and "model" in ev.get("payload", {}):
+                                        model = ev["payload"]["model"]
+                                    if ev.get("type") == "event_msg" and ev.get("payload", {}).get("type") == "token_count":
+                                        info = ev["payload"].get("info", {})
+                                        session_tokens = (info.get("total_token_usage") or {}).get("total_tokens")
+                                elif norm_provider == 'claude_code':
+                                    msg = ev.get("message") or {}
+                                    if "model" in msg:
+                                        model = msg["model"]
+                                    usage = msg.get("usage") or {}
+                                    if usage:
+                                        session_tokens = sum(usage.values())
+                            except Exception:
+                                continue
+                except Exception:
+                    pass
+
         cwd = str(a.get("foreground_cwd") or a.get("cwd") or "")
         project = Path(cwd).name if cwd else ""
 
@@ -769,16 +841,48 @@ def collect_terminal_agents(home_dir: Path | str | None = None, herdr_bin: str =
 
 def analyze_session_task(transcript_path: str, target_provider: str = "codex", home_dir: Path | str | None = None, env: dict | None = None) -> dict:
     """Analyze a previous session transcript to determine task complexity and recommend optimal model and effort."""
-    p = Path(transcript_path).expanduser() if transcript_path else None
+    home = Path(home_dir).expanduser() if home_dir else Path.home()
     content = ""
-    if p and p.exists():
-        try:
-            with p.open('r', encoding='utf-8', errors='replace') as f:
-                lines = f.readlines()
-                # Examine last 50 lines of interaction
-                content = "\n".join(lines[-50:])
-        except Exception:
-            pass
+    if transcript_path and transcript_path.startswith("hermes:"):
+        session_id = transcript_path.split(":", 1)[1]
+        db_path = home / ".hermes" / "state.db"
+        if db_path.is_file():
+            try:
+                import sqlite3
+                conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+                try:
+                    cur = conn.cursor()
+                    cur.execute(
+                        "SELECT role, content FROM messages WHERE session_id = ? ORDER BY id DESC LIMIT 20",
+                        (session_id,)
+                    )
+                    rows = cur.fetchall()
+                    if not rows:
+                        cur.execute(
+                            "SELECT role, content FROM messages WHERE session_id LIKE ? ORDER BY id DESC LIMIT 20",
+                            (f"%{session_id}%",)
+                        )
+                        rows = cur.fetchall()
+                    rows.reverse()
+                    msgs = []
+                    for role, text in rows:
+                        if text:
+                            msgs.append(f"{role}: {text}")
+                    content = "\n".join(msgs)
+                finally:
+                    conn.close()
+            except Exception:
+                pass
+    else:
+        p = Path(transcript_path).expanduser() if transcript_path else None
+        if p and p.exists():
+            try:
+                with p.open('r', encoding='utf-8', errors='replace') as f:
+                    lines = f.readlines()
+                    # Examine last 50 lines of interaction
+                    content = "\n".join(lines[-50:])
+            except Exception:
+                pass
 
     content_lower = content.lower()
     # Assess task complexity heuristic fallback
@@ -792,7 +896,6 @@ def analyze_session_task(transcript_path: str, target_provider: str = "codex", h
     target = target_provider.lower().replace("-", "_")
 
     # Try live background analysis using the selected provider CLI
-    home = Path(home_dir).expanduser() if home_dir else Path.home()
     proc_env = dict(env or os.environ)
     local_bin = str(home / ".local" / "bin")
     if local_bin not in proc_env.get("PATH", ""):
@@ -814,6 +917,8 @@ def analyze_session_task(transcript_path: str, target_provider: str = "codex", h
         cmd = ["claude", "-p", "--dangerously-skip-permissions", eval_prompt]
     elif "anti" in target or "agy" in target:
         cmd = ["agy", "-p", "--dangerously-skip-permissions", eval_prompt]
+    elif "hermes" in target:
+        cmd = ["hermes", "chat", "-q", eval_prompt, "--oneshot", "-Q"]
 
     if cmd:
         try:
@@ -850,6 +955,11 @@ def analyze_session_task(transcript_path: str, target_provider: str = "codex", h
         effort = "high" if is_complex else "medium"
     elif "anti" in target or "agy" in target:
         model = "gemini-2.5-pro" if is_complex else "gemini-2.5-flash"
+        effort = "high" if is_complex else "medium"
+    elif "hermes" in target:
+        config = _read_hermes_config(home)
+        model_conf = config.get("model", {}) if isinstance(config, dict) else {}
+        model = str(model_conf.get("default", "") or model_conf.get("model", "")).strip() or "qwen3.8-flash-next"
         effort = "high" if is_complex else "medium"
     else:
         model = "qwen3.8-flash-next"
@@ -892,3 +1002,12 @@ def collect_provider_telemetry(home_dir: Path | str | None = None, env: dict | N
         "providers": providers,
         "terminal_agents": terminals,
     }
+
+
+def main():
+    telemetry = collect_provider_telemetry()
+    print(json.dumps(telemetry, indent=2))
+
+
+if __name__ == '__main__':
+    main()

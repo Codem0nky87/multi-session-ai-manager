@@ -4,6 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
+import sys
 
 resources_dir = Path(__file__).resolve().parent.parent / "app" / "MultiSessionAIManager" / "Resources"
 
@@ -343,6 +344,219 @@ class ProviderPulseTests(unittest.TestCase):
                     self.assertEqual(kwargs.get("home_dir"), self.tmp_path)
                     self.assertEqual(kwargs.get("env"), test_env)
                     self.assertIn("codex", res["providers"])
+
+    def test_query_hermes_session_reads_sqlite_state_db(self):
+        # 1. Non-existent DB returns None
+        self.assertIsNone(self.pulse_module._query_hermes_session(self.tmp_path))
+
+        # 2. Create state.db
+        hermes_dir = self.tmp_path / ".hermes"
+        hermes_dir.mkdir(parents=True, exist_ok=True)
+        db_path = hermes_dir / "state.db"
+
+        import sqlite3
+        conn = sqlite3.connect(db_path)
+        conn.execute("""
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                model TEXT,
+                title TEXT,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                started_at REAL NOT NULL
+            )
+        """)
+        conn.execute(
+            "INSERT INTO sessions (id, model, title, input_tokens, output_tokens, started_at) VALUES (?, ?, ?, ?, ?, ?)",
+            ("sess-1", "qwen3.8-flash-next", "First Task", 1000, 250, 100.0)
+        )
+        conn.execute(
+            "INSERT INTO sessions (id, model, title, input_tokens, output_tokens, started_at) VALUES (?, ?, ?, ?, ?, ?)",
+            ("cron_abc_20261106", "qwen-coder-32b", "Second Task", 2000, 500, 200.0)
+        )
+        conn.commit()
+        conn.close()
+
+        # Without session_id -> latest session
+        latest = self.pulse_module._query_hermes_session(self.tmp_path)
+        self.assertIsNotNone(latest)
+        self.assertEqual(latest["id"], "cron_abc_20261106")
+        self.assertEqual(latest["model"], "qwen-coder-32b")
+        self.assertEqual(latest["title"], "Second Task")
+        self.assertEqual(latest["tokens"], 2500)
+
+        # Exact session_id
+        s1 = self.pulse_module._query_hermes_session(self.tmp_path, session_id="sess-1")
+        self.assertIsNotNone(s1)
+        self.assertEqual(s1["id"], "sess-1")
+        self.assertEqual(s1["tokens"], 1250)
+
+        # Partial session_id (LIKE)
+        sp = self.pulse_module._query_hermes_session(self.tmp_path, session_id="abc_20261106")
+        self.assertIsNotNone(sp)
+        self.assertEqual(sp["id"], "cron_abc_20261106")
+
+        # Unknown session_id
+        self.assertIsNone(self.pulse_module._query_hermes_session(self.tmp_path, session_id="non-existent"))
+
+    def test_collect_hermes_quota_includes_model_in_plan_and_handles_custom(self):
+        hermes_dir = self.tmp_path / ".hermes"
+        hermes_dir.mkdir(parents=True, exist_ok=True)
+        conf_path = hermes_dir / "config.yaml"
+        conf_path.write_text("model:\n  provider: custom\n  default: qwen3.8-flash-next\n")
+
+        stderr_msg = "No account usage available for provider 'custom'\n"
+        mock_proc = MagicMock(returncode=1, stdout="", stderr=stderr_msg)
+        with patch("subprocess.run", return_value=mock_proc):
+            res = self.pulse_module.collect_hermes_quota(home_dir=self.tmp_path)
+            self.assertEqual(res["state"], "HEALTHY")
+            self.assertEqual(res["plan"], "custom (qwen3.8-flash-next)")
+            self.assertEqual(res["used_percent"], 0.0)
+
+        # When error contains 'login' or 'auth', custom endpoint must still be HEALTHY
+        mock_proc_auth = MagicMock(returncode=1, stdout="", stderr="authentication error from proxy")
+        with patch("subprocess.run", return_value=mock_proc_auth):
+            res = self.pulse_module.collect_hermes_quota(home_dir=self.tmp_path)
+            self.assertEqual(res["state"], "HEALTHY")
+            self.assertEqual(res["plan"], "custom (qwen3.8-flash-next)")
+
+    def test_collect_terminal_agents_hermes_session_and_fallback(self):
+        hermes_dir = self.tmp_path / ".hermes"
+        hermes_dir.mkdir(parents=True, exist_ok=True)
+        db_path = hermes_dir / "state.db"
+
+        import sqlite3
+        conn = sqlite3.connect(db_path)
+        conn.execute("""
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                model TEXT,
+                title TEXT,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                started_at REAL NOT NULL
+            )
+        """)
+        conn.execute(
+            "INSERT INTO sessions (id, model, title, input_tokens, output_tokens, started_at) VALUES (?, ?, ?, ?, ?, ?)",
+            ("hermes-sess-42", "qwen3.8-flash-next", "Refactor Core", 5000, 1200, 100.0)
+        )
+        conn.commit()
+        conn.close()
+
+        # 1. Herdr agent matched in state.db
+        herdr_agents_cache = self.tmp_path / ".local" / "state" / "msam-host-agent" / "agents.json"
+        herdr_agents_cache.parent.mkdir(parents=True, exist_ok=True)
+        agents_data = {
+            "sessions": [
+                {
+                    "agents": [
+                        {
+                            "pane_id": "%1",
+                            "agent": "hermes",
+                            "name": "hermes-agent",
+                            "agent_session": {"value": "hermes-sess-42"},
+                            "agent_status": "active",
+                            "cwd": "/home/user/project"
+                        },
+                        {
+                            "pane_id": "%2",
+                            "agent": "hermes",
+                            "name": "terminal",
+                            "agent_session": {"value": "unknown-sess"},
+                            "terminal_title": "Fix Telemetry · qwen3.8-flash-next · /workspace",
+                            "agent_status": "active",
+                            "cwd": "/workspace"
+                        }
+                    ]
+                }
+            ]
+        }
+        herdr_agents_cache.write_text(json.dumps(agents_data))
+
+        terminals = self.pulse_module.collect_terminal_agents(home_dir=self.tmp_path)
+        self.assertEqual(len(terminals), 2)
+
+        # Matched agent
+        t1 = terminals[0]
+        self.assertEqual(t1["provider"], "hermes")
+        self.assertEqual(t1["model"], "qwen3.8-flash-next")
+        self.assertEqual(t1["session_tokens"], 6200)
+        self.assertEqual(t1["name"], "Refactor Core")
+        self.assertEqual(t1["transcript_path"], "hermes:hermes-sess-42")
+
+        # Fallback regex agent
+        t2 = terminals[1]
+        self.assertEqual(t2["provider"], "hermes")
+        self.assertEqual(t2["model"], "qwen3.8-flash-next")
+        self.assertEqual(t2["name"], "Fix Telemetry")
+
+    def test_analyze_session_task_hermes_queries_db_and_invokes_cli(self):
+        hermes_dir = self.tmp_path / ".hermes"
+        hermes_dir.mkdir(parents=True, exist_ok=True)
+        db_path = hermes_dir / "state.db"
+
+        import sqlite3
+        conn = sqlite3.connect(db_path)
+        conn.execute("""
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT
+            )
+        """)
+        conn.execute("INSERT INTO messages (session_id, role, content) VALUES (?, ?, ?)",
+                     ("sess-99", "user", "Fix crash and fatal error in pipeline"))
+        conn.execute("INSERT INTO messages (session_id, role, content) VALUES (?, ?, ?)",
+                     ("sess-99", "assistant", "Looking into the fatal error traceback"))
+        conn.commit()
+        conn.close()
+
+        # Live Hermes CLI invocation
+        cli_response = '{"model": "qwen3.8-flash-next", "effort": "high", "summary": "Investigating crash"}'
+        mock_proc = MagicMock(returncode=0, stdout=cli_response)
+        with patch("subprocess.run", return_value=mock_proc) as mock_run:
+            analysis = self.pulse_module.analyze_session_task(
+                transcript_path="hermes:sess-99",
+                target_provider="hermes",
+                home_dir=self.tmp_path
+            )
+            self.assertTrue(mock_run.called)
+            called_cmd = mock_run.call_args[0][0]
+            self.assertEqual(called_cmd[0], "hermes")
+            self.assertEqual(called_cmd[1:3], ["chat", "-q"])
+            self.assertIn("--oneshot", called_cmd)
+            self.assertIn("-Q", called_cmd)
+            self.assertEqual(analysis["model"], "qwen3.8-flash-next")
+            self.assertEqual(analysis["effort"], "high")
+            self.assertTrue(analysis["is_complex"])
+
+        # Fallback heuristic when CLI fails
+        conf_path = hermes_dir / "config.yaml"
+        conf_path.write_text("model:\n  provider: custom\n  default: my-custom-model\n")
+        with patch("subprocess.run", side_effect=FileNotFoundError):
+            analysis = self.pulse_module.analyze_session_task(
+                transcript_path="hermes:sess-99",
+                target_provider="hermes",
+                home_dir=self.tmp_path
+            )
+            self.assertEqual(analysis["model"], "my-custom-model")
+            self.assertEqual(analysis["effort"], "high")
+            self.assertTrue(analysis["is_complex"])
+
+    def test_provider_pulse_file_has_shebang_and_main_runner(self):
+        target_path = resources_dir / "msam-provider-pulse.py"
+        first_line = target_path.read_text(encoding="utf-8").splitlines()[0]
+        self.assertEqual(first_line, "#!/usr/bin/env python3")
+
+        import subprocess
+        proc = subprocess.run([sys.executable, str(target_path)], capture_output=True, text=True, timeout=10)
+        self.assertEqual(proc.returncode, 0)
+        data = json.loads(proc.stdout)
+        self.assertIn("providers", data)
+        self.assertIn("terminal_agents", data)
+        self.assertIn("installed_integrations", data)
 
 
 if __name__ == '__main__':
