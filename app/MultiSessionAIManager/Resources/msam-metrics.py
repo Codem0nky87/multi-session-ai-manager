@@ -12,6 +12,7 @@ import re
 import shutil
 import platform
 from pathlib import Path
+from datetime import datetime, timezone
 
 METRICS_VERSION = "2.5.0"
 
@@ -1384,6 +1385,8 @@ def match_cpu_tdp_model(model_name: str, arch: str | None = None) -> float | Non
         return 30.0
 
     # AMD Ryzen specific models
+    if "9950X3D" in name:
+        return 200.0
     if "9950X" in name:
         return 170.0
     if "7950X" in name or "7900X" in name:
@@ -1413,8 +1416,15 @@ def match_cpu_tdp_model(model_name: str, arch: str | None = None) -> float | Non
     return 65.0
 
 
-def get_cpu_tdp(sys_root="/sys", proc_root=None) -> float | None:
+def get_cpu_tdp(sys_root="/sys", proc_root=None, model_name=None) -> float | None:
     """Estimates CPU TDP in Watts from RAPL powercap constraints or CPU model heuristics."""
+    if model_name:
+        return match_cpu_tdp_model(model_name)
+    if isinstance(sys_root, str) and not sys_root.startswith(('/', '.')):
+        matched = match_cpu_tdp_model(sys_root)
+        if matched is not None:
+            return matched
+
     # 1. RAPL constraint_0_power_limit_uw (PL1 in microwatts)
     try:
         powercap_dir = Path(sys_root) / 'class/powercap'
@@ -1841,7 +1851,7 @@ class MetricsHistoryDB:
     def record_sample(self, timestamp, cpu_util, cpu_temp, cpu_watts,
                       mem_used_gb, mem_total_gb, gpu_util, gpu_temp,
                       gpu_watts, net_down_kbps, net_up_kbps, system_watts,
-                      power_source):
+                      power_source=None):
         """Insert or replace a metric snapshot."""
         with self.conn:
             self.conn.execute("""
@@ -1948,9 +1958,21 @@ class MetricsHistoryDB:
          avg_net_up, max_net_up,
          avg_sys_watts, max_sys_watts, min_sys_watts) = row
 
-        # Time series integration for kWh and Network Volume
+        # Time series integration for kWh and Network Volume and sample extraction
         cur.execute("""
-            SELECT timestamp, system_watts, net_down_kbps, net_up_kbps
+            SELECT
+                timestamp,
+                cpu_util,
+                cpu_temp,
+                cpu_watts,
+                mem_used_gb,
+                mem_total_gb,
+                gpu_util,
+                gpu_temp,
+                gpu_watts,
+                net_down_kbps,
+                net_up_kbps,
+                system_watts
             FROM metrics_samples
             WHERE timestamp >= ? AND timestamp <= ?
             ORDER BY timestamp ASC
@@ -1958,14 +1980,39 @@ class MetricsHistoryDB:
         ts_rows = cur.fetchall()
         cur.close()
 
+        samples = []
+        for r in ts_rows:
+            ts = float(r[0])
+            samples.append({
+                "timestamp": ts,
+                "time": datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+                "cpu_util_pct": round(r[1], 2) if r[1] is not None else None,
+                "cpu_temp_c": round(r[2], 1) if r[2] is not None else None,
+                "cpu_watts": round(r[3], 2) if r[3] is not None else None,
+                "mem_used_gb": round(r[4], 2) if r[4] is not None else None,
+                "mem_total_gb": round(r[5], 2) if r[5] is not None else None,
+                "gpu_util_pct": round(r[6], 2) if r[6] is not None else None,
+                "gpu_temp_c": round(r[7], 1) if r[7] is not None else None,
+                "gpu_watts": round(r[8], 2) if r[8] is not None else None,
+                "net_down_kbps": round(r[9], 2) if r[9] is not None else None,
+                "net_up_kbps": round(r[10], 2) if r[10] is not None else None,
+                "system_watts": round(r[11], 2) if r[11] is not None else None,
+            })
+
+        if len(samples) > 1500:
+            stride = math.ceil(len(samples) / 1000)
+            samples = [samples[0]] + samples[1:-1:stride] + [samples[-1]]
+
         total_kwh = 0.0
         total_down_kb = 0.0
         total_up_kb = 0.0
 
         if len(ts_rows) >= 2:
             for i in range(1, len(ts_rows)):
-                t_prev, w_prev, down_prev, up_prev = ts_rows[i - 1]
-                t_curr, w_curr, down_curr, up_curr = ts_rows[i]
+                r_prev = ts_rows[i - 1]
+                r_curr = ts_rows[i]
+                t_prev, w_prev, down_prev, up_prev = r_prev[0], r_prev[11], r_prev[9], r_prev[10]
+                t_curr, w_curr, down_curr, up_curr = r_curr[0], r_curr[11], r_curr[9], r_curr[10]
                 dt = t_curr - t_prev
                 if dt > 0:
                     dt_hours = dt / 3600.0
@@ -2009,10 +2056,15 @@ class MetricsHistoryDB:
         if cost_per_kwh is not None:
             cost = round(total_kwh * float(cost_per_kwh), 4)
 
+        start_iso = datetime.fromtimestamp(start_time, tz=timezone.utc).isoformat() if start_time is not None else None
+        end_iso = datetime.fromtimestamp(end_time, tz=timezone.utc).isoformat() if end_time is not None else None
+
         return {
             "period": {
                 "start_time": start_time,
                 "end_time": end_time,
+                "start_iso": start_iso,
+                "end_iso": end_iso,
                 "sample_count": sample_count or 0,
             },
             "cpu": {
@@ -2069,7 +2121,8 @@ class MetricsHistoryDB:
                 "total_kwh": round(total_kwh, 4),
                 "cost": cost,
                 "cost_per_kwh": cost_per_kwh,
-            }
+            },
+            "samples": samples,
         }
 
     def close(self):

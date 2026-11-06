@@ -1190,7 +1190,9 @@ Combined Power (CPU + GPU + ANE): 4340 mW
 
         # 3. Model name matching on Linux
         models = [
-            ('AMD Ryzen 9 9950X3D 16-Core Processor', 170.0),
+            ('AMD Ryzen 9 9950X3D 16-Core Processor', 200.0),
+            ('AMD Ryzen 9 9950X3D2 16-Core Processor', 200.0),
+            ('AMD Ryzen 9 9950X 16-Core Processor', 170.0),
             ('AMD Ryzen 9 7900X 12-Core Processor', 170.0),
             ('AMD Ryzen 9 9900X 12-Core Processor', 120.0),
             ('AMD Ryzen 7 7800X3D 8-Core Processor', 120.0),
@@ -1337,6 +1339,104 @@ Combined Power (CPU + GPU + ANE): 4340 mW
             self.assertEqual(sample['cpuWatts'], 3.0)
             self.assertEqual(sample['totalWatts'], 3.0)
             self.assertEqual(sample['source'], 'est')
+
+    def test_get_cpu_tdp_9950x3d(self):
+        # 1. Direct model string lookup
+        self.assertEqual(m.get_cpu_tdp("AMD Ryzen 9 9950X3D2 16-Core Processor"), 200.0)
+        self.assertEqual(m.get_cpu_tdp("AMD Ryzen 9 9950X3D"), 200.0)
+        self.assertEqual(m.get_cpu_tdp("AMD Ryzen 9 9950X"), 170.0)
+
+        # 2. Linux proc/cpuinfo model name lookup
+        self.write('proc/cpuinfo', 'model name : AMD Ryzen 9 9950X3D2 16-Core Processor\n')
+        self.assertEqual(
+            m.get_cpu_tdp(sys_root=str(self.root / 'sys'), proc_root=str(self.root / 'proc')),
+            200.0
+        )
+
+    def test_get_report_data_samples_time_series(self):
+        db_path = self.root / 'test_report_samples.db'
+        db = m.MetricsHistoryDB(db_path=str(db_path))
+        try:
+            t0 = 1700000000.0
+            db.record_sample(
+                timestamp=t0,
+                cpu_util=25.5, cpu_temp=45.2, cpu_watts=35.0,
+                mem_used_gb=8.5, mem_total_gb=32.0,
+                gpu_util=15.0, gpu_temp=55.0, gpu_watts=25.0,
+                net_down_kbps=150.0, net_up_kbps=50.0,
+                system_watts=75.0, power_source='rapl+nvml'
+            )
+            db.record_sample(
+                timestamp=t0 + 60.0,
+                cpu_util=35.0, cpu_temp=50.0, cpu_watts=45.0,
+                mem_used_gb=9.0, mem_total_gb=32.0,
+                gpu_util=20.0, gpu_temp=60.0, gpu_watts=30.0,
+                net_down_kbps=200.0, net_up_kbps=60.0,
+                system_watts=85.0, power_source='rapl+nvml'
+            )
+
+            data = db.get_report_data(t0, t0 + 60.0)
+
+            # Check period ISO fields
+            self.assertIn('start_iso', data['period'])
+            self.assertIn('end_iso', data['period'])
+            self.assertEqual(data['period']['sample_count'], 2)
+
+            # Check samples list
+            self.assertIn('samples', data)
+            samples = data['samples']
+            self.assertEqual(len(samples), 2)
+
+            s0 = samples[0]
+            self.assertEqual(s0['timestamp'], t0)
+            self.assertIn('T', s0['time'])  # ISO 8601 string
+            self.assertEqual(s0['cpu_util_pct'], 25.5)
+            self.assertEqual(s0['cpu_temp_c'], 45.2)
+            self.assertEqual(s0['cpu_watts'], 35.0)
+            self.assertEqual(s0['mem_used_gb'], 8.5)
+            self.assertEqual(s0['mem_total_gb'], 32.0)
+            self.assertEqual(s0['gpu_util_pct'], 15.0)
+            self.assertEqual(s0['gpu_temp_c'], 55.0)
+            self.assertEqual(s0['gpu_watts'], 25.0)
+            self.assertEqual(s0['net_down_kbps'], 150.0)
+            self.assertEqual(s0['net_up_kbps'], 50.0)
+            self.assertEqual(s0['system_watts'], 75.0)
+
+            s1 = samples[1]
+            self.assertEqual(s1['timestamp'], t0 + 60.0)
+            self.assertEqual(s1['cpu_util_pct'], 35.0)
+            self.assertEqual(s1['system_watts'], 85.0)
+        finally:
+            db.close()
+
+    def test_get_report_data_samples_downsampling(self):
+        db_path = self.root / 'test_report_downsample.db'
+        db = m.MetricsHistoryDB(db_path=str(db_path))
+        try:
+            t0 = 1700000000.0
+            count = 2000
+            for i in range(count):
+                db.record_sample(
+                    timestamp=t0 + i,
+                    cpu_util=float(i % 100), cpu_temp=40.0, cpu_watts=50.0,
+                    mem_used_gb=16.0, mem_total_gb=64.0,
+                    gpu_util=10.0, gpu_temp=50.0, gpu_watts=20.0,
+                    net_down_kbps=100.0, net_up_kbps=20.0,
+                    system_watts=80.0, power_source='rapl+nvml'
+                )
+
+            data = db.get_report_data(t0, t0 + count - 1)
+
+            self.assertEqual(data['period']['sample_count'], count)
+            samples = data['samples']
+            # Must downsample to <= 1500 points
+            self.assertLessEqual(len(samples), 1500)
+            self.assertGreaterEqual(len(samples), 500)
+            # Boundary endpoints must be preserved
+            self.assertEqual(samples[0]['timestamp'], t0)
+            self.assertEqual(samples[-1]['timestamp'], t0 + count - 1)
+        finally:
+            db.close()
 
 
 
