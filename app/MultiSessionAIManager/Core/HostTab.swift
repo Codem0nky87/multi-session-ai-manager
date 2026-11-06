@@ -68,6 +68,26 @@ final class HostTabStore {
         save()
     }
 
+    /// Reorder tabs by moving a tab from one index to another.
+    func moveTab(from sourceIndex: Int, to destinationIndex: Int) {
+        guard sourceIndex >= 0, sourceIndex < tabs.count,
+              destinationIndex >= 0, destinationIndex < tabs.count,
+              sourceIndex != destinationIndex else { return }
+        let tab = tabs.remove(at: sourceIndex)
+        tabs.insert(tab, at: destinationIndex)
+        save()
+    }
+
+    /// Reorder tabs by moving a source tab to the position of a target tab.
+    func moveTab(id sourceID: UUID, toTargetID targetID: UUID) {
+        guard let sourceIndex = tabs.firstIndex(where: { $0.id == sourceID }),
+              let targetIndex = tabs.firstIndex(where: { $0.id == targetID }),
+              sourceIndex != targetIndex else { return }
+        let tab = tabs.remove(at: sourceIndex)
+        tabs.insert(tab, at: targetIndex)
+        save()
+    }
+
     /// Set an explicit theme for a tab, or pass nil to inherit the global default.
     func setTheme(_ themeID: String?, for id: UUID) {
         guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }

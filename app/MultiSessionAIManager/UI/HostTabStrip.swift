@@ -43,6 +43,16 @@ struct HostTabStrip: View {
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("host.tab.\(tab.id.uuidString)")
                     .accessibilityAddTraits(selected ? .isSelected : [])
+                    .draggable(tab.id.uuidString)
+                    .dropDestination(for: String.self) { items, _ in
+                        guard let droppedString = items.first,
+                              let sourceID = UUID(uuidString: droppedString),
+                              sourceID != tab.id else { return false }
+                        withAnimation(Theme.spring) {
+                            store.moveTab(id: sourceID, toTargetID: tab.id)
+                        }
+                        return true
+                    }
                     .contextMenu {
                         Menu("Theme") {
                             Button("Default (Global)") {

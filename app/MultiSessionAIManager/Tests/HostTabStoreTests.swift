@@ -132,4 +132,23 @@ import Testing
         #expect(tabs[0].sessionName == "legacy")
         #expect(tabs[0].themeID == nil)
     }
+
+    @Test func movingTabsReordersThemAndPersists() {
+        let defaults = makeDefaults()
+        let store = HostTabStore(defaults: defaults)
+        let t1 = store.open(hostID: UUID(), sessionName: "tab1")
+        let t2 = store.open(hostID: UUID(), sessionName: "tab2")
+        let t3 = store.open(hostID: UUID(), sessionName: "tab3")
+
+        #expect(store.tabs.map(\.id) == [t1.id, t2.id, t3.id])
+
+        store.moveTab(from: 0, to: 2)
+        #expect(store.tabs.map(\.id) == [t2.id, t3.id, t1.id])
+
+        store.moveTab(id: t1.id, toTargetID: t2.id)
+        #expect(store.tabs.map(\.id) == [t1.id, t2.id, t3.id])
+
+        let reloaded = HostTabStore(defaults: defaults)
+        #expect(reloaded.tabs.map(\.id) == [t1.id, t2.id, t3.id])
+    }
 }
