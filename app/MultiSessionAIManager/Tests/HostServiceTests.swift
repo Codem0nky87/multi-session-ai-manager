@@ -163,7 +163,7 @@ import Testing
         await session.stop()
     }
 
-    @Test func metricsReportCommandFormatsProperlyForUnixAndWindows() {
+    @Test func metricsReportCommandFormatsProperlyForUnixAndWindows() throws {
         let unixAll = HostServiceInstaller.metricsReportCommand(period: nil, isWindows: false)
         #expect(unixAll.contains("msam-host-agent\" report --format json"))
         #expect(!unixAll.contains("--period"))
@@ -172,7 +172,11 @@ import Testing
         #expect(unix24h.contains("report --format json --period '24h'"))
 
         let win7d = HostServiceInstaller.metricsReportCommand(period: "7d", isWindows: true)
-        #expect(win7d.contains("msam-host-agent.cmd\" report --format json --period '7d'"))
-        #expect(win7d.contains("exit $LASTEXITCODE"))
+        #expect(win7d.hasPrefix("powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand "))
+        let encoded = try #require(win7d.split(separator: " ").last)
+        let data = try #require(Data(base64Encoded: String(encoded)))
+        let script = try #require(String(data: data, encoding: .utf16LittleEndian))
+        #expect(script.contains("msam-host-agent.cmd\" report --format json --period '7d'"))
+        #expect(script.contains("exit $LASTEXITCODE"))
     }
 }
