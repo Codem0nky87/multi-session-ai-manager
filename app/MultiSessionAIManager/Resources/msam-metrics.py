@@ -1374,6 +1374,10 @@ def match_cpu_tdp_model(model_name: str, arch: str | None = None) -> float | Non
         return None
     name = model_name.upper()
 
+    # NVIDIA DGX / Spark
+    if "DGX" in name or "SPARK" in name:
+        return 140.0
+
     # Apple Silicon
     if "APPLE" in name:
         if "ULTRA" in name:
@@ -1427,6 +1431,16 @@ def get_cpu_tdp(sys_root="/sys", proc_root=None, model_name=None) -> float | Non
 
     # 1. RAPL constraint_0_power_limit_uw (PL1 in microwatts)
     try:
+        # Check DMI product name or device-tree (e.g. NVIDIA DGX Spark)
+        for p in (Path(sys_root) / 'class/dmi/id/product_name', Path('/proc/device-tree/model')):
+            try:
+                if p.exists():
+                    val = p.read_text(errors='replace').strip('\x00\n ').upper()
+                    if "DGX" in val and "SPARK" in val:
+                        return 140.0
+            except OSError:
+                pass
+
         powercap_dir = Path(sys_root) / 'class/powercap'
         if powercap_dir.exists():
             candidates = sorted(
@@ -1498,6 +1512,8 @@ def get_cpu_tdp(sys_root="/sys", proc_root=None, model_name=None) -> float | Non
                     if matched is not None:
                         return matched
                 if is_arm:
+                    if core_count >= 20:
+                        return 140.0
                     return 65.0 if core_count >= 16 else 30.0
             except OSError:
                 pass
@@ -1525,7 +1541,7 @@ GPU_TDP_MODELS = [
     ("3080", 320.0),
     ("3070", 220.0),
     ("3060", 170.0),
-    ("GB10", 70.0),
+    ("GB10", 140.0),
     ("GB200", 1000.0),
     ("GH200", 900.0),
     ("H100", 700.0),

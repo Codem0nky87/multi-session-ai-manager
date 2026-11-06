@@ -1353,6 +1353,24 @@ Combined Power (CPU + GPU + ANE): 4340 mW
             200.0
         )
 
+    def test_dgx_spark_cpu_and_gpu_tdp(self):
+        # 1. DGX Spark CPU model string lookup
+        self.assertEqual(m.get_cpu_tdp("NVIDIA_DGX_Spark"), 140.0)
+        self.assertEqual(m.get_cpu_tdp("DGX Spark"), 140.0)
+
+        # 2. DMI product_name lookup
+        self.write('sys/class/dmi/id/product_name', 'NVIDIA_DGX_Spark\n')
+        self.assertEqual(
+            m.get_cpu_tdp(sys_root=str(self.root / 'sys')),
+            140.0
+        )
+
+        # 3. GB10 GPU TDP lookup
+        self.assertEqual(m.match_gpu_tdp_model("NVIDIA GB10"), 140.0)
+
+        # 4. Recommended PSU calculation for DGX Spark (140W CPU + 140W GPU + 80W) * 1.4 = 504W -> 550W tier
+        self.assertEqual(m.calculate_recommended_psu(140.0, 140.0), 550.0)
+
     def test_get_report_data_samples_time_series(self):
         db_path = self.root / 'test_report_samples.db'
         db = m.MetricsHistoryDB(db_path=str(db_path))
