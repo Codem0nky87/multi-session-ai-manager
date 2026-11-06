@@ -506,11 +506,51 @@ def get_installed_herdr_integrations(home_dir: Path | str | None = None, herdr_b
     return installed
 
 
+def _read_hermes_config(home: Path) -> dict:
+    conf_path = home / '.hermes/config.yaml'
+    if not conf_path.is_file():
+        return {}
+    try:
+        conf_text = conf_path.read_text(encoding='utf-8', errors='ignore')
+    except Exception:
+        return {}
+    try:
+        import yaml
+        loaded = yaml.safe_load(conf_text)
+        if isinstance(loaded, dict):
+            return loaded
+    except Exception:
+        pass
+    res = {}
+    model_sec = {}
+    in_model = False
+    for line in conf_text.splitlines():
+        trimmed = line.strip()
+        if not trimmed or trimmed.startswith('#'):
+            continue
+        if line.startswith('model:'):
+            in_model = True
+            continue
+        elif not line.startswith(' ') and not line.startswith('\t') and in_model:
+            in_model = False
+        if in_model and ':' in trimmed:
+            k, v = trimmed.split(':', 1)
+            model_sec[k.strip()] = v.strip().strip("'\"")
+    res['model'] = model_sec
+    return res
+
+
 def collect_hermes_quota(home_dir: Path | str | None = None, hermes_bin: str = "hermes", env: dict | None = None) -> dict:
     """Query Hermes usage."""
     home = Path(home_dir).expanduser() if home_dir else Path.home()
     proc_env = _get_process_env(home, env)
     exe = _find_bin(home, hermes_bin, proc_env) or hermes_bin
+
+    config = _read_hermes_config(home)
+    model_conf = config.get("model", {}) if isinstance(config, dict) else {}
+    configured_provider = str(model_conf.get("provider", "")).strip().lower()
+    plan_name = configured_provider or "custom"
+
     try:
         res = subprocess.run([exe, "usage", "--json"], capture_output=True, text=True, timeout=8, env=proc_env)
         if res.returncode == 0:
@@ -522,7 +562,7 @@ def collect_hermes_quota(home_dir: Path | str | None = None, hermes_bin: str = "
                     "state": state,
                     "used_percent": used,
                     "resets_at": data.get("resets_at"),
-                    "plan": data.get("plan", "custom"),
+                    "plan": data.get("plan", plan_name),
                     "windows": data.get("windows", []),
                     "reset_credits": data.get("reset_credits"),
                 }
@@ -532,20 +572,63 @@ def collect_hermes_quota(home_dir: Path | str | None = None, hermes_bin: str = "
                 "state": "HEALTHY",
                 "used_percent": 0.0,
                 "resets_at": None,
-                "plan": "custom",
+                "plan": plan_name,
                 "windows": [],
                 "reset_credits": None,
             }
+
         combined = f"{res.stdout} {res.stderr}".lower()
-        if "login" in combined or "auth" in combined or "credential" in combined:
-            return {"state": "SIGN_IN_REQUIRED", "used_percent": 0.0, "resets_at": None, "plan": "custom", "windows": [], "reset_credits": None}
-        return {"state": "UNAVAILABLE", "used_percent": 0.0, "resets_at": None, "plan": "custom", "windows": [], "reset_credits": None}
-    except Exception:
+
+        # If Hermes is configured with a local/custom provider (like vLLM, Ollama, private server)
+        # or reports that the provider has no usage endpoint, it is fully operational and unmetered.
+        if (
+            "has no usage endpoint" in combined
+            or configured_provider in ("custom", "local", "ollama", "vllm", "llama", "spark")
+            or "provider 'custom'" in combined
+            or "provider 'local'" in combined
+        ):
+            return {
+                "state": "HEALTHY",
+                "used_percent": 0.0,
+                "resets_at": None,
+                "plan": plan_name,
+                "windows": [],
+                "reset_credits": None,
+            }
+
+        if "login" in combined or "auth" in combined or ("credential" in combined and "no credential is configured for it" not in combined):
+            return {
+                "state": "SIGN_IN_REQUIRED",
+                "used_percent": 0.0,
+                "resets_at": None,
+                "plan": plan_name,
+                "windows": [],
+                "reset_credits": None,
+            }
+
         return {
             "state": "UNAVAILABLE",
             "used_percent": 0.0,
             "resets_at": None,
-            "plan": "custom",
+            "plan": plan_name,
+            "windows": [],
+            "reset_credits": None,
+        }
+    except Exception:
+        if configured_provider in ("custom", "local", "ollama", "vllm", "spark"):
+            return {
+                "state": "HEALTHY",
+                "used_percent": 0.0,
+                "resets_at": None,
+                "plan": plan_name,
+                "windows": [],
+                "reset_credits": None,
+            }
+        return {
+            "state": "UNAVAILABLE",
+            "used_percent": 0.0,
+            "resets_at": None,
+            "plan": plan_name,
             "windows": [],
             "reset_credits": None,
         }

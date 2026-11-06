@@ -251,6 +251,29 @@ class ProviderPulseTests(unittest.TestCase):
         with patch("subprocess.run", side_effect=FileNotFoundError):
             res = self.pulse_module.collect_hermes_quota(home_dir=self.tmp_path)
             self.assertEqual(res["state"], "UNAVAILABLE")
+
+    def test_collect_hermes_quota_local_or_custom_endpoint_is_healthy(self):
+        stderr_msg = "No account usage available for provider 'custom': no credential is configured for it, the provider has no usage endpoint, or the fetch failed.\n"
+        mock_proc = MagicMock(returncode=1, stdout="", stderr=stderr_msg)
+        with patch("subprocess.run", return_value=mock_proc):
+            res = self.pulse_module.collect_hermes_quota(home_dir=self.tmp_path)
+            self.assertEqual(res["state"], "HEALTHY")
+            self.assertEqual(res["plan"], "custom")
+            self.assertEqual(res["used_percent"], 0.0)
+
+    def test_collect_hermes_quota_parses_json_usage(self):
+        stdout_json = json.dumps({
+            "used_percent": 42.5,
+            "plan": "pro",
+            "resets_at": "2026-11-08T12:00:00Z",
+            "windows": [{"group": "daily", "used_percent": 42.5}]
+        })
+        mock_proc = MagicMock(returncode=0, stdout=stdout_json, stderr="")
+        with patch("subprocess.run", return_value=mock_proc):
+            res = self.pulse_module.collect_hermes_quota(home_dir=self.tmp_path)
+            self.assertEqual(res["state"], "HEALTHY")
+            self.assertEqual(res["plan"], "pro")
+            self.assertEqual(res["used_percent"], 42.5)
         status_output = (
             "pi: not installed (/home/rufus/.pi/agent/extensions/herdr-agent-state.ts)\n"
             "omp: not installed (/home/rufus/.omp/agent/extensions/herdr-omp-agent-state.ts)\n"
