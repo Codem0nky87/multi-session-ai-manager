@@ -96,5 +96,18 @@ import Testing
         )
         #expect(agy.contains("agy --model gemini-2.5-pro"))
         #expect(!agy.contains("--yolo"))
+
+        let hermes = HerdrSessionRollover.makeLaunchCommand(
+            provider: "hermes",
+            model: "qwen3.8-flash-next",
+            effort: "high",
+            autoApprove: true,
+            transcriptPath: nil,
+            project: "/app"
+        )
+        #expect(hermes.contains("hermes chat -q"))
+        #expect(hermes.contains("--yolo"))
+        #expect(hermes.contains("-m qwen3.8-flash-next"))
+        #expect(!hermes.contains("-z"))
     }
 }

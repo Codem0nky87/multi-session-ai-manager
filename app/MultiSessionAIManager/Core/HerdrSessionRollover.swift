@@ -133,7 +133,7 @@ public enum HerdrSessionRollover {
             return "agy --model \(model) \(yoloFlag)\"\(taskPrompt)\""
         } else if p.contains("hermes") {
             let yoloFlag = autoApprove ? "--yolo " : ""
-            return "hermes -m \(model) \(yoloFlag)-z \"\(taskPrompt)\""
+            return "hermes chat -q \"\(taskPrompt)\" \(yoloFlag)-m \(model)"
         } else {
             return "\(provider) \"\(taskPrompt)\""
         }
