@@ -87,9 +87,7 @@ struct MetricsLoadGauge: View {
                 .stroke(HerdrTheme.selection, style: StrokeStyle(lineWidth: 7, lineCap: .round))
                 .rotationEffect(.degrees(135))
             Circle().trim(from: 0, to: fraction * 0.75)
-                .stroke(AngularGradient(colors: [color.opacity(0.35), color], center: .center,
-                                        startAngle: .degrees(135), endAngle: .degrees(405)),
-                        style: StrokeStyle(lineWidth: 7, lineCap: .round))
+                .stroke(color, style: StrokeStyle(lineWidth: 7, lineCap: .round))
                 .rotationEffect(.degrees(135))
                 .animation(reduceMotion ? nil : .easeInOut(duration: 0.7), value: fraction)
             VStack(spacing: 5) {

@@ -51,6 +51,61 @@ import SwiftUI
         #expect(emptyView.otherWatts == nil)
     }
 
+    @Test func peakWattsCalculation() {
+        // Peak from history
+        let viewWithHistory = PowerMetricsDetailView(
+            metrics: PowerMetrics(totalWatts: 50.0),
+            history: [30.0, 85.0, 40.0]
+        )
+        #expect(viewWithHistory.peakWatts == 85.0)
+
+        // Peak from current total when higher than history
+        let viewWithHigherTotal = PowerMetricsDetailView(
+            metrics: PowerMetrics(totalWatts: 120.0),
+            history: [30.0, 85.0, 40.0]
+        )
+        #expect(viewWithHigherTotal.peakWatts == 120.0)
+
+        // Empty history uses current total
+        let viewNoHistory = PowerMetricsDetailView(
+            metrics: PowerMetrics(totalWatts: 65.4),
+            history: []
+        )
+        #expect(viewNoHistory.peakWatts == 65.4)
+
+        // No power reports nil peak
+        let viewNoPower = PowerMetricsDetailView(
+            metrics: PowerMetrics(),
+            history: []
+        )
+        #expect(viewNoPower.peakWatts == nil)
+    }
+
+    @Test func powerPercentCalculation() {
+        // Under 100W floor: ceiling is 100W, so 65.4W = 65.4%
+        let viewUnder100 = PowerMetricsDetailView(
+            metrics: PowerMetrics(totalWatts: 65.4),
+            history: [45.0, 52.0, 65.4]
+        )
+        #expect(viewUnder100.powerPercent != nil)
+        #expect(abs((viewUnder100.powerPercent ?? 0) - 65.4) < 0.001)
+
+        // Above 100W: ceiling expands to peak (200W), 180W / 200W = 90%
+        let viewHighDraw = PowerMetricsDetailView(
+            metrics: PowerMetrics(totalWatts: 180.0),
+            history: [150.0, 200.0, 180.0]
+        )
+        #expect(viewHighDraw.powerPercent != nil)
+        #expect(abs((viewHighDraw.powerPercent ?? 0) - 90.0) < 0.001)
+
+        // Nil totalWatts yields nil powerPercent
+        let viewNil = PowerMetricsDetailView(
+            metrics: PowerMetrics(),
+            history: [50.0, 60.0]
+        )
+        #expect(viewNil.powerPercent == nil)
+    }
+
     @Test func viewInitializesAndRendersBody() {
         // Full telemetry
         let full = PowerMetrics(totalWatts: 72.5, cpuWatts: 28.0, gpuWatts: 14.2, source: "rapl+nvml")
