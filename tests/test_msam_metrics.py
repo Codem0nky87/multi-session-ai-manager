@@ -1438,6 +1438,110 @@ Combined Power (CPU + GPU + ANE): 4340 mW
         finally:
             db.close()
 
+    def test_render_monitor_frame_gauges_and_psu(self):
+        metrics = {
+            'cpu': {'utilization': 40.0, 'temperature': 52.3, 'powerWatts': 45.0},
+            'gpu': {'usagePercent': 60.0, 'temperature': 65.0, 'powerWatts': 120.0, 'modelName': 'RTX 4090'},
+            'memory': {'usedGB': 16.0, 'totalGB': 64.0, 'usagePercent': 25.0},
+            'power': {'totalWatts': 165.0, 'psuCeilingWatts': 750.0, 'source': 'rapl+nvml'},
+            'network': {'downloadSpeed': 153600.0, 'uploadSpeed': 51200.0}
+        }
+        frame = m.render_monitor_frame(metrics, agents_data=[], term_width=80)
+        self.assertIn("MSAM MONITOR", frame)
+        self.assertIn("rapl+nvml", frame)
+
+        # CPU gauge with progress bar [████░░░░░░], watts, temp
+        self.assertIn("CPU:", frame)
+        self.assertIn("[████░░░░░░]", frame)
+        self.assertIn("40.0%", frame)
+        self.assertIn("45.0 W", frame)
+        self.assertIn("52.3 °C", frame)
+
+        # GPU gauge
+        self.assertIn("GPU:", frame)
+        self.assertIn("[██████░░░░]", frame)
+        self.assertIn("60.0%", frame)
+        self.assertIn("120.0 W", frame)
+        self.assertIn("65.0 °C", frame)
+
+        # Memory gauge
+        self.assertIn("Memory:", frame)
+        self.assertIn("16.0 / 64.0 GB", frame)
+        self.assertIn("[██░░░░░░░░]", frame)
+
+        # Power & PSU ceiling
+        self.assertIn("Power:", frame)
+        self.assertIn("165.0 W / 750 W", frame)
+        self.assertIn("22.0%", frame)
+
+        # Network live speeds
+        self.assertIn("Network:", frame)
+        self.assertIn("150.0 KB/s", frame)
+        self.assertIn("50.0 KB/s", frame)
+
+    def test_render_monitor_frame_no_gpu(self):
+        metrics = {
+            'cpu': {'utilization': 10.0, 'temperature': 40.0, 'powerWatts': 20.0},
+            'gpu': {'usagePercent': None, 'modelName': ''},
+            'memory': {'usedGB': 8.0, 'totalGB': 32.0, 'usagePercent': 25.0},
+            'power': {'totalWatts': 50.0, 'psuCeilingWatts': None, 'cpuTdpWatts': 65.0, 'gpuTdpWatts': 0.0},
+            'network': {'downloadSpeed': 0.0, 'uploadSpeed': 0.0}
+        }
+        frame = m.render_monitor_frame(metrics, agents_data=[])
+        self.assertIn("GPU:", frame)
+        self.assertIn("N/A", frame)
+        # Power calculation vs calculated PSU ceiling from CPU TDP (65W + 80W) * 1.4 = 203W -> 250W
+        self.assertIn("250 W", frame)
+
+    def test_render_monitor_frame_agents_fleet(self):
+        metrics = {
+            'cpu': {'utilization': 20.0},
+            'gpu': {},
+            'memory': {'usedGB': 10.0, 'totalGB': 32.0},
+            'power': {'totalWatts': 60.0, 'psuCeilingWatts': 500.0},
+            'network': {'downloadSpeed': 1024.0, 'uploadSpeed': 1024.0}
+        }
+        agents_data = [
+            {'provider': 'codex', 'model': 'gpt-6.1-sol', 'tokens': 23082435, 'state': 'busy', 'task': 'pantheon'},
+            {'provider': 'claude', 'model': 'claude-3-7-sonnet', 'tokens': 45210, 'state': 'idle', 'task': 'netapp-dashboard'},
+            {'provider': 'antigravity', 'model': 'gemini-2.5-pro', 'tokens': 12000, 'state': 'active', 'task': 'task-2-monitor'},
+            {'provider': 'hermes', 'model': 'hermes-3', 'tokens': 5400, 'state': 'idle', 'task': 'research'},
+        ]
+        frame = m.render_monitor_frame(metrics, agents_data=agents_data)
+        self.assertIn("Codex", frame)
+        self.assertIn("gpt-6.1-sol", frame)
+        self.assertIn("23,082,435", frame)
+        self.assertIn("busy", frame)
+        self.assertIn("pantheon", frame)
+
+        self.assertIn("Claude", frame)
+        self.assertIn("claude-3-7-sonnet", frame)
+        self.assertIn("45,210", frame)
+
+        self.assertIn("Antigravity", frame)
+        self.assertIn("gemini-2.5-pro", frame)
+
+        self.assertIn("Hermes", frame)
+        self.assertIn("hermes-3", frame)
+
+    def test_run_monitor_cli_oneshot(self):
+        import io
+        metrics_mock = {
+            'cpu': {'utilization': 30.0, 'temperature': 45.0, 'powerWatts': 35.0},
+            'gpu': {},
+            'memory': {'usedGB': 8.0, 'totalGB': 32.0, 'usagePercent': 25.0},
+            'power': {'totalWatts': 60.0, 'psuCeilingWatts': 500.0, 'source': 'test'},
+            'network': {'downloadSpeed': 2048.0, 'uploadSpeed': 1024.0}
+        }
+        with patch.object(m, 'get_metrics', return_value=metrics_mock):
+            with patch('sys.stdout', new_callable=io.StringIO) as mock_stdout:
+                ret = m.run_monitor_cli(['--oneshot'])
+                self.assertEqual(ret, 0)
+                output = mock_stdout.getvalue()
+                self.assertIn("MSAM MONITOR", output)
+                self.assertIn("CPU:", output)
+                self.assertIn("30.0%", output)
+
 
 
 if __name__ == '__main__':

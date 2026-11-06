@@ -2388,9 +2388,405 @@ def run_report_cli(argv):
         db.close()
 
 
+def _render_bar(pct: float | None, width: int = 10) -> str:
+    if pct is None:
+        return f"[{'░' * width}]"
+    val = max(0.0, min(100.0, float(pct)))
+    filled = int(round((val / 100.0) * width))
+    filled = max(0, min(width, filled))
+    return f"[{'█' * filled}{'░' * (width - filled)}]"
+
+
+def _normalize_agents(agents_data):
+    if agents_data is None:
+        return []
+
+    raw_list = []
+    if isinstance(agents_data, list):
+        raw_list = agents_data
+    elif isinstance(agents_data, dict):
+        if "terminal_agents" in agents_data and isinstance(agents_data["terminal_agents"], list):
+            raw_list = agents_data["terminal_agents"]
+        elif "sessions" in agents_data and isinstance(agents_data["sessions"], list):
+            for s in agents_data["sessions"]:
+                if isinstance(s, dict):
+                    sess_name = s.get("session", "")
+                    for a in s.get("agents", []):
+                        if isinstance(a, dict):
+                            a_copy = dict(a)
+                            a_copy.setdefault("session_name", sess_name)
+                            raw_list.append(a_copy)
+        elif "agents" in agents_data and isinstance(agents_data["agents"], list):
+            raw_list = agents_data["agents"]
+
+    normalized = []
+    for item in raw_list:
+        if not isinstance(item, dict):
+            continue
+        # Provider
+        raw_provider = item.get("provider") or item.get("agent") or "unknown"
+        p_lower = str(raw_provider).lower()
+        if "claude" in p_lower:
+            provider = "Claude"
+        elif "codex" in p_lower:
+            provider = "Codex"
+        elif any(k in p_lower for k in ("agy", "antigravity")):
+            provider = "Antigravity"
+        elif "hermes" in p_lower:
+            provider = "Hermes"
+        else:
+            provider = str(raw_provider).capitalize()
+
+        # Model
+        model = item.get("model") or "N/A"
+
+        # Tokens
+        tokens = item.get("tokens")
+        if tokens is None:
+            tokens = item.get("session_tokens")
+        if tokens is None:
+            tokens = item.get("total_tokens")
+        tokens_str = f"{int(tokens):,}" if tokens is not None else "N/A"
+
+        # State
+        state = item.get("state") or item.get("agent_status") or "idle"
+
+        # Task summary / Name
+        task = (item.get("task") or
+                item.get("task_summary") or
+                item.get("title") or
+                item.get("name") or
+                item.get("project") or
+                item.get("session_name") or "-")
+
+        normalized.append({
+            "provider": provider,
+            "model": str(model),
+            "tokens": tokens_str,
+            "state": str(state),
+            "task": str(task),
+        })
+    return normalized
+
+
+def _load_state_agents():
+    home = Path(os.environ.get('MSAM_HOST_HOME', str(Path.home())))
+    state_dir = home / '.local' / 'state' / 'msam-host-agent'
+
+    # Try providers.json first (from pulse, which has model & tokens)
+    providers_file = state_dir / 'providers.json'
+    if providers_file.exists():
+        try:
+            data = json.loads(providers_file.read_text(encoding='utf-8'))
+            agents = _normalize_agents(data)
+            if agents:
+                return agents
+        except Exception:
+            pass
+
+    # Try agents.json (from host agent inventory)
+    agents_file = state_dir / 'agents.json'
+    if agents_file.exists():
+        try:
+            data = json.loads(agents_file.read_text(encoding='utf-8'))
+            agents = _normalize_agents(data)
+            if agents:
+                return agents
+        except Exception:
+            pass
+
+    return []
+
+
+def render_monitor_frame(metrics: dict, agents_data=None, term_width: int = 80, use_color: bool = False) -> str:
+    """Generates an ANSI-formatted string representing a live monitor dashboard frame."""
+    width = max(60, term_width)
+    sep = "=" * width
+    thin_sep = "-" * width
+
+    # Colors
+    if use_color:
+        BOLD = "\033[1m"
+        RESET = "\033[0m"
+        CYAN = "\033[36m"
+        GREEN = "\033[32m"
+        YELLOW = "\033[33m"
+        RED = "\033[31m"
+        DIM = "\033[2m"
+    else:
+        BOLD = RESET = CYAN = GREEN = YELLOW = RED = DIM = ""
+
+    # Header
+    hostname = platform.node() or "localhost"
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
+    power_info = metrics.get("power") or {}
+    source = power_info.get("source") or "normal"
+    header_title = f" MSAM MONITOR | Host: {hostname} | {ts} | Power: {source}"
+    if len(header_title) > width:
+        header_title = header_title[:width]
+
+    lines = [
+        sep,
+        f"{BOLD}{CYAN}{header_title}{RESET}",
+        sep,
+        f"{BOLD}Hardware Telemetry:{RESET}",
+    ]
+
+    # CPU
+    cpu = metrics.get("cpu") or {}
+    cpu_util = cpu.get("utilization")
+    cpu_temp = cpu.get("temperature")
+    cpu_watts = cpu.get("powerWatts")
+
+    cpu_val = float(cpu_util) if cpu_util is not None else 0.0
+    cpu_bar = _render_bar(cpu_val, 10)
+    c_color = GREEN if cpu_val < 70 else (YELLOW if cpu_val < 85 else RED)
+    colored_cpu_bar = f"{c_color}{cpu_bar}{RESET}"
+    util_str = f"{cpu_val:5.1f}%" if cpu_util is not None else "  N/A"
+    c_watts_str = f"{float(cpu_watts):5.1f} W" if cpu_watts is not None else "    N/A"
+    c_temp_str = f"{float(cpu_temp):4.1f} °C" if cpu_temp is not None else "   N/A"
+    lines.append(f"  {BOLD}CPU:{RESET}     {colored_cpu_bar}  {util_str} | {c_watts_str} | {c_temp_str}")
+
+    # GPU
+    gpu = metrics.get("gpu") or {}
+    gpu_util = gpu.get("usagePercent")
+    gpu_temp = gpu.get("temperature")
+    gpu_watts = gpu.get("powerWatts")
+    model_name = gpu.get("modelName")
+    has_gpu = (gpu_util is not None) or (bool(model_name) and model_name != "None") or gpu.get("utilizationAvailable")
+
+    if has_gpu and gpu_util is not None:
+        g_val = float(gpu_util)
+        gpu_bar = _render_bar(g_val, 10)
+        g_color = GREEN if g_val < 70 else (YELLOW if g_val < 85 else RED)
+        colored_gpu_bar = f"{g_color}{gpu_bar}{RESET}"
+        g_util_str = f"{g_val:5.1f}%"
+        g_watts_str = f"{float(gpu_watts):5.1f} W" if gpu_watts is not None else "    N/A"
+        g_temp_str = f"{float(gpu_temp):4.1f} °C" if gpu_temp is not None else "   N/A"
+        lines.append(f"  {BOLD}GPU:{RESET}     {colored_gpu_bar}  {g_util_str} | {g_watts_str} | {g_temp_str}")
+    elif has_gpu:
+        g_bar = _render_bar(None, 10)
+        g_watts_str = f"{float(gpu_watts):5.1f} W" if gpu_watts is not None else "N/A"
+        g_temp_str = f"{float(gpu_temp):4.1f} °C" if gpu_temp is not None else "N/A"
+        lines.append(f"  {BOLD}GPU:{RESET}     {g_bar}    N/A | {g_watts_str} | {g_temp_str}")
+    else:
+        lines.append(f"  {BOLD}GPU:{RESET}     N/A")
+
+    # Memory
+    mem = metrics.get("memory") or {}
+    mem_used = mem.get("usedGB") if mem.get("usedGB") is not None else mem.get("used")
+    mem_total = mem.get("totalGB") if mem.get("totalGB") is not None else mem.get("total")
+    mem_pct = mem.get("usagePercent")
+
+    if mem_used is not None and mem_total is not None and float(mem_total) > 0:
+        mem_used_f = float(mem_used)
+        mem_total_f = float(mem_total)
+        if mem_pct is None:
+            mem_pct = (mem_used_f / mem_total_f) * 100.0
+        else:
+            mem_pct = float(mem_pct)
+        m_bar = _render_bar(mem_pct, 10)
+        m_color = GREEN if mem_pct < 70 else (YELLOW if mem_pct < 85 else RED)
+        colored_m_bar = f"{m_color}{m_bar}{RESET}"
+        lines.append(f"  {BOLD}Memory:{RESET}  {colored_m_bar}  {mem_used_f:4.1f} / {mem_total_f:4.1f} GB ({mem_pct:4.1f}%)")
+    else:
+        lines.append(f"  {BOLD}Memory:{RESET}  N/A")
+
+    # Power & PSU
+    total_watts = power_info.get("totalWatts")
+    psu_ceiling = power_info.get("psuCeilingWatts")
+    if psu_ceiling is None:
+        c_tdp = power_info.get("cpuTdpWatts") or cpu.get("tdpWatts")
+        g_tdp = power_info.get("gpuTdpWatts") or gpu.get("tdpWatts")
+        if c_tdp is not None or g_tdp is not None:
+            psu_ceiling = calculate_recommended_psu(c_tdp, g_tdp)
+
+    if total_watts is not None and psu_ceiling is not None and float(psu_ceiling) > 0:
+        tw_f = float(total_watts)
+        psu_f = float(psu_ceiling)
+        psu_pct = (tw_f / psu_f) * 100.0
+        p_bar = _render_bar(psu_pct, 10)
+        p_color = GREEN if psu_pct < 70 else (YELLOW if psu_pct < 85 else RED)
+        colored_p_bar = f"{p_color}{p_bar}{RESET}"
+        lines.append(f"  {BOLD}Power:{RESET}   {tw_f:.1f} W / {psu_f:.0f} W {colored_p_bar} {psu_pct:.1f}%")
+    elif total_watts is not None:
+        lines.append(f"  {BOLD}Power:{RESET}   {float(total_watts):.1f} W (Recommended PSU: N/A)")
+    else:
+        lines.append(f"  {BOLD}Power:{RESET}   N/A")
+
+    # Network
+    net = metrics.get("network") or {}
+    down_speed = net.get("downloadSpeed")
+    up_speed = net.get("uploadSpeed")
+    if down_speed is not None:
+        down_kbps = float(down_speed) / 1024.0
+    elif "net_down_kbps" in net:
+        down_kbps = float(net["net_down_kbps"])
+    elif "down_kbps" in net:
+        down_kbps = float(net["down_kbps"])
+    else:
+        down_kbps = 0.0
+
+    if up_speed is not None:
+        up_kbps = float(up_speed) / 1024.0
+    elif "net_up_kbps" in net:
+        up_kbps = float(net["net_up_kbps"])
+    elif "up_kbps" in net:
+        up_kbps = float(net["up_kbps"])
+    else:
+        up_kbps = 0.0
+
+    lines.append(f"  {BOLD}Network:{RESET} Down: {down_kbps:6.1f} KB/s | Up: {up_kbps:6.1f} KB/s")
+
+    # AI Agent Fleet
+    lines.append(thin_sep)
+    agents = _normalize_agents(agents_data)
+    if not agents and agents_data is None:
+        agents = _load_state_agents()
+
+    if agents:
+        count_str = f" ({len(agents)} active)"
+        lines.append(f"{BOLD}AI Agent Fleet{count_str}:{RESET}")
+        p_w = 12
+        m_w = 18
+        s_w = 10
+        t_w = 14
+        prefix_len = 2 + p_w + 2 + m_w + 2 + s_w + 2 + t_w + 2
+        task_w = max(15, width - prefix_len)
+
+        lines.append(f"  {BOLD}{'Provider':<{p_w}}  {'Model':<{m_w}}  {'State':<{s_w}}  {'Tokens':>{t_w}}  {'Task / Summary':<{task_w}}{RESET}")
+        lines.append(f"  {'-'*p_w}  {'-'*m_w}  {'-'*s_w}  {'-'*t_w}  {'-'*task_w}")
+
+        for a in agents:
+            p = a['provider'][:p_w]
+            m = a['model'][:m_w]
+            s = a['state'][:s_w]
+            tok = a['tokens'][:t_w]
+            task = a['task'][:task_w]
+
+            state_color = GREEN if s.lower() in ("active", "busy", "running") else (RED if s.lower() in ("blocked", "error") else DIM)
+            lines.append(f"  {p:<{p_w}}  {m:<{m_w}}  {state_color}{s:<{s_w}}{RESET}  {tok:>{t_w}}  {task:<{task_w}}")
+    else:
+        lines.append(f"{BOLD}AI Agent Fleet:{RESET}")
+        lines.append("  No active AI agent sessions.")
+
+    lines.append(sep)
+    return "\n".join(lines)
+
+
+def run_monitor_cli(argv=None):
+    if argv is None:
+        argv = sys.argv[1:]
+    import argparse
+    parser = argparse.ArgumentParser(prog="msam-metrics monitor", description="Terminal monitor dashboard")
+    parser.add_argument("--oneshot", action="store_true", help="Render a single frame to stdout and exit")
+    parser.add_argument("--interval", type=float, default=1.5, help="Refresh interval in seconds (default: 1.5)")
+    args = parser.parse_args(argv)
+
+    try:
+        term_width = shutil.get_terminal_size((80, 24)).columns
+    except Exception:
+        term_width = 80
+
+    if args.oneshot:
+        metrics = get_metrics()
+        frame = render_monitor_frame(metrics, term_width=term_width, use_color=sys.stdout.isatty())
+        print(frame)
+        return 0
+
+    # Interactive live loop
+    import signal
+    running = True
+
+    def _sig_handler(*_):
+        nonlocal running
+        running = False
+
+    orig_sigint = signal.getsignal(signal.SIGINT)
+    orig_sigterm = signal.getsignal(signal.SIGTERM)
+    signal.signal(signal.SIGINT, _sig_handler)
+    signal.signal(signal.SIGTERM, _sig_handler)
+
+    is_tty = sys.stdin.isatty()
+    old_termios = None
+    if is_tty and sys.platform != "win32":
+        try:
+            import termios
+            import tty
+            old_termios = termios.tcgetattr(sys.stdin.fileno())
+            tty.setcbreak(sys.stdin.fileno())
+        except Exception:
+            pass
+
+    try:
+        # Hide cursor
+        sys.stdout.write("\033[?25l")
+        sys.stdout.flush()
+
+        while running:
+            try:
+                term_width = shutil.get_terminal_size((80, 24)).columns
+            except Exception:
+                term_width = 80
+
+            metrics = get_metrics()
+            frame = render_monitor_frame(metrics, term_width=term_width, use_color=True)
+
+            # Move cursor to home and clear screen
+            sys.stdout.write("\033[H\033[2J")
+            sys.stdout.write(frame)
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+
+            # Wait for key press or interval
+            if sys.platform == "win32":
+                try:
+                    import msvcrt
+                    start_t = time.time()
+                    while time.time() - start_t < args.interval and running:
+                        if msvcrt.kbhit():
+                            ch = msvcrt.getch()
+                            if ch in (b'q', b'Q', b'\x03'):
+                                running = False
+                                break
+                        time.sleep(0.05)
+                except Exception:
+                    time.sleep(args.interval)
+            elif is_tty and old_termios is not None:
+                import select
+                rlist, _, _ = select.select([sys.stdin], [], [], args.interval)
+                if rlist:
+                    ch = sys.stdin.read(1)
+                    if ch in ('q', 'Q', '\x03'):
+                        break
+            else:
+                time.sleep(args.interval)
+
+    except KeyboardInterrupt:
+        pass
+    finally:
+        # Restore terminal settings
+        if is_tty and old_termios is not None and sys.platform != "win32":
+            try:
+                import termios
+                termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old_termios)
+            except Exception:
+                pass
+        # Restore cursor
+        sys.stdout.write("\033[?25h\n")
+        sys.stdout.flush()
+        signal.signal(signal.SIGINT, orig_sigint)
+        signal.signal(signal.SIGTERM, orig_sigterm)
+
+    return 0
+
+
 def main():
     if len(sys.argv) > 1 and sys.argv[1] == "report":
         run_report_cli(sys.argv[2:])
+        return
+    if len(sys.argv) > 1 and sys.argv[1] == "monitor":
+        run_monitor_cli(sys.argv[2:])
         return
     # If run with --loop, print metrics every 2 seconds
     loop = len(sys.argv) > 1 and sys.argv[1] == "--loop"

@@ -407,7 +407,7 @@ def main():
     global HOME, STATE, UPDATER_STATE
     parser = argparse.ArgumentParser()
     parser.add_argument('--home')
-    parser.add_argument('command', choices=['serve', 'windows-service', 'status', 'metrics', 'agents', 'updates', 'self-test', 'analyze-task', 'report'])
+    parser.add_argument('command', choices=['serve', 'windows-service', 'status', 'metrics', 'agents', 'updates', 'self-test', 'analyze-task', 'report', 'monitor'])
     parser.add_argument('args', nargs='*')
     parser.add_argument('--loop', action='store_true')
     options, remaining = parser.parse_known_args()
@@ -435,6 +435,9 @@ def main():
     elif options.command == 'report':
         cmd_idx = sys.argv.index('report')
         load_module('metrics', 'msam-metrics.py').run_report_cli(sys.argv[cmd_idx + 1:])
+    elif options.command == 'monitor':
+        cmd_idx = sys.argv.index('monitor')
+        load_module('metrics', 'msam-metrics.py').run_monitor_cli(sys.argv[cmd_idx + 1:])
     elif options.command == 'updates':
         if not options.args or options.args[0] not in ('protocol', 'verify-service', 'submit', 'status', 'version'):
             raise ValueError('Unsupported update operation.')

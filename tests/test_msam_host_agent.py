@@ -513,6 +513,14 @@ class HostAgentTests(unittest.TestCase):
                 self.assertIn('power', data)
                 self.assertEqual(data['power']['max_watts'], 70.0)
 
+    def test_host_agent_monitor_cli_dispatches(self):
+        metrics_mod = module('msam-metrics.py')
+        with patch.object(self.agent, 'load_module', return_value=metrics_mod):
+            with patch.object(metrics_mod, 'run_monitor_cli', return_value=0) as mock_monitor:
+                with patch.object(sys, 'argv', ['msam-host-agent.py', '--home', str(self.home), 'monitor', '--oneshot']):
+                    self.agent.main()
+                    mock_monitor.assert_called_once_with(['--oneshot'])
+
 
 class WindowsUpdaterTests(unittest.TestCase):
     def setUp(self):
