@@ -9,6 +9,7 @@ import math
 import plistlib
 import re
 import shutil
+import platform
 from pathlib import Path
 
 METRICS_VERSION = "2.5.0"
@@ -1347,6 +1348,255 @@ def read_macos_powermetrics():
         return {'cpuWatts': None, 'gpuWatts': None, 'combinedWatts': None}
 
 
+STANDARD_PSU_TIERS = [150, 250, 350, 450, 500, 550, 600, 650, 700, 750, 850, 1000, 1200, 1300, 1500, 1600, 2000]
+
+
+def calculate_recommended_psu(cpu_tdp: float | None, gpu_tdp: float | None) -> float | None:
+    """Calculates recommended PSU wattage ceiling from CPU and GPU TDP.
+
+    Formula: Recommended PSU = (CPU TDP + GPU TDP + 80W) * 1.4 rounded up to
+    the smallest standard PSU tier >= raw, or next 100W above 2000W.
+    """
+    if cpu_tdp is None and gpu_tdp is None:
+        return None
+    raw = round(((cpu_tdp or 0.0) + (gpu_tdp or 0.0) + 80.0) * 1.4, 2)
+    for tier in STANDARD_PSU_TIERS:
+        if tier >= raw:
+            return float(tier)
+    return float(math.ceil(raw / 100.0) * 100.0)
+
+
+def match_cpu_tdp_model(model_name: str, arch: str | None = None) -> float | None:
+    """Table lookup and substring matching for CPU TDP estimates in Watts."""
+    if not model_name:
+        return None
+    name = model_name.upper()
+
+    # Apple Silicon
+    if "APPLE" in name:
+        if "ULTRA" in name:
+            return 120.0
+        if "MAX" in name:
+            return 75.0
+        if "PRO" in name:
+            return 45.0
+        return 30.0
+
+    # AMD Ryzen specific models
+    if "9950X" in name:
+        return 170.0
+    if "7950X" in name or "7900X" in name:
+        return 170.0
+    if "9900X" in name:
+        return 120.0
+    if "7800X3D" in name or "9800X3D" in name:
+        return 120.0
+    if any(m in name for m in ("7700X", "5800X", "5900X", "5950X")):
+        return 105.0
+
+    # Intel Core specific models
+    if any(m in name for m in (
+        "14900", "13900", "12900",
+        "14700", "13700", "12700",
+        "14600", "13600", "12600"
+    )):
+        return 125.0
+
+    # Architecture fallbacks
+    machine = (arch or platform.machine()).lower()
+    if any(arm in machine or arm in name.lower() for arm in ("arm", "aarch64", "cortex")):
+        return 30.0
+    if any(x86 in machine or x86 in name.lower() for x86 in ("x86_64", "amd64", "i386", "x86", "intel", "amd")):
+        return 65.0
+
+    return 65.0
+
+
+def get_cpu_tdp(sys_root="/sys", proc_root=None) -> float | None:
+    """Estimates CPU TDP in Watts from RAPL powercap constraints or CPU model heuristics."""
+    # 1. RAPL constraint_0_power_limit_uw (PL1 in microwatts)
+    try:
+        powercap_dir = Path(sys_root) / 'class/powercap'
+        if powercap_dir.exists():
+            candidates = sorted(
+                powercap_dir.glob('intel-rapl*/constraint_0_power_limit_uw'),
+                key=lambda p: (len(str(p)), str(p))
+            )
+            for cap_path in candidates:
+                try:
+                    val = float(cap_path.read_text().strip())
+                except (OSError, ValueError):
+                    try:
+                        out = subprocess.check_output(
+                            ['sudo', '-n', 'cat', str(cap_path)],
+                            stderr=subprocess.DEVNULL, timeout=1
+                        ).decode('utf-8').strip()
+                        val = float(out)
+                    except Exception:
+                        continue
+                if 0 < val < 1_000_000_000:
+                    return round(val / 1_000_000.0, 2)
+    except Exception:
+        pass
+
+    # 2. macOS CPU model brand string lookup
+    if sys.platform == "darwin":
+        try:
+            brand = subprocess.check_output(
+                ['sysctl', '-n', 'machdep.cpu.brand_string'],
+                stderr=subprocess.DEVNULL, timeout=1
+            ).decode('utf-8').strip()
+            if brand:
+                matched = match_cpu_tdp_model(brand)
+                if matched is not None:
+                    return matched
+        except (subprocess.SubprocessError, OSError):
+            pass
+
+    # 3. Linux /proc/cpuinfo lookup
+    if proc_root is None:
+        if sys_root != '/sys':
+            proc_candidate = Path(sys_root).parent / 'proc'
+            if proc_candidate.exists():
+                proc_root = str(proc_candidate)
+        if proc_root is None and sys_root == '/sys':
+            proc_root = '/proc'
+
+    if proc_root is not None:
+        cpuinfo_file = Path(proc_root) / 'cpuinfo'
+        if cpuinfo_file.exists():
+            try:
+                text = cpuinfo_file.read_text()
+                model_name = None
+                for line in text.splitlines():
+                    if ':' in line:
+                        k, v = line.split(':', 1)
+                        k = k.strip().lower()
+                        if k in ('model name', 'model', 'processor', 'hardware', 'cpu model'):
+                            v = v.strip()
+                            if v and not v.isdigit():
+                                model_name = v
+                                break
+                if model_name:
+                    matched = match_cpu_tdp_model(model_name)
+                    if matched is not None:
+                        return matched
+            except OSError:
+                pass
+
+    return None
+
+
+GPU_TDP_MODELS = [
+    ("5090", 600.0),
+    ("5080", 400.0),
+    ("5070 TI", 300.0),
+    ("5070TI", 300.0),
+    ("5070", 250.0),
+    ("4090", 450.0),
+    ("4080", 320.0),
+    ("4070 TI", 285.0),
+    ("4070TI", 285.0),
+    ("4070", 200.0),
+    ("4060", 115.0),
+    ("3090", 350.0),
+    ("3080", 320.0),
+    ("3070", 220.0),
+    ("3060", 170.0),
+]
+
+
+def match_gpu_tdp_model(model_name: str) -> float | None:
+    """Table lookup for GPU TDP fallback estimates in Watts."""
+    if not model_name:
+        return None
+    name = model_name.upper()
+    for needle, tdp in GPU_TDP_MODELS:
+        if needle in name:
+            return tdp
+    return None
+
+
+def get_gpu_tdp(sys_root="/sys", gpu_name=None) -> float | None:
+    """Estimates GPU TDP in Watts via nvidia-smi power limits, DRM hwmon, or model heuristics."""
+    # 1. NVIDIA NVML via nvidia-smi query power limits
+    try:
+        out = subprocess.check_output(
+            ['nvidia-smi', '--query-gpu=power.limit,power.default_limit', '--format=csv,nounits,noheader'],
+            stderr=subprocess.DEVNULL, timeout=1
+        ).decode('utf-8')
+        for line in out.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            for part in line.split(','):
+                part = part.strip()
+                if not part or part in ('[N/A]', 'N/A', '[Not Supported]', 'Not Supported'):
+                    continue
+                try:
+                    val = float(part)
+                    if val > 0 and math.isfinite(val):
+                        return round(val, 2)
+                except ValueError:
+                    pass
+    except (subprocess.SubprocessError, OSError, ValueError):
+        pass
+
+    # 2. DRM hwmon fallback: /sys/class/drm/card*/device/hwmon/hwmon*/power1_cap
+    try:
+        root = Path(sys_root)
+        for cap_path in sorted(root.glob('class/drm/card*/device/hwmon/hwmon*/power1_cap')):
+            try:
+                val = float(cap_path.read_text().strip())
+            except (OSError, ValueError):
+                try:
+                    out = subprocess.check_output(
+                        ['sudo', '-n', 'cat', str(cap_path)],
+                        stderr=subprocess.DEVNULL, timeout=1
+                    ).decode('utf-8').strip()
+                    val = float(out)
+                except Exception:
+                    continue
+            if val > 0 and math.isfinite(val):
+                return round(val / 1_000_000.0, 2)
+    except OSError:
+        pass
+
+    # 3. Model name fallback
+    if gpu_name is not None:
+        matched = match_gpu_tdp_model(gpu_name)
+        if matched is not None:
+            return matched
+
+    try:
+        out = subprocess.check_output(
+            ['nvidia-smi', '--query-gpu=name', '--format=csv,noheader'],
+            stderr=subprocess.DEVNULL, timeout=1
+        ).decode('utf-8')
+        for line in out.splitlines():
+            line = line.strip()
+            if line and line not in ('[N/A]', 'N/A', '[Not Supported]', 'Not Supported'):
+                matched = match_gpu_tdp_model(line)
+                if matched is not None:
+                    return matched
+    except (subprocess.SubprocessError, OSError):
+        pass
+
+    try:
+        lspci_out = subprocess.check_output(
+            ['lspci'], stderr=subprocess.DEVNULL, timeout=1
+        ).decode('utf-8')
+        for line in lspci_out.splitlines():
+            if any(term in line.lower() for term in ('vga', '3d', 'display')):
+                matched = match_gpu_tdp_model(line)
+                if matched is not None:
+                    return matched
+    except (subprocess.SubprocessError, OSError):
+        pass
+
+    return None
+
+
 class PowerSampler:
     """Multi-platform power telemetry sampler for Linux (RAPL/NVML/battery) and macOS (powermetrics)."""
     def __init__(self, sys_root='/sys', clock=time.monotonic, sleep=time.sleep):
@@ -1354,6 +1604,9 @@ class PowerSampler:
         self.clock = clock
         self.sleep = sleep
         self.prev_rapl = None  # (energy_uj, max_range_uj, timestamp)
+        self.cpu_tdp = get_cpu_tdp(self.sys_root)
+        self.gpu_tdp = get_gpu_tdp(self.sys_root)
+        self.psu_ceiling = calculate_recommended_psu(self.cpu_tdp, self.gpu_tdp)
 
     def prime(self):
         """Optionally capture an initial RAPL baseline for single-shot invocations."""
@@ -1427,7 +1680,10 @@ class PowerSampler:
             'totalWatts': total_watts,
             'cpuWatts': cpu_watts,
             'gpuWatts': gpu_watts,
-            'source': source
+            'source': source,
+            'cpuTdpWatts': self.cpu_tdp,
+            'gpuTdpWatts': self.gpu_tdp,
+            'psuCeilingWatts': self.psu_ceiling
         }
 
 

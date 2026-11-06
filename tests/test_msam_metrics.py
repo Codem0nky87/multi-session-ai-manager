@@ -1145,6 +1145,150 @@ Combined Power (CPU + GPU + ANE): 4340 mW
         res_csv = subprocess.run(cmd_csv, capture_output=True, text=True, check=True)
         self.assertIn("category,metric,value", res_csv.stdout)
 
+    def test_calculate_recommended_psu(self):
+        # When both are None, returns None
+        self.assertIsNone(m.calculate_recommended_psu(None, None))
+
+        # CPU only: raw = (65 + 0 + 80) * 1.4 = 203.0 -> tier 250
+        self.assertEqual(m.calculate_recommended_psu(65.0, None), 250.0)
+
+        # GPU only: raw = (0 + 200 + 80) * 1.4 = 392.0 -> tier 450
+        self.assertEqual(m.calculate_recommended_psu(None, 200.0), 450.0)
+
+        # Typical gaming rig: 7700X (105W) + 4070 Ti (285W)
+        # raw = (105 + 285 + 80) * 1.4 = 470 * 1.4 = 658.0 -> tier 700
+        self.assertEqual(m.calculate_recommended_psu(105.0, 285.0), 700.0)
+
+        # High-end: 9950X (170W) + 4090 (450W)
+        # raw = (170 + 450 + 80) * 1.4 = 700 * 1.4 = 980.0 -> tier 1000
+        self.assertEqual(m.calculate_recommended_psu(170.0, 450.0), 1000.0)
+
+        # Edge case: raw > 2000 rounds up to next 100W
+        # raw = (300 + 1200 + 80) * 1.4 = 1580 * 1.4 = 2212.0 -> 2300.0
+        self.assertEqual(m.calculate_recommended_psu(300.0, 1200.0), 2300.0)
+
+        # Tier boundary test: exactly 500W standard tier
+        # ((x + 80) * 1.4) = 500 => x = 500 / 1.4 - 80 ~ 277.142857
+        cpu_val = round(500.0 / 1.4 - 80.0, 4)
+        self.assertEqual(m.calculate_recommended_psu(cpu_val, 0.0), 500.0)
+
+    def test_get_cpu_tdp_rapl_and_model_fallbacks(self):
+        # 1. RAPL constraint_0_power_limit_uw PL1 detection
+        rapl_cap = self.write(
+            'sys/class/powercap/intel-rapl:0/constraint_0_power_limit_uw',
+            '125000000\n'
+        )
+        self.assertEqual(m.get_cpu_tdp(sys_root=str(self.root / 'sys')), 125.0)
+
+        # 2. RAPL zero or out-of-range (>1_000_000_000) falls back to cpuinfo
+        rapl_cap.write_text('0\n')
+        self.write('proc/cpuinfo', 'model name : AMD Ryzen 9 9950X 16-Core Processor\n')
+        self.assertEqual(
+            m.get_cpu_tdp(sys_root=str(self.root / 'sys'), proc_root=str(self.root / 'proc')),
+            170.0
+        )
+
+        # 3. Model name matching on Linux
+        models = [
+            ('AMD Ryzen 9 9950X3D 16-Core Processor', 170.0),
+            ('AMD Ryzen 9 7900X 12-Core Processor', 170.0),
+            ('AMD Ryzen 9 9900X 12-Core Processor', 120.0),
+            ('AMD Ryzen 7 7800X3D 8-Core Processor', 120.0),
+            ('AMD Ryzen 7 9800X3D 8-Core Processor', 120.0),
+            ('AMD Ryzen 7 7700X 8-Core Processor', 105.0),
+            ('AMD Ryzen 9 5950X 16-Core Processor', 105.0),
+            ('AMD Ryzen 9 5900X 12-Core Processor', 105.0),
+            ('AMD Ryzen 7 5800X 8-Core Processor', 105.0),
+            ('13th Gen Intel(R) Core(TM) i9-13900K', 125.0),
+            ('Intel(R) Core(TM) i7-14700K', 125.0),
+            ('Intel(R) Core(TM) i5-12600K', 125.0),
+        ]
+        for name, expected in models:
+            self.write('proc/cpuinfo', f'model name : {name}\n')
+            self.assertEqual(
+                m.get_cpu_tdp(sys_root=str(self.root / 'sys'), proc_root=str(self.root / 'proc')),
+                expected
+            )
+
+        # 4. Unknown x86 falls back to 65.0
+        self.write('proc/cpuinfo', 'model name : Generic x86 Processor\n')
+        with patch.object(m.platform, 'machine', return_value='x86_64'):
+            self.assertEqual(
+                m.get_cpu_tdp(sys_root=str(self.root / 'sys'), proc_root=str(self.root / 'proc')),
+                65.0
+            )
+
+        # 5. Unknown ARM falls back to 30.0
+        self.write('proc/cpuinfo', 'model name : Cortex-A72\n')
+        with patch.object(m.platform, 'machine', return_value='aarch64'):
+            self.assertEqual(
+                m.get_cpu_tdp(sys_root=str(self.root / 'sys'), proc_root=str(self.root / 'proc')),
+                30.0
+            )
+
+    def test_get_cpu_tdp_macos_brand_string(self):
+        apple_chips = [
+            ('Apple M2 Ultra', 120.0),
+            ('Apple M3 Max', 75.0),
+            ('Apple M1 Pro', 45.0),
+            ('Apple M2', 30.0),
+        ]
+        with patch.object(m.sys, 'platform', 'darwin'):
+            for brand, expected in apple_chips:
+                with patch.object(m.subprocess, 'check_output', return_value=f'{brand}\n'.encode('utf-8')):
+                    self.assertEqual(m.get_cpu_tdp(sys_root=str(self.root / 'sys')), expected)
+
+    def test_get_gpu_tdp_nvidia_smi_drm_and_fallback(self):
+        # 1. nvidia-smi power.limit query
+        with patch.object(m.subprocess, 'check_output', return_value=b'320.00, 320.00\n'):
+            self.assertEqual(m.get_gpu_tdp(sys_root=str(self.root / 'sys')), 320.0)
+
+        # 2. nvidia-smi with [N/A] on first column, valid on second
+        with patch.object(m.subprocess, 'check_output', return_value=b'[N/A], 285.00\n'):
+            self.assertEqual(m.get_gpu_tdp(sys_root=str(self.root / 'sys')), 285.0)
+
+        # 3. DRM hwmon fallback when nvidia-smi fails
+        self.write('sys/class/drm/card0/device/hwmon/hwmon1/power1_cap', '250000000\n')
+        with patch.object(m.subprocess, 'check_output', side_effect=FileNotFoundError):
+            self.assertEqual(m.get_gpu_tdp(sys_root=str(self.root / 'sys')), 250.0)
+
+        # 4. Model name fallback when no power1_cap
+        (self.root / 'sys/class/drm/card0/device/hwmon/hwmon1/power1_cap').unlink()
+        gpu_models = [
+            ('NVIDIA GeForce RTX 5090', 600.0),
+            ('NVIDIA GeForce RTX 5080', 400.0),
+            ('NVIDIA GeForce RTX 5070 Ti', 300.0),
+            ('NVIDIA GeForce RTX 5070', 250.0),
+            ('NVIDIA GeForce RTX 4090', 450.0),
+            ('NVIDIA GeForce RTX 4080', 320.0),
+            ('NVIDIA GeForce RTX 4070 Ti', 285.0),
+            ('NVIDIA GeForce RTX 4070', 200.0),
+            ('NVIDIA GeForce RTX 4060', 115.0),
+            ('NVIDIA GeForce RTX 3090', 350.0),
+            ('NVIDIA GeForce RTX 3080', 320.0),
+            ('NVIDIA GeForce RTX 3070', 220.0),
+            ('NVIDIA GeForce RTX 3060', 170.0),
+        ]
+        for name, expected in gpu_models:
+            with patch.object(m.subprocess, 'check_output', side_effect=[
+                subprocess.CalledProcessError(1, 'nvidia-smi'),  # power.limit fails
+                f'{name}\n'.encode('utf-8')                     # name query succeeds
+            ]):
+                self.assertEqual(m.get_gpu_tdp(sys_root=str(self.root / 'sys')), expected)
+
+    def test_power_sampler_includes_tdp_and_psu_ceiling(self):
+        with patch.object(m, 'get_cpu_tdp', return_value=105.0), \
+             patch.object(m, 'get_gpu_tdp', return_value=285.0):
+            sampler = m.PowerSampler(sys_root=str(self.root / 'sys'))
+            self.assertEqual(sampler.cpu_tdp, 105.0)
+            self.assertEqual(sampler.gpu_tdp, 285.0)
+            self.assertEqual(sampler.psu_ceiling, 700.0)
+
+            sample = sampler.sample(now=10.0)
+            self.assertEqual(sample['cpuTdpWatts'], 105.0)
+            self.assertEqual(sample['gpuTdpWatts'], 285.0)
+            self.assertEqual(sample['psuCeilingWatts'], 700.0)
+
 
 if __name__ == '__main__':
     unittest.main()
