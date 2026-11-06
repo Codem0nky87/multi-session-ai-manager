@@ -1468,21 +1468,32 @@ def get_cpu_tdp(sys_root="/sys", proc_root=None) -> float | None:
             try:
                 text = cpuinfo_file.read_text()
                 model_name = None
+                is_arm = False
+                core_count = 0
                 for line in text.splitlines():
                     if ':' in line:
                         k, v = line.split(':', 1)
                         k = k.strip().lower()
-                        if k in ('model name', 'model', 'processor', 'hardware', 'cpu model'):
+                        if k == 'processor':
+                            core_count += 1
+                        if k in ('model name', 'model', 'hardware', 'cpu model'):
                             v = v.strip()
                             if v and not v.isdigit():
                                 model_name = v
-                                break
+                        if k in ('cpu implementer', 'cpu architecture', 'cpu part'):
+                            is_arm = True
                 if model_name:
                     matched = match_cpu_tdp_model(model_name)
                     if matched is not None:
                         return matched
+                if is_arm:
+                    return 65.0 if core_count >= 16 else 30.0
             except OSError:
                 pass
+
+    machine = platform.machine().lower()
+    if any(arm in machine for arm in ("arm", "aarch64")):
+        return 45.0
 
     return None
 
@@ -1503,6 +1514,11 @@ GPU_TDP_MODELS = [
     ("3080", 320.0),
     ("3070", 220.0),
     ("3060", 170.0),
+    ("GB10", 70.0),
+    ("GB200", 1000.0),
+    ("GH200", 900.0),
+    ("H100", 700.0),
+    ("A100", 400.0),
 ]
 
 
