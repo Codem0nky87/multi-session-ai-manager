@@ -126,6 +126,14 @@ struct HostServiceSheet: View {
                     .disabled(connection.state != .connected || manager.isBusy || manager.isBusyReport)
                     .accessibilityIdentifier("host.service.download-report")
 
+                    Button {
+                        openMonitorSpace()
+                    } label: {
+                        Label("Open Monitor Space", systemImage: "display")
+                    }
+                    .disabled(connection.state != .connected || manager.isBusy || manager.isBusyReport)
+                    .accessibilityIdentifier("host.service.open-monitor-space")
+
                     if manager.isBusyReport {
                         ProgressView("Generating report from host database…")
                     }
@@ -197,6 +205,13 @@ struct HostServiceSheet: View {
             } catch {
                 // error is captured in manager.reportError
             }
+        }
+    }
+
+    private func openMonitorSpace() {
+        task = Task {
+            _ = try? await manager.openMonitorSpace()
+            dismiss()
         }
     }
 

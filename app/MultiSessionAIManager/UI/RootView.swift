@@ -444,7 +444,12 @@ struct RootView: View {
         }
         .sheet(isPresented: $showingHardwareMetricsSheet) {
             if let tab = selectedTab {
-                HardwareMetricsSheet(metrics: tabs.session(for: tab).metrics)
+                HardwareMetricsSheet(
+                    metrics: tabs.session(for: tab).metrics,
+                    onOpenMonitorSpace: {
+                        openMonitorSpace()
+                    }
+                )
             }
         }
         .sheet(isPresented: $showingProviderPulseSheet) {
@@ -619,6 +624,28 @@ struct RootView: View {
                 activeAILoaderState = nil
                 activeRolloverTask = nil
                 toastCenter.success("Relaunched with \(provider.capitalized) (\(model)) on host")
+            }
+        }
+    }
+
+    private func openMonitorSpace() {
+        guard let selectedTab else { return }
+        showingHardwareMetricsSheet = false
+        let session = tabs.session(for: selectedTab)
+        guard let service = session.connection.provisioningCommandRunner else {
+            toastCenter.error("SSH connection not available")
+            return
+        }
+        Task {
+            do {
+                try await HostServiceInstaller.openMonitorSpace(using: service)
+                await MainActor.run {
+                    toastCenter.success("Opened monitor workspace")
+                }
+            } catch {
+                await MainActor.run {
+                    toastCenter.error("Failed to open monitor workspace: \(error.localizedDescription)")
+                }
             }
         }
     }

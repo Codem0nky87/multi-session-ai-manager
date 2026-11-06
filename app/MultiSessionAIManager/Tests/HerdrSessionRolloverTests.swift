@@ -110,4 +110,30 @@ import Testing
         #expect(hermes.contains("-m qwen3.8-flash-next"))
         #expect(!hermes.contains("-z"))
     }
+
+    @Test func openMonitorWorkspaceCommandIsFormattedProperly() throws {
+        let cmd = HerdrSessionRollover.makeOpenMonitorWorkspaceCommand()
+        #expect(cmd.contains("PATH=\"$HOME/.local/bin:$PATH\""))
+        #expect(cmd.contains("python3 -c"))
+        #expect(cmd.contains("import base64;exec(base64.b64decode("))
+
+        guard let firstQuote = cmd.range(of: "base64.b64decode('"),
+              let closingQuote = cmd.range(of: "')", range: firstQuote.upperBound..<cmd.endIndex) else {
+            Issue.record("Failed to extract base64 payload from open monitor workspace command")
+            return
+        }
+        let b64 = String(cmd[firstQuote.upperBound..<closingQuote.lowerBound])
+        let data = try #require(Data(base64Encoded: b64))
+        let script = try #require(String(data: data, encoding: .utf8))
+
+        #expect(script.contains("herdr workspace list"))
+        #expect(script.contains("\"monitor\""))
+        #expect(script.contains("workspace focus"))
+        #expect(script.contains("workspace create"))
+        #expect(script.contains("--label monitor --focus"))
+        #expect(script.contains("herdr pane run"))
+        #expect(script.contains("msam-host-agent"))
+        #expect(script.contains("monitor"))
+        #expect(script.contains("--current"))
+    }
 }

@@ -201,4 +201,9 @@ enum HostServiceInstaller {
         let result = try await run(command, using: service, timeout: .seconds(30))
         return result.stdoutString
     }
+
+    public static func openMonitorSpace(using service: SSHService) async throws {
+        let command = HerdrSessionRollover.makeOpenMonitorWorkspaceCommand()
+        _ = try await run(command, using: service, timeout: .seconds(30))
+    }
 }

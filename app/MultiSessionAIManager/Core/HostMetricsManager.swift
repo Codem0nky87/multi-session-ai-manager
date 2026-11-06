@@ -107,6 +107,13 @@ final class HostServiceManager {
         }
     }
 
+    func openMonitorSpace() async throws {
+        guard let service = connection.provisioningCommandRunner else {
+            throw MSAMMetricsInstaller.Failure.uploadFailed("Host SSH connection unavailable.")
+        }
+        try await HostServiceInstaller.openMonitorSpace(using: service)
+    }
+
     func refresh() async {
         guard !isBusy, let service = connection.provisioningCommandRunner else { return }
         isBusy = true

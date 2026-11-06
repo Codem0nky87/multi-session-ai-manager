@@ -179,4 +179,20 @@ import Testing
         #expect(script.contains("msam-host-agent.cmd\" report --format json --period '7d'"))
         #expect(script.contains("exit $LASTEXITCODE"))
     }
+
+    @Test func openMonitorSpaceRunsExpectedCommand() async throws {
+        let keyStore = KeyStore(backing: InMemoryKeychain())
+        let key = try keyStore.generateEd25519(label: "host-service")
+        let host = Host(name: "host-service", address: "198.51.100.25", username: "service-test", keyID: key, defaultWorkdir: "")
+        let transport = FakeSSHTransport()
+        let connection = HostConnection(host: host, keyStore: keyStore,
+            knownHosts: KnownHostsStore(defaults: UserDefaults(suiteName: UUID().uuidString)!), transport: transport)
+        await connection.connect()
+        let service = try #require(connection.provisioningCommandRunner)
+        transport.defaultCommandResponse = "ok\n"
+        try await HostServiceInstaller.openMonitorSpace(using: service)
+        let lastCommand = try #require(transport.commandsRun.last)
+        #expect(lastCommand.contains("python3"))
+        #expect(lastCommand.contains("base64"))
+    }
 }

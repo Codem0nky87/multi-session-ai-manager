@@ -2,10 +2,12 @@ import SwiftUI
 
 struct HardwareMetricsSheet: View {
     var metrics: HostMetricsModel
+    var onOpenMonitorSpace: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
 
-    init(metrics: HostMetricsModel) {
+    init(metrics: HostMetricsModel, onOpenMonitorSpace: (() -> Void)? = nil) {
         self.metrics = metrics
+        self.onOpenMonitorSpace = onOpenMonitorSpace
     }
 
     var body: some View {
@@ -78,6 +80,15 @@ struct HardwareMetricsSheet: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
                         .foregroundStyle(HerdrTheme.accent)
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        onOpenMonitorSpace?()
+                    } label: {
+                        Label("Monitor Space", systemImage: "display")
+                    }
+                    .foregroundStyle(HerdrTheme.accent)
+                    .accessibilityIdentifier("metrics.open-monitor-space")
                 }
             }
         }
