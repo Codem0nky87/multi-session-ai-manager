@@ -145,4 +145,29 @@ import SwiftUI
         let activeBarView = HostMetricsBarView(metricsModel: model)
         let _ = activeBarView.body
     }
+
+    @Test func recommendedPsuCalculationInfoGlyphAndPopover() {
+        let metrics = PowerMetrics(
+            totalWatts: 65.4,
+            cpuWatts: 25.1,
+            gpuWatts: 18.2,
+            source: "rapl+nvml",
+            cpuTdpWatts: 105.0,
+            gpuTdpWatts: 220.0,
+            psuCeilingWatts: 750.0
+        )
+        let view = PowerMetricsDetailView(metrics: metrics)
+        let _ = view.body
+
+        // Verify title, formula, and explanation constants
+        #expect(PowerMetricsDetailView.psuInfoTitle == "Recommended PSU Capacity")
+        #expect(PowerMetricsDetailView.psuInfoFormula == "(CPU TDP + GPU TDP + 80W) × 1.4")
+        #expect(PowerMetricsDetailView.psuInfoExplanation.contains("(CPU TDP + GPU TDP + 80W) × 1.4"))
+        #expect(PowerMetricsDetailView.psuInfoExplanation.contains("rounded up to standard PSU sizes"))
+        #expect(PowerMetricsDetailView.psuInfoExplanation.contains("650W, 750W, 850W, 1000W"))
+
+        // Verify popover component view renders
+        let psuInfoView = PowerMetricsPsuInfoView()
+        let _ = psuInfoView.body
+    }
 }
