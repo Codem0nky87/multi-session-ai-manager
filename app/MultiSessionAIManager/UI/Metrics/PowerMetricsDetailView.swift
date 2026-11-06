@@ -5,6 +5,10 @@ struct PowerMetricsDetailView: View {
     var history: [Double] = []
     private let accent = Color.yellow
 
+    var psuCeiling: Double {
+        metrics.effectivePsuWatts
+    }
+
     var peakWatts: Double? {
         let finiteHistory = history.filter(\.isFinite)
         let candidates = finiteHistory + [metrics.totalWatts].compactMap { $0?.isFinite == true ? $0 : nil }
@@ -14,8 +18,7 @@ struct PowerMetricsDetailView: View {
 
     var powerPercent: Double? {
         guard let total = metrics.totalWatts, total.isFinite, total >= 0 else { return nil }
-        let ceiling = max(100.0, peakWatts ?? 0.0)
-        return min(100.0, max(0.0, (total / ceiling) * 100.0))
+        return min(100.0, max(0.0, (total / psuCeiling) * 100.0))
     }
 
     var otherWatts: Double? {
@@ -45,14 +48,16 @@ struct PowerMetricsDetailView: View {
                 value: metrics.formattedTotalWatts,
                 subtitle: subtitleText,
                 color: accent,
-                showsValue: false
+                showsValue: true
             )
 
             HStack(spacing: 16) {
                 MetricsLiquidGauge(
                     percent: powerPercent,
                     color: accent,
-                    symbol: "bolt.fill"
+                    symbol: "bolt.fill",
+                    displayValue: metrics.formattedTotalWatts,
+                    caption: "of " + PowerMetrics.formatWatts(psuCeiling)
                 )
                 MetricsHistoryView(values: history, color: accent, title: "RECENT DRAW")
             }
@@ -71,6 +76,22 @@ struct PowerMetricsDetailView: View {
                 MetricsStat(
                     label: "GPU draw",
                     value: metrics.gpuWatts.map { PowerMetrics.formatWatts($0) } ?? "—"
+                )
+                if let cpuTdp = metrics.cpuTdpWatts {
+                    MetricsStat(
+                        label: "CPU TDP",
+                        value: PowerMetrics.formatWatts(cpuTdp)
+                    )
+                }
+                if let gpuTdp = metrics.gpuTdpWatts {
+                    MetricsStat(
+                        label: "GPU TDP",
+                        value: PowerMetrics.formatWatts(gpuTdp)
+                    )
+                }
+                MetricsStat(
+                    label: "PSU capacity",
+                    value: PowerMetrics.formatWatts(psuCeiling)
                 )
                 if let otherWatts {
                     MetricsStat(

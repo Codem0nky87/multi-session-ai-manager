@@ -82,21 +82,22 @@ import SwiftUI
     }
 
     @Test func powerPercentCalculation() {
-        // Under 100W floor: ceiling is 100W, so 65.4W = 65.4%
-        let viewUnder100 = PowerMetricsDetailView(
-            metrics: PowerMetrics(totalWatts: 65.4),
-            history: [45.0, 52.0, 65.4]
+        // Default ceiling 850W: 85W / 850W = 10%
+        let viewDefaultPsu = PowerMetricsDetailView(
+            metrics: PowerMetrics(totalWatts: 85.0),
+            history: [45.0, 52.0, 85.0]
         )
-        #expect(viewUnder100.powerPercent != nil)
-        #expect(abs((viewUnder100.powerPercent ?? 0) - 65.4) < 0.001)
+        #expect(viewDefaultPsu.powerPercent != nil)
+        #expect(abs((viewDefaultPsu.powerPercent ?? 0) - 10.0) < 0.001)
 
-        // Above 100W: ceiling expands to peak (200W), 180W / 200W = 90%
-        let viewHighDraw = PowerMetricsDetailView(
-            metrics: PowerMetrics(totalWatts: 180.0),
+        // Custom PSU ceiling 500W: 180W / 500W = 36%
+        let viewCustomPsu = PowerMetricsDetailView(
+            metrics: PowerMetrics(totalWatts: 180.0, cpuTdpWatts: 105.0, gpuTdpWatts: 250.0, psuCeilingWatts: 500.0),
             history: [150.0, 200.0, 180.0]
         )
-        #expect(viewHighDraw.powerPercent != nil)
-        #expect(abs((viewHighDraw.powerPercent ?? 0) - 90.0) < 0.001)
+        #expect(viewCustomPsu.powerPercent != nil)
+        #expect(abs((viewCustomPsu.powerPercent ?? 0) - 36.0) < 0.001)
+        #expect(viewCustomPsu.psuCeiling == 500.0)
 
         // Nil totalWatts yields nil powerPercent
         let viewNil = PowerMetricsDetailView(

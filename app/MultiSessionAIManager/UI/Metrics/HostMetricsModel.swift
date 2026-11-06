@@ -266,6 +266,16 @@ struct PowerMetrics: Decodable, Equatable {
     var cpuWatts: Double?
     var gpuWatts: Double?
     var source: String?
+    var cpuTdpWatts: Double?
+    var gpuTdpWatts: Double?
+    var psuCeilingWatts: Double?
+
+    var effectivePsuWatts: Double {
+        guard let psuCeilingWatts, psuCeilingWatts.isFinite, psuCeilingWatts > 0 else {
+            return 850.0
+        }
+        return psuCeilingWatts
+    }
 
     var hasPower: Bool {
         guard let totalWatts, totalWatts.isFinite, totalWatts >= 0 else { return false }
@@ -274,6 +284,44 @@ struct PowerMetrics: Decodable, Equatable {
 
     var formattedTotalWatts: String {
         Self.formatWatts(totalWatts)
+    }
+
+    init(
+        totalWatts: Double? = nil,
+        cpuWatts: Double? = nil,
+        gpuWatts: Double? = nil,
+        source: String? = nil,
+        cpuTdpWatts: Double? = nil,
+        gpuTdpWatts: Double? = nil,
+        psuCeilingWatts: Double? = nil
+    ) {
+        self.totalWatts = totalWatts
+        self.cpuWatts = cpuWatts
+        self.gpuWatts = gpuWatts
+        self.source = source
+        self.cpuTdpWatts = cpuTdpWatts
+        self.gpuTdpWatts = gpuTdpWatts
+        self.psuCeilingWatts = psuCeilingWatts
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case totalWatts, cpuWatts, gpuWatts, source
+        case cpuTdpWatts, gpuTdpWatts, psuCeilingWatts
+        case cpu_tdp_watts, gpu_tdp_watts, psu_ceiling_watts
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        totalWatts = try container.decodeIfPresent(Double.self, forKey: .totalWatts)
+        cpuWatts = try container.decodeIfPresent(Double.self, forKey: .cpuWatts)
+        gpuWatts = try container.decodeIfPresent(Double.self, forKey: .gpuWatts)
+        source = try container.decodeIfPresent(String.self, forKey: .source)
+        cpuTdpWatts = try container.decodeIfPresent(Double.self, forKey: .cpuTdpWatts)
+            ?? container.decodeIfPresent(Double.self, forKey: .cpu_tdp_watts)
+        gpuTdpWatts = try container.decodeIfPresent(Double.self, forKey: .gpuTdpWatts)
+            ?? container.decodeIfPresent(Double.self, forKey: .gpu_tdp_watts)
+        psuCeilingWatts = try container.decodeIfPresent(Double.self, forKey: .psuCeilingWatts)
+            ?? container.decodeIfPresent(Double.self, forKey: .psu_ceiling_watts)
     }
 
     static func formatWatts(_ value: Double?) -> String {

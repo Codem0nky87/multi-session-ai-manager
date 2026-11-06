@@ -6,6 +6,8 @@ struct MetricsLiquidGauge: View {
     let color: Color
     var symbol = "internaldrive"
     var compact = false
+    var displayValue: String? = nil
+    var caption: String? = nil
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
 
@@ -47,14 +49,19 @@ struct MetricsLiquidGauge: View {
                     }
                 }
                 .clipShape(RoundedRectangle(cornerRadius: compact ? 9 : 18))
-                VStack(spacing: compact ? 4 : 10) {
+                VStack(spacing: compact ? 2 : 4) {
                     Image(systemName: symbol)
-                        .font(.system(size: compact ? 14 : 23, weight: .medium))
+                        .font(.system(size: compact ? 14 : 20, weight: .medium))
                         .foregroundStyle(color)
-                    Text(percent.map(CPUMetrics.formatPercent) ?? "—")
-                        .font(.system(size: compact ? 12 : 24, weight: .semibold, design: .rounded))
+                    Text(displayValue ?? (percent.map(CPUMetrics.formatPercent) ?? "—"))
+                        .font(.system(size: compact ? 12 : (displayValue != nil ? 18 : 24), weight: .semibold, design: .rounded))
                         .monospacedDigit()
                         .foregroundStyle(HerdrTheme.text)
+                    if let caption, !compact {
+                        Text(caption)
+                            .font(.system(size: 10, weight: .medium, design: .rounded))
+                            .foregroundStyle(HerdrTheme.subtext)
+                    }
                 }
             }
             .overlay {
@@ -65,7 +72,7 @@ struct MetricsLiquidGauge: View {
         .frame(width: compact ? 52 : 98, height: compact ? 64 : 116)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Used capacity")
-        .accessibilityValue(percent.map(CPUMetrics.formatPercent) ?? "Unavailable")
+        .accessibilityValue(displayValue ?? (percent.map(CPUMetrics.formatPercent) ?? "Unavailable"))
     }
 }
 
