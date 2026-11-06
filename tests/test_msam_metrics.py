@@ -1190,7 +1190,7 @@ Combined Power (CPU + GPU + ANE): 4340 mW
 
         # 3. Model name matching on Linux
         models = [
-            ('AMD Ryzen 9 9950X3D 16-Core Processor', 200.0),
+            ('AMD Ryzen 9 9950X3D 16-Core Processor', 170.0),
             ('AMD Ryzen 9 9950X3D2 16-Core Processor', 200.0),
             ('AMD Ryzen 9 9950X 16-Core Processor', 170.0),
             ('AMD Ryzen 9 7900X 12-Core Processor', 170.0),
@@ -1232,7 +1232,8 @@ Combined Power (CPU + GPU + ANE): 4340 mW
         apple_chips = [
             ('Apple M2 Ultra', 120.0),
             ('Apple M3 Max', 75.0),
-            ('Apple M1 Pro', 45.0),
+            ('Apple M2 Pro', 45.0),
+            ('Apple M1 Pro', 30.0),
             ('Apple M2', 30.0),
         ]
         with patch.object(m.sys, 'platform', 'darwin'):
@@ -1257,8 +1258,8 @@ Combined Power (CPU + GPU + ANE): 4340 mW
         # 4. Model name fallback when no power1_cap
         (self.root / 'sys/class/drm/card0/device/hwmon/hwmon1/power1_cap').unlink()
         gpu_models = [
-            ('NVIDIA GeForce RTX 5090', 600.0),
-            ('NVIDIA GeForce RTX 5080', 400.0),
+            ('NVIDIA GeForce RTX 5090', 575.0),
+            ('NVIDIA GeForce RTX 5080', 360.0),
             ('NVIDIA GeForce RTX 5070 Ti', 300.0),
             ('NVIDIA GeForce RTX 5070', 250.0),
             ('NVIDIA GeForce RTX 4090', 450.0),
@@ -1343,7 +1344,7 @@ Combined Power (CPU + GPU + ANE): 4340 mW
     def test_get_cpu_tdp_9950x3d(self):
         # 1. Direct model string lookup
         self.assertEqual(m.get_cpu_tdp("AMD Ryzen 9 9950X3D2 16-Core Processor"), 200.0)
-        self.assertEqual(m.get_cpu_tdp("AMD Ryzen 9 9950X3D"), 200.0)
+        self.assertEqual(m.get_cpu_tdp("AMD Ryzen 9 9950X3D"), 170.0)
         self.assertEqual(m.get_cpu_tdp("AMD Ryzen 9 9950X"), 170.0)
 
         # 2. Linux proc/cpuinfo model name lookup
@@ -1559,6 +1560,119 @@ Combined Power (CPU + GPU + ANE): 4340 mW
                 self.assertIn("MSAM MONITOR", output)
                 self.assertIn("CPU:", output)
                 self.assertIn("30.0%", output)
+
+    def test_load_hardware_db_bundled_and_fallback(self):
+        # 1. Bundled database loads successfully
+        db = m.load_hardware_db()
+        self.assertIsInstance(db, dict)
+        self.assertEqual(db.get("schema_version"), "2026.11.06.1")
+        self.assertIn("systems", db)
+        self.assertIn("cpu", db)
+        self.assertIn("gpu", db)
+        self.assertIn("NVIDIA DGX Spark", db["systems"])
+        self.assertIn("Ryzen 9 9950X3D2", db["cpu"]["amd"])
+        self.assertIn("RTX 5070 Ti", db["gpu"]["nvidia"])
+
+        # 2. Non-existent path returns empty dict
+        missing_db = m.load_hardware_db(db_path="/tmp/nonexistent_msam_hw_db.json")
+        self.assertEqual(missing_db, {})
+
+        # 3. Explicit path loads custom JSON
+        custom_file = self.root / "custom_db.json"
+        custom_file.write_text(json.dumps({"version": "custom.1", "systems": {"TestSys": {}}}))
+        loaded_custom = m.load_hardware_db(db_path=str(custom_file))
+        self.assertEqual(loaded_custom.get("version"), "custom.1")
+        self.assertIn("TestSys", loaded_custom.get("systems", {}))
+
+    def test_get_system_product_name(self):
+        # 1. DMI product name
+        self.write('sys/class/dmi/id/product_name', 'NVIDIA_DGX_SPARK\n')
+        self.assertEqual(m.get_system_product_name(sys_root=str(self.root / 'sys')), 'NVIDIA_DGX_SPARK')
+
+        # 2. Device-tree model fallback when DMI absent
+        (self.root / 'sys/class/dmi/id/product_name').unlink()
+        self.write('proc/device-tree/model', 'NVIDIA DGX Spark\x00')
+        self.assertEqual(m.get_system_product_name(sys_root=str(self.root / 'sys')), 'NVIDIA DGX Spark')
+
+        # 3. None when neither present
+        (self.root / 'proc/device-tree/model').unlink()
+        self.assertIsNone(m.get_system_product_name(sys_root=str(self.root / 'sys')))
+
+    def test_match_system_profile(self):
+        # Match DGX Spark across variations
+        spark_names = ["NVIDIA_DGX_SPARK", "DGX SPARK", "DGX_SPARK", "NVIDIA DGX Spark"]
+        for name in spark_names:
+            prof = m.match_system_profile(sys_name=name)
+            self.assertIsNotNone(prof, f"Failed to match {name}")
+            self.assertEqual(prof.get("soc_name"), "NVIDIA GB10")
+            self.assertEqual(prof.get("soc_tdp_watts"), 140.0)
+            self.assertEqual(prof.get("psu_capacity_watts"), 240.0)
+
+        # Match DGX Station A100
+        station = m.match_system_profile(sys_name="DGX STATION A100")
+        self.assertIsNotNone(station)
+        self.assertEqual(station.get("cpu_tdp_watts"), 280.0)
+        self.assertEqual(station.get("gpu_tdp_watts"), 1600.0)
+        self.assertEqual(station.get("psu_capacity_watts"), 1500.0)
+
+        # Unknown system returns None
+        self.assertIsNone(m.match_system_profile(sys_name="Custom Assembled Desktop"))
+
+        # From sys_root (DMI)
+        self.write('sys/class/dmi/id/product_name', 'NVIDIA_DGX_SPARK\n')
+        prof = m.match_system_profile(sys_root=str(self.root / 'sys'))
+        self.assertIsNotNone(prof)
+        self.assertEqual(prof.get("psu_capacity_watts"), 240.0)
+
+    def test_dgx_spark_oem_resolution(self):
+        self.write('sys/class/dmi/id/product_name', 'NVIDIA_DGX_SPARK\n')
+
+        # CPU & GPU TDP resolve to 140W from OEM system profile
+        cpu_tdp = m.get_cpu_tdp(sys_root=str(self.root / 'sys'))
+        gpu_tdp = m.get_gpu_tdp(sys_root=str(self.root / 'sys'))
+        self.assertEqual(cpu_tdp, 140.0)
+        self.assertEqual(gpu_tdp, 140.0)
+
+        # Factory PSU ceiling resolves to OEM 240W
+        sys_prof = m.match_system_profile(sys_root=str(self.root / 'sys'))
+        psu = m.calculate_recommended_psu(cpu_tdp, gpu_tdp, sys_profile=sys_prof)
+        self.assertEqual(psu, 240.0)
+
+        # PowerSampler uses OEM PSU capacity
+        sampler = m.PowerSampler(sys_root=str(self.root / 'sys'))
+        self.assertEqual(sampler.cpu_tdp, 140.0)
+        self.assertEqual(sampler.gpu_tdp, 140.0)
+        self.assertEqual(sampler.psu_ceiling, 240.0)
+        sample = sampler.sample(now=10.0)
+        self.assertEqual(sample['cpuTdpWatts'], 140.0)
+        self.assertEqual(sample['gpuTdpWatts'], 140.0)
+        self.assertEqual(sample['psuCeilingWatts'], 240.0)
+
+    def test_modular_desktop_resolution(self):
+        # AMD Ryzen 9 9950X3D2 (200W) + NVIDIA RTX 5070 Ti (300W) -> 850W PSU
+        cpu_tdp = m.get_cpu_tdp(model_name="AMD Ryzen 9 9950X3D2 16-Core Processor")
+        gpu_tdp = m.get_gpu_tdp(gpu_name="NVIDIA GeForce RTX 5070 Ti")
+        self.assertEqual(cpu_tdp, 200.0)
+        self.assertEqual(gpu_tdp, 300.0)
+
+        psu = m.calculate_recommended_psu(cpu_tdp, gpu_tdp, sys_profile=None)
+        # (200 + 300 + 80) * 1.4 = 580 * 1.4 = 812.0 -> tier 850W
+        self.assertEqual(psu, 850.0)
+
+    def test_hardware_db_fallback_when_db_missing(self):
+        # Empty DB falls back to in-code heuristics
+        empty_db = {}
+        # CPU fallback table
+        self.assertEqual(m.get_cpu_tdp(model_name="AMD Ryzen 9 7900X 12-Core Processor", db=empty_db), 170.0)
+        self.assertEqual(m.get_cpu_tdp(model_name="AMD Ryzen 9 9950X3D2 16-Core Processor", db=empty_db), 200.0)
+        self.assertEqual(m.get_cpu_tdp(model_name="Apple M3 Max", db=empty_db), 75.0)
+
+        # GPU fallback table
+        self.assertEqual(m.get_gpu_tdp(gpu_name="RTX 4090", db=empty_db), 450.0)
+        self.assertEqual(m.get_gpu_tdp(gpu_name="RTX 5070 Ti", db=empty_db), 300.0)
+
+        # PSU calculation without OEM profile falls back to formula
+        self.assertEqual(m.calculate_recommended_psu(140.0, 140.0, sys_profile=None), 550.0)
 
 
 

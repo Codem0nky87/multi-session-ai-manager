@@ -1352,13 +1352,174 @@ def read_macos_powermetrics():
 
 STANDARD_PSU_TIERS = [150, 250, 350, 450, 500, 550, 600, 650, 700, 750, 850, 1000, 1200, 1300, 1500, 1600, 2000]
 
+_HARDWARE_DB_CACHE = None
 
-def calculate_recommended_psu(cpu_tdp: float | None, gpu_tdp: float | None) -> float | None:
-    """Calculates recommended PSU wattage ceiling from CPU and GPU TDP.
+
+def load_hardware_db(db_path: str | Path | None = None) -> dict:
+    """Loads msam-hardware-db.json containing reference TDP and PSU specifications.
+
+    Searches db_path, bundled app resources, and host agent runtime paths.
+    Returns parsed dictionary or empty dict if not found.
+    """
+    global _HARDWARE_DB_CACHE
+
+    if db_path is not None:
+        p = Path(db_path)
+        if p.is_file():
+            try:
+                return json.loads(p.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                return {}
+        return {}
+
+    if _HARDWARE_DB_CACHE is not None:
+        return _HARDWARE_DB_CACHE
+
+    candidates = [
+        Path(__file__).resolve().parent / "msam-hardware-db.json",
+        Path.home() / ".local/libexec/msam-host-agent/current/msam-hardware-db.json",
+    ]
+    for cand in candidates:
+        if cand.is_file():
+            try:
+                _HARDWARE_DB_CACHE = json.loads(cand.read_text(encoding="utf-8"))
+                return _HARDWARE_DB_CACHE
+            except (OSError, json.JSONDecodeError):
+                pass
+
+    return {}
+
+
+def get_system_product_name(sys_root="/sys") -> str | None:
+    """Inspects /sys/class/dmi/id/product_name and /proc/device-tree/model."""
+    candidates = []
+    if sys_root and isinstance(sys_root, (str, Path)):
+        root = Path(sys_root)
+        candidates.append(root / "class/dmi/id/product_name")
+        if root.name == "sys":
+            candidates.append(root.parent / "proc/device-tree/model")
+        candidates.append(root / "proc/device-tree/model")
+    candidates.append(Path("/proc/device-tree/model"))
+
+    for p in candidates:
+        try:
+            if p.is_file():
+                val = p.read_text(encoding="utf-8", errors="replace").strip("\x00\r\n ")
+                if val:
+                    return val
+        except OSError:
+            pass
+    return None
+
+
+def _normalize_hardware_name(name: str) -> str:
+    """Normalizes string for fuzzy/case-insensitive matching."""
+    return re.sub(r'[\s_\-]+', ' ', str(name)).strip().upper()
+
+
+def match_system_profile(sys_name=None, sys_root="/sys", db=None) -> dict | None:
+    """Matches a system product name against known systems in the hardware database."""
+    if db is None:
+        db = load_hardware_db()
+    if not isinstance(db, dict) or "systems" not in db:
+        return None
+
+    if sys_name is None:
+        sys_name = get_system_product_name(sys_root=sys_root)
+    if not sys_name:
+        return None
+
+    target = _normalize_hardware_name(sys_name)
+    target_compact = re.sub(r'[^A-Z0-9]', '', target)
+
+    # Check each system profile
+    for sys_key, profile in db["systems"].items():
+        patterns = [sys_key] + list(profile.get("match_strings", []))
+        for pat in sorted(patterns, key=len, reverse=True):
+            norm_pat = _normalize_hardware_name(pat)
+            pat_compact = re.sub(r'[^A-Z0-9]', '', norm_pat)
+            if norm_pat == target or (len(norm_pat) >= 3 and norm_pat in target):
+                return profile
+            if pat_compact and (pat_compact == target_compact or (len(pat_compact) >= 5 and pat_compact in target_compact)):
+                return profile
+
+    return None
+
+
+def match_cpu_db(model_name: str, db: dict | None = None) -> float | None:
+    """Matches CPU model string against cpu entries in hardware DB."""
+    if not model_name or not isinstance(db, dict):
+        return None
+    cpu_section = db.get("cpu", {})
+    if not isinstance(cpu_section, dict):
+        return None
+
+    cleaned = re.sub(r'\((?:R|TM)\)', ' ', str(model_name), flags=re.IGNORECASE)
+    cleaned = re.sub(r'[\s_\-]+', ' ', cleaned).strip().upper()
+    compact = re.sub(r'[^A-Z0-9]', '', cleaned)
+
+    candidates = []
+    for vendor, models in cpu_section.items():
+        if isinstance(models, dict):
+            for key, info in models.items():
+                if isinstance(info, dict) and "tdp_watts" in info:
+                    candidates.append((key, float(info["tdp_watts"])))
+
+    candidates.sort(key=lambda item: len(item[0]), reverse=True)
+
+    for key, tdp in candidates:
+        norm_key = re.sub(r'[\s_\-]+', ' ', key).strip().upper()
+        norm_compact = re.sub(r'[^A-Z0-9]', '', norm_key)
+        if f" {norm_key} " in f" {cleaned} " or norm_key == cleaned:
+            return tdp
+        if norm_compact and (norm_compact == compact or (len(norm_compact) >= 5 and norm_compact in compact)):
+            return tdp
+
+    return None
+
+
+def match_gpu_db(gpu_name: str, db: dict | None = None) -> float | None:
+    """Matches GPU model name against gpu entries in hardware DB."""
+    if not gpu_name or not isinstance(db, dict):
+        return None
+    gpu_section = db.get("gpu", {})
+    if not isinstance(gpu_section, dict):
+        return None
+
+    cleaned = re.sub(r'\((?:R|TM)\)', ' ', str(gpu_name), flags=re.IGNORECASE)
+    cleaned = re.sub(r'[\s_\-]+', ' ', cleaned).strip().upper()
+    compact = re.sub(r'[^A-Z0-9]', '', cleaned)
+
+    candidates = []
+    for vendor, models in gpu_section.items():
+        if isinstance(models, dict):
+            for key, info in models.items():
+                if isinstance(info, dict) and "tdp_watts" in info:
+                    candidates.append((key, float(info["tdp_watts"])))
+
+    candidates.sort(key=lambda item: len(item[0]), reverse=True)
+
+    for key, tdp in candidates:
+        norm_key = re.sub(r'[\s_\-]+', ' ', key).strip().upper()
+        norm_compact = re.sub(r'[^A-Z0-9]', '', norm_key)
+        if norm_key in cleaned or (norm_compact and (norm_compact == compact or (len(norm_compact) >= 4 and norm_compact in compact))):
+            return tdp
+
+    return None
+
+
+def calculate_recommended_psu(cpu_tdp: float | None, gpu_tdp: float | None, sys_profile: dict | None = None) -> float | None:
+    """Calculates recommended PSU wattage ceiling from CPU and GPU TDP, or OEM factory capacity.
 
     Formula: Recommended PSU = (CPU TDP + GPU TDP + 80W) * 1.4 rounded up to
     the smallest standard PSU tier >= raw, or next 100W above 2000W.
+    If sys_profile defines psu_capacity_watts (e.g. 240W for DGX Spark), returns that value.
     """
+    if isinstance(sys_profile, dict):
+        oem_psu = sys_profile.get("psu_capacity_watts") or sys_profile.get("psu_watts")
+        if oem_psu is not None:
+            return float(oem_psu)
+
     if cpu_tdp is None and gpu_tdp is None:
         return None
     raw = round(((cpu_tdp or 0.0) + (gpu_tdp or 0.0) + 80.0) * 1.4, 2)
@@ -1389,8 +1550,10 @@ def match_cpu_tdp_model(model_name: str, arch: str | None = None) -> float | Non
         return 30.0
 
     # AMD Ryzen specific models
-    if "9950X3D" in name:
+    if "9950X3D2" in name:
         return 200.0
+    if "9950X3D" in name:
+        return 170.0
     if "9950X" in name:
         return 170.0
     if "7950X" in name or "7900X" in name:
@@ -1420,27 +1583,38 @@ def match_cpu_tdp_model(model_name: str, arch: str | None = None) -> float | Non
     return 65.0
 
 
-def get_cpu_tdp(sys_root="/sys", proc_root=None, model_name=None) -> float | None:
-    """Estimates CPU TDP in Watts from RAPL powercap constraints or CPU model heuristics."""
-    if model_name:
-        return match_cpu_tdp_model(model_name)
-    if isinstance(sys_root, str) and not sys_root.startswith(('/', '.')):
-        matched = match_cpu_tdp_model(sys_root)
+def get_cpu_tdp(sys_root="/sys", proc_root=None, model_name=None, db=None) -> float | None:
+    """Estimates CPU TDP in Watts from hardware DB, RAPL powercap, or CPU model heuristics."""
+    if db is None:
+        db = load_hardware_db()
+
+    candidate_name = model_name
+    if candidate_name is None and isinstance(sys_root, str) and not sys_root.startswith(('/', '.')):
+        candidate_name = sys_root
+
+    # 1. OEM system profile match (e.g. NVIDIA DGX Spark -> 140W)
+    if candidate_name:
+        sys_prof = match_system_profile(sys_name=candidate_name, db=db)
+        if sys_prof:
+            val = sys_prof.get("cpu_tdp_watts") or sys_prof.get("soc_tdp_watts")
+            if val is not None:
+                return float(val)
+    elif sys_root:
+        sys_prof = match_system_profile(sys_root=sys_root, db=db)
+        if sys_prof:
+            val = sys_prof.get("cpu_tdp_watts") or sys_prof.get("soc_tdp_watts")
+            if val is not None:
+                return float(val)
+
+    # Direct model string match against CPU DB and fallback
+    if candidate_name:
+        matched = match_cpu_db(candidate_name, db=db)
         if matched is not None:
             return matched
+        return match_cpu_tdp_model(candidate_name)
 
-    # 1. RAPL constraint_0_power_limit_uw (PL1 in microwatts)
+    # 2. RAPL constraint_0_power_limit_uw (PL1 in microwatts)
     try:
-        # Check DMI product name or device-tree (e.g. NVIDIA DGX Spark)
-        for p in (Path(sys_root) / 'class/dmi/id/product_name', Path('/proc/device-tree/model')):
-            try:
-                if p.exists():
-                    val = p.read_text(errors='replace').strip('\x00\n ').upper()
-                    if "DGX" in val and "SPARK" in val:
-                        return 140.0
-            except OSError:
-                pass
-
         powercap_dir = Path(sys_root) / 'class/powercap'
         if powercap_dir.exists():
             candidates = sorted(
@@ -1464,7 +1638,7 @@ def get_cpu_tdp(sys_root="/sys", proc_root=None, model_name=None) -> float | Non
     except Exception:
         pass
 
-    # 2. macOS CPU model brand string lookup
+    # 3. macOS CPU model brand string lookup
     if sys.platform == "darwin":
         try:
             brand = subprocess.check_output(
@@ -1472,13 +1646,16 @@ def get_cpu_tdp(sys_root="/sys", proc_root=None, model_name=None) -> float | Non
                 stderr=subprocess.DEVNULL, timeout=1
             ).decode('utf-8').strip()
             if brand:
+                matched = match_cpu_db(brand, db=db)
+                if matched is not None:
+                    return matched
                 matched = match_cpu_tdp_model(brand)
                 if matched is not None:
                     return matched
         except (subprocess.SubprocessError, OSError):
             pass
 
-    # 3. Linux /proc/cpuinfo lookup
+    # 4. Linux /proc/cpuinfo lookup
     if proc_root is None:
         if sys_root != '/sys':
             proc_candidate = Path(sys_root).parent / 'proc'
@@ -1492,7 +1669,7 @@ def get_cpu_tdp(sys_root="/sys", proc_root=None, model_name=None) -> float | Non
         if cpuinfo_file.exists():
             try:
                 text = cpuinfo_file.read_text()
-                model_name = None
+                proc_model = None
                 is_arm = False
                 core_count = 0
                 for line in text.splitlines():
@@ -1504,11 +1681,14 @@ def get_cpu_tdp(sys_root="/sys", proc_root=None, model_name=None) -> float | Non
                         if k in ('model name', 'model', 'hardware', 'cpu model'):
                             v = v.strip()
                             if v and not v.isdigit():
-                                model_name = v
+                                proc_model = v
                         if k in ('cpu implementer', 'cpu architecture', 'cpu part'):
                             is_arm = True
-                if model_name:
-                    matched = match_cpu_tdp_model(model_name)
+                if proc_model:
+                    matched = match_cpu_db(proc_model, db=db)
+                    if matched is not None:
+                        return matched
+                    matched = match_cpu_tdp_model(proc_model)
                     if matched is not None:
                         return matched
                 if is_arm:
@@ -1526,8 +1706,8 @@ def get_cpu_tdp(sys_root="/sys", proc_root=None, model_name=None) -> float | Non
 
 
 GPU_TDP_MODELS = [
-    ("5090", 600.0),
-    ("5080", 400.0),
+    ("5090", 575.0),
+    ("5080", 360.0),
     ("5070 TI", 300.0),
     ("5070TI", 300.0),
     ("5070", 250.0),
@@ -1560,9 +1740,37 @@ def match_gpu_tdp_model(model_name: str) -> float | None:
     return None
 
 
-def get_gpu_tdp(sys_root="/sys", gpu_name=None) -> float | None:
-    """Estimates GPU TDP in Watts via nvidia-smi power limits, DRM hwmon, or model heuristics."""
-    # 1. NVIDIA NVML via nvidia-smi query power limits
+def get_gpu_tdp(sys_root="/sys", gpu_name=None, model_name=None, db=None) -> float | None:
+    """Estimates GPU TDP in Watts via system profile, nvidia-smi power limits, DRM hwmon, or model heuristics."""
+    if db is None:
+        db = load_hardware_db()
+
+    target_name = gpu_name if gpu_name is not None else model_name
+    if target_name is None and isinstance(sys_root, str) and not sys_root.startswith(('/', '.')):
+        target_name = sys_root
+
+    # 1. OEM system profile match (e.g. NVIDIA DGX Spark -> 140W)
+    if target_name:
+        sys_prof = match_system_profile(sys_name=target_name, db=db)
+        if sys_prof:
+            val = sys_prof.get("gpu_tdp_watts") or sys_prof.get("soc_tdp_watts")
+            if val is not None:
+                return float(val)
+    elif sys_root:
+        sys_prof = match_system_profile(sys_root=sys_root, db=db)
+        if sys_prof:
+            val = sys_prof.get("gpu_tdp_watts") or sys_prof.get("soc_tdp_watts")
+            if val is not None:
+                return float(val)
+
+    # Direct model string match against GPU DB and fallback
+    if target_name:
+        matched = match_gpu_db(target_name, db=db)
+        if matched is not None:
+            return matched
+        return match_gpu_tdp_model(target_name)
+
+    # 2. NVIDIA NVML via nvidia-smi query power limits
     try:
         out = subprocess.check_output(
             ['nvidia-smi', '--query-gpu=power.limit,power.default_limit', '--format=csv,nounits,noheader'],
@@ -1585,7 +1793,7 @@ def get_gpu_tdp(sys_root="/sys", gpu_name=None) -> float | None:
     except (subprocess.SubprocessError, OSError, ValueError):
         pass
 
-    # 2. DRM hwmon fallback: /sys/class/drm/card*/device/hwmon/hwmon*/power1_cap
+    # 3. DRM hwmon fallback: /sys/class/drm/card*/device/hwmon/hwmon*/power1_cap
     try:
         root = Path(sys_root)
         for cap_path in sorted(root.glob('class/drm/card*/device/hwmon/hwmon*/power1_cap')):
@@ -1605,12 +1813,7 @@ def get_gpu_tdp(sys_root="/sys", gpu_name=None) -> float | None:
     except OSError:
         pass
 
-    # 3. Model name fallback
-    if gpu_name is not None:
-        matched = match_gpu_tdp_model(gpu_name)
-        if matched is not None:
-            return matched
-
+    # 4. Model name fallback
     try:
         out = subprocess.check_output(
             ['nvidia-smi', '--query-gpu=name', '--format=csv,noheader'],
@@ -1619,6 +1822,9 @@ def get_gpu_tdp(sys_root="/sys", gpu_name=None) -> float | None:
         for line in out.splitlines():
             line = line.strip()
             if line and line not in ('[N/A]', 'N/A', '[Not Supported]', 'Not Supported'):
+                matched = match_gpu_db(line, db=db)
+                if matched is not None:
+                    return matched
                 matched = match_gpu_tdp_model(line)
                 if matched is not None:
                     return matched
@@ -1631,6 +1837,9 @@ def get_gpu_tdp(sys_root="/sys", gpu_name=None) -> float | None:
         ).decode('utf-8')
         for line in lspci_out.splitlines():
             if any(term in line.lower() for term in ('vga', '3d', 'display')):
+                matched = match_gpu_db(line, db=db)
+                if matched is not None:
+                    return matched
                 matched = match_gpu_tdp_model(line)
                 if matched is not None:
                     return matched
@@ -1642,14 +1851,16 @@ def get_gpu_tdp(sys_root="/sys", gpu_name=None) -> float | None:
 
 class PowerSampler:
     """Multi-platform power telemetry sampler for Linux (RAPL/NVML/battery) and macOS (powermetrics)."""
-    def __init__(self, sys_root='/sys', clock=time.monotonic, sleep=time.sleep):
+    def __init__(self, sys_root='/sys', clock=time.monotonic, sleep=time.sleep, db=None):
         self.sys_root = sys_root
         self.clock = clock
         self.sleep = sleep
+        self.db = db if db is not None else load_hardware_db()
+        self.sys_profile = match_system_profile(sys_root=self.sys_root, db=self.db)
         self.prev_rapl = None  # (energy_uj, max_range_uj, timestamp)
-        self.cpu_tdp = get_cpu_tdp(self.sys_root)
-        self.gpu_tdp = get_gpu_tdp(self.sys_root)
-        self.psu_ceiling = calculate_recommended_psu(self.cpu_tdp, self.gpu_tdp)
+        self.cpu_tdp = get_cpu_tdp(self.sys_root, db=self.db)
+        self.gpu_tdp = get_gpu_tdp(self.sys_root, db=self.db)
+        self.psu_ceiling = calculate_recommended_psu(self.cpu_tdp, self.gpu_tdp, sys_profile=self.sys_profile)
 
     def prime(self):
         """Optionally capture an initial RAPL baseline for single-shot invocations."""
