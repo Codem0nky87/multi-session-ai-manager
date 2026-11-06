@@ -407,10 +407,10 @@ def main():
     global HOME, STATE, UPDATER_STATE
     parser = argparse.ArgumentParser()
     parser.add_argument('--home')
-    parser.add_argument('command', choices=['serve', 'windows-service', 'status', 'metrics', 'agents', 'updates', 'self-test', 'analyze-task'])
+    parser.add_argument('command', choices=['serve', 'windows-service', 'status', 'metrics', 'agents', 'updates', 'self-test', 'analyze-task', 'report'])
     parser.add_argument('args', nargs='*')
     parser.add_argument('--loop', action='store_true')
-    options = parser.parse_args()
+    options, remaining = parser.parse_known_args()
     if options.home:
         HOME = Path(options.home)
         STATE = HOME / '.local/state/msam-host-agent'
@@ -432,6 +432,9 @@ def main():
         transcript_path = options.args[0] if options.args else ""
         target_provider = options.args[1] if len(options.args) > 1 else "codex"
         print(json.dumps(analyze_task(transcript_path, target_provider)))
+    elif options.command == 'report':
+        cmd_idx = sys.argv.index('report')
+        load_module('metrics', 'msam-metrics.py').run_report_cli(sys.argv[cmd_idx + 1:])
     elif options.command == 'updates':
         if not options.args or options.args[0] not in ('protocol', 'verify-service', 'submit', 'status', 'version'):
             raise ValueError('Unsupported update operation.')

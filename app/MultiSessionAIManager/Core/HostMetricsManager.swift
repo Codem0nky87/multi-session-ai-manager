@@ -77,8 +77,10 @@ final class HostServiceManager {
     private let onVerifiedStatus: (HostServiceInstaller.Status) -> Void
     private(set) var installation: HostServiceInstaller.Status?
     private(set) var isBusy = false
+    private(set) var isBusyReport = false
     private(set) var message: String?
     private(set) var error: String?
+    private(set) var reportError: String?
 
     init(connection: HostConnection, onVerifiedStatus: @escaping (HostServiceInstaller.Status) -> Void = { _ in }) {
         self.connection = connection
@@ -88,6 +90,21 @@ final class HostServiceManager {
     private func record(_ status: HostServiceInstaller.Status) {
         installation = status
         onVerifiedStatus(status)
+    }
+
+    func fetchMetricsReport(period: String? = nil) async throws -> String {
+        guard !isBusyReport, let service = connection.provisioningCommandRunner else {
+            throw MSAMMetricsInstaller.Failure.uploadFailed("Host SSH connection unavailable.")
+        }
+        isBusyReport = true
+        reportError = nil
+        defer { isBusyReport = false }
+        do {
+            return try await HostServiceInstaller.fetchMetricsReport(period: period, using: service)
+        } catch {
+            reportError = error.localizedDescription
+            throw error
+        }
     }
 
     func refresh() async {

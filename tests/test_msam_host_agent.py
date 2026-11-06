@@ -487,6 +487,32 @@ class HostAgentTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    def test_host_agent_report_cli(self):
+        import io
+        metrics_mod = module('msam-metrics.py')
+        db_path = self.home / '.local/state/msam/metrics-history-cli.db'
+        db = metrics_mod.MetricsHistoryDB(db_path=db_path)
+        now = time.time()
+        db.record_sample(
+            timestamp=now - 60,
+            cpu_util=15.0, cpu_temp=45.0, cpu_watts=30.0,
+            mem_used_gb=8.0, mem_total_gb=32.0,
+            gpu_util=20.0, gpu_temp=50.0, gpu_watts=40.0,
+            net_down_kbps=1024.0, net_up_kbps=512.0,
+            system_watts=70.0, power_source='rapl+nvml'
+        )
+        db.close()
+
+        with patch.object(sys, 'argv', ['msam-host-agent.py', '--home', str(self.home), 'report', '--format', 'json', '--db', str(db_path)]):
+            with patch('sys.stdout', new_callable=io.StringIO) as mock_stdout:
+                self.agent.main()
+                output = mock_stdout.getvalue()
+                data = json.loads(output)
+                self.assertIn('period', data)
+                self.assertIn('cpu', data)
+                self.assertIn('power', data)
+                self.assertEqual(data['power']['max_watts'], 70.0)
+
 
 class WindowsUpdaterTests(unittest.TestCase):
     def setUp(self):

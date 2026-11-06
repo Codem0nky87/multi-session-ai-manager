@@ -1,5 +1,10 @@
 import SwiftUI
 
+struct ExportReportPayload: Identifiable {
+    let id = UUID()
+    let fileURL: URL
+}
+
 @MainActor
 struct HostServiceSheet: View {
     let host: Host
@@ -11,6 +16,8 @@ struct HostServiceSheet: View {
     @State private var task: Task<Void, Never>?
     @State private var showAgents = false
     @State private var confirmRemove = false
+    @State private var selectedPeriod = "24h"
+    @State private var exportPayload: ExportReportPayload?
     @Environment(\.dismiss) private var dismiss
 
     init(host: Host, keyStore: KeyStore, knownHosts: KnownHostsStore,
@@ -101,6 +108,33 @@ struct HostServiceSheet: View {
                     Button("Manage Agents and Updates") { showAgents = true }
                         .disabled(manager.isBusy)
                 }
+                Section("Metrics history") {
+                    Picker("Time range", selection: $selectedPeriod) {
+                        Text("24 Hours").tag("24h")
+                        Text("7 Days").tag("7d")
+                        Text("30 Days").tag("30d")
+                        Text("All History").tag("")
+                    }
+                    .pickerStyle(.segmented)
+
+                    Button {
+                        downloadMetricsReport()
+                    } label: {
+                        Label(manager.isBusyReport ? "Fetching Report…" : "Download Metrics Report (JSON)",
+                              systemImage: "arrow.down.doc")
+                    }
+                    .disabled(connection.state != .connected || manager.isBusy || manager.isBusyReport)
+                    .accessibilityIdentifier("host.service.download-report")
+
+                    if manager.isBusyReport {
+                        ProgressView("Generating report from host database…")
+                    }
+                    if let reportError = manager.reportError {
+                        Text(reportError).foregroundStyle(.red).font(.caption)
+                    }
+                } footer: {
+                    Text("Downloads host power, CPU, memory, GPU, disk, and network history as a JSON report.")
+                }
             }
             .navigationTitle("Host Service")
             .navigationBarTitleDisplayMode(.inline)
@@ -128,6 +162,9 @@ struct HostServiceSheet: View {
                 HostAIAgentsSheet(host: host, keyStore: keyStore, knownHosts: knownHosts,
                                   onSetupChanged: onSetupChanged)
             }
+            .sheet(item: $exportPayload) { payload in
+                ShareSheet(items: [payload.fileURL])
+            }
         }
         .preferredColorScheme(.dark)
         .interactiveDismissDisabled(manager.isBusy)
@@ -138,6 +175,26 @@ struct HostServiceSheet: View {
         .onDisappear {
             task?.cancel()
             Task { await task?.value; await connection.disconnect() }
+        }
+    }
+
+    private func downloadMetricsReport() {
+        task = Task {
+            do {
+                let period = selectedPeriod.isEmpty ? nil : selectedPeriod
+                let json = try await manager.fetchMetricsReport(period: period)
+                let cleanHost = host.name.lowercased()
+                    .components(separatedBy: CharacterSet.alphanumerics.inverted)
+                    .filter { !$0.isEmpty }
+                    .joined(separator: "-")
+                let suffix = selectedPeriod.isEmpty ? "all" : selectedPeriod
+                let filename = "metrics-report-\(cleanHost.isEmpty ? "host" : cleanHost)-\(suffix).json"
+                let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
+                try json.write(to: tempURL, atomically: true, encoding: .utf8)
+                exportPayload = ExportReportPayload(fileURL: tempURL)
+            } catch {
+                // error is captured in manager.reportError
+            }
         }
     }
 

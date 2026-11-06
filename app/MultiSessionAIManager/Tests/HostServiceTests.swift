@@ -162,4 +162,17 @@ import Testing
         #expect(transport.writtenFiles.isEmpty)
         await session.stop()
     }
+
+    @Test func metricsReportCommandFormatsProperlyForUnixAndWindows() {
+        let unixAll = HostServiceInstaller.metricsReportCommand(period: nil, isWindows: false)
+        #expect(unixAll.contains("msam-host-agent\" report --format json"))
+        #expect(!unixAll.contains("--period"))
+
+        let unix24h = HostServiceInstaller.metricsReportCommand(period: "24h", isWindows: false)
+        #expect(unix24h.contains("report --format json --period '24h'"))
+
+        let win7d = HostServiceInstaller.metricsReportCommand(period: "7d", isWindows: true)
+        #expect(win7d.contains("msam-host-agent.cmd\" report --format json --period '7d'"))
+        #expect(win7d.contains("exit $LASTEXITCODE"))
+    }
 }

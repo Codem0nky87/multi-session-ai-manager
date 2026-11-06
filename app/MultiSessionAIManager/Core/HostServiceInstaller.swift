@@ -187,4 +187,18 @@ enum HostServiceInstaller {
         }
         return "\"$HOME/.local/bin/msam-host-agent\" metrics --loop"
     }
+
+    static func metricsReportCommand(period: String?, isWindows: Bool) -> String {
+        let periodArg = (period != nil && !period!.isEmpty) ? " --period \(POSIXShell.quote(period!))" : ""
+        if isWindows {
+            return powershell("& \"$env:USERPROFILE/.local/bin/msam-host-agent.cmd\" report --format json\(periodArg); exit $LASTEXITCODE")
+        }
+        return "\"$HOME/.local/bin/msam-host-agent\" report --format json\(periodArg)"
+    }
+
+    static func fetchMetricsReport(period: String? = nil, using service: SSHService) async throws -> String {
+        let command = metricsReportCommand(period: period, isWindows: service.isWindows)
+        let result = try await run(command, using: service, timeout: .seconds(30))
+        return result.stdoutString
+    }
 }
