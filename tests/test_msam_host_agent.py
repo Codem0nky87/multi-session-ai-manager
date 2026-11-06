@@ -58,6 +58,7 @@ class HostAgentTests(unittest.TestCase):
         self.assertRegex(components['updater'], r'^\d+$')
         # Digest-only components are short hex strings.
         self.assertRegex(components['msam-host-software.py'], r'^[0-9a-f]{12}$')
+        self.assertRegex(components['msam-hardware-db.json'], r'^[0-9a-f]{12}$')
 
         # Windows platform resolves metrics version from msam-metrics.ps1
         metrics_ps1 = (RESOURCES / 'msam-metrics.ps1').read_text()

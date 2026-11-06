@@ -195,4 +195,33 @@ import Testing
         #expect(lastCommand.contains("python3"))
         #expect(lastCommand.contains("base64"))
     }
+
+    @Test func hardwareDatabaseResourceIsBundledAndValid() throws {
+        #expect(HostServiceInstaller.resources.contains("msam-hardware-db.json"))
+        let data: Data
+        if let bundleData = try? HostServiceInstaller.resource("msam-hardware-db.json") {
+            data = bundleData
+        } else {
+            let projectURL = URL(fileURLWithPath: #file)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Resources/msam-hardware-db.json")
+            data = try Data(contentsOf: projectURL)
+        }
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let root = try #require(json)
+        #expect(root["version"] as? String == "2026.11.06.1")
+        let systems = try #require(root["systems"] as? [String: Any])
+        #expect(systems["NVIDIA DGX Spark"] != nil)
+        let spark = try #require(systems["NVIDIA DGX Spark"] as? [String: Any])
+        #expect(spark["soc_name"] as? String == "NVIDIA GB10")
+        #expect(spark["soc_tdp_watts"] as? Double == 140.0)
+        #expect(spark["psu_capacity_watts"] as? Double == 240.0)
+        let cpu = try #require(root["cpu"] as? [String: Any])
+        let amd = try #require(cpu["amd"] as? [String: Any])
+        #expect(amd["Ryzen 9 9950X3D2"] != nil)
+        let gpu = try #require(root["gpu"] as? [String: Any])
+        let nvidia = try #require(gpu["nvidia"] as? [String: Any])
+        #expect(nvidia["RTX 5090"] != nil)
+    }
 }

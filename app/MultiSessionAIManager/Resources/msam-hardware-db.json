@@ -1,0 +1,273 @@
+{
+  "version": "2026.11.06.1",
+  "schema_version": "2026.11.06.1",
+  "systems": {
+    "NVIDIA DGX Spark": {
+      "match_strings": [
+        "NVIDIA_DGX_SPARK",
+        "DGX SPARK",
+        "DGX_SPARK"
+      ],
+      "architecture": "soc_integrated",
+      "soc_name": "NVIDIA GB10",
+      "soc_tdp_watts": 140.0,
+      "cpu_tdp_watts": 140.0,
+      "gpu_tdp_watts": 140.0,
+      "full_load_watts": 233.2,
+      "psu_capacity_watts": 240.0,
+      "notes": "Unified 140W Grace Blackwell SoC; full system peak 233.2W powered by 240W OEM supply."
+    },
+    "NVIDIA DGX Station A100": {
+      "match_strings": [
+        "DGX STATION A100",
+        "DGX STATION"
+      ],
+      "cpu_tdp_watts": 280.0,
+      "gpu_tdp_watts": 1600.0,
+      "psu_capacity_watts": 1500.0
+    }
+  },
+  "cpu": {
+    "amd": {
+      "Ryzen 9 9950X3D2": {
+        "tdp_watts": 200.0,
+        "ppt_watts": 230.0
+      },
+      "Ryzen 9 9950X3D": {
+        "tdp_watts": 170.0,
+        "ppt_watts": 230.0
+      },
+      "Ryzen 9 9950X": {
+        "tdp_watts": 170.0,
+        "ppt_watts": 230.0
+      },
+      "Ryzen 9 9900X": {
+        "tdp_watts": 120.0,
+        "ppt_watts": 162.0
+      },
+      "Ryzen 7 9800X3D": {
+        "tdp_watts": 120.0,
+        "ppt_watts": 162.0
+      },
+      "Ryzen 7 7800X3D": {
+        "tdp_watts": 120.0,
+        "ppt_watts": 162.0
+      },
+      "Ryzen 9 7950X": {
+        "tdp_watts": 170.0,
+        "ppt_watts": 230.0
+      },
+      "Ryzen 9 7900X": {
+        "tdp_watts": 170.0,
+        "ppt_watts": 230.0
+      },
+      "Ryzen 7 7700X": {
+        "tdp_watts": 105.0,
+        "ppt_watts": 142.0
+      },
+      "Ryzen 5 7600X": {
+        "tdp_watts": 105.0,
+        "ppt_watts": 142.0
+      },
+      "Ryzen 9 5950X": {
+        "tdp_watts": 105.0
+      },
+      "Ryzen 9 5900X": {
+        "tdp_watts": 105.0
+      },
+      "Ryzen 7 5800X": {
+        "tdp_watts": 105.0
+      }
+    },
+    "intel": {
+      "Core Ultra 9 285K": {
+        "tdp_watts": 125.0,
+        "pl2_watts": 250.0
+      },
+      "Core Ultra 7 265K": {
+        "tdp_watts": 125.0,
+        "pl2_watts": 250.0
+      },
+      "Core Ultra 5 245K": {
+        "tdp_watts": 125.0,
+        "pl2_watts": 159.0
+      },
+      "Core i9-14900K": {
+        "tdp_watts": 125.0,
+        "pl2_watts": 253.0
+      },
+      "Core i7-14700K": {
+        "tdp_watts": 125.0,
+        "pl2_watts": 253.0
+      },
+      "Core i5-14600K": {
+        "tdp_watts": 125.0,
+        "pl2_watts": 181.0
+      },
+      "Core i9-13900K": {
+        "tdp_watts": 125.0,
+        "pl2_watts": 253.0
+      },
+      "Core i7-13700K": {
+        "tdp_watts": 125.0,
+        "pl2_watts": 253.0
+      },
+      "Core i5-13600K": {
+        "tdp_watts": 125.0,
+        "pl2_watts": 181.0
+      }
+    },
+    "apple": {
+      "Apple M4 Ultra": {
+        "tdp_watts": 140.0
+      },
+      "Apple M4 Max": {
+        "tdp_watts": 80.0
+      },
+      "Apple M4 Pro": {
+        "tdp_watts": 50.0
+      },
+      "Apple M4": {
+        "tdp_watts": 30.0
+      },
+      "Apple M3 Ultra": {
+        "tdp_watts": 120.0
+      },
+      "Apple M3 Max": {
+        "tdp_watts": 75.0
+      },
+      "Apple M3 Pro": {
+        "tdp_watts": 45.0
+      },
+      "Apple M3": {
+        "tdp_watts": 30.0
+      },
+      "Apple M2 Ultra": {
+        "tdp_watts": 120.0
+      },
+      "Apple M2 Max": {
+        "tdp_watts": 75.0
+      },
+      "Apple M2 Pro": {
+        "tdp_watts": 45.0
+      },
+      "Apple M2": {
+        "tdp_watts": 30.0
+      },
+      "Apple M1 Ultra": {
+        "tdp_watts": 120.0
+      },
+      "Apple M1 Max": {
+        "tdp_watts": 60.0
+      },
+      "Apple M1 Pro": {
+        "tdp_watts": 30.0
+      },
+      "Apple M1": {
+        "tdp_watts": 20.0
+      }
+    }
+  },
+  "gpu": {
+    "nvidia": {
+      "RTX 5090": {
+        "tdp_watts": 575.0
+      },
+      "RTX 5080": {
+        "tdp_watts": 360.0
+      },
+      "RTX 5070 Ti": {
+        "tdp_watts": 300.0
+      },
+      "RTX 5070": {
+        "tdp_watts": 250.0
+      },
+      "RTX 4090": {
+        "tdp_watts": 450.0
+      },
+      "RTX 4080 Super": {
+        "tdp_watts": 320.0
+      },
+      "RTX 4080": {
+        "tdp_watts": 320.0
+      },
+      "RTX 4070 Ti Super": {
+        "tdp_watts": 285.0
+      },
+      "RTX 4070 Ti": {
+        "tdp_watts": 285.0
+      },
+      "RTX 4070 Super": {
+        "tdp_watts": 220.0
+      },
+      "RTX 4070": {
+        "tdp_watts": 200.0
+      },
+      "RTX 4060 Ti": {
+        "tdp_watts": 160.0
+      },
+      "RTX 4060": {
+        "tdp_watts": 115.0
+      },
+      "RTX 3090 Ti": {
+        "tdp_watts": 450.0
+      },
+      "RTX 3090": {
+        "tdp_watts": 350.0
+      },
+      "RTX 3080 Ti": {
+        "tdp_watts": 350.0
+      },
+      "RTX 3080": {
+        "tdp_watts": 320.0
+      },
+      "RTX 3070 Ti": {
+        "tdp_watts": 290.0
+      },
+      "RTX 3070": {
+        "tdp_watts": 220.0
+      },
+      "RTX 3060 Ti": {
+        "tdp_watts": 200.0
+      },
+      "RTX 3060": {
+        "tdp_watts": 170.0
+      },
+      "GB10": {
+        "tdp_watts": 140.0
+      },
+      "GB200": {
+        "tdp_watts": 1000.0
+      },
+      "GH200": {
+        "tdp_watts": 900.0
+      },
+      "H100": {
+        "tdp_watts": 700.0
+      },
+      "A100": {
+        "tdp_watts": 400.0
+      }
+    },
+    "amd": {
+      "RX 7900 XTX": {
+        "tdp_watts": 355.0
+      },
+      "RX 7900 XT": {
+        "tdp_watts": 315.0
+      },
+      "RX 7800 XT": {
+        "tdp_watts": 263.0
+      },
+      "RX 7700 XT": {
+        "tdp_watts": 245.0
+      },
+      "RX 7600 XT": {
+        "tdp_watts": 190.0
+      },
+      "RX 7600": {
+        "tdp_watts": 165.0
+      }
+    }
+  }
+}

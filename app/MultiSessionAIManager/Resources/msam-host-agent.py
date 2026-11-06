@@ -34,7 +34,8 @@ COMPONENT_VERSION_SOURCES = {
 }
 COMPONENT_DIGEST_FILES = ['msam-host-software.py', 'msam-metrics-manage.py',
                           'msam-host-service-windows.py', 'msam-agent-updater-windows.py',
-                          'msam-host-agent-install.py', 'msam-provider-pulse.py']
+                          'msam-host-agent-install.py', 'msam-provider-pulse.py',
+                          'msam-hardware-db.json']
 
 
 def component_versions():
