@@ -108,7 +108,7 @@ struct HostServiceSheet: View {
                     Button("Manage Agents and Updates") { showAgents = true }
                         .disabled(manager.isBusy)
                 }
-                Section("Metrics history") {
+                Section {
                     Picker("Time range", selection: $selectedPeriod) {
                         Text("24 Hours").tag("24h")
                         Text("7 Days").tag("7d")
@@ -132,6 +132,8 @@ struct HostServiceSheet: View {
                     if let reportError = manager.reportError {
                         Text(reportError).foregroundStyle(.red).font(.caption)
                     }
+                } header: {
+                    Text("Metrics history")
                 } footer: {
                     Text("Downloads host power, CPU, memory, GPU, disk, and network history as a JSON report.")
                 }
