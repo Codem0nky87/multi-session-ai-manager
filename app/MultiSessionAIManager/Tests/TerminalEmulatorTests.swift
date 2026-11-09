@@ -781,4 +781,21 @@ final class TestTerminalFrameClock: TerminalFrameClock {
         let firstRowLink = e.link(atRow: 0, col: 5)
         #expect(firstRowLink == URL(string: longURL))
     }
+
+    @Test func linkDetectionUnwrapsWhenSplitByNewline() async {
+        let clock = TestTerminalFrameClock()
+        let e = TerminalEmulator(cols: 50, rows: 6, frameClock: clock)
+        let part1 = "https://github.com/Codem0nky87/multi-session-ai-"
+        let part2 = "manager/releases/tag/v2.0"
+        let fullURL = part1 + part2
+        e.feed(Data((part1 + "\r\n" + part2 + "\r\n").utf8))
+        await Task.yield()
+        clock.fire()
+
+        let link0 = e.link(atRow: 0, col: 10)
+        #expect(link0 == URL(string: fullURL))
+
+        let link1 = e.link(atRow: 1, col: 5)
+        #expect(link1 == URL(string: fullURL))
+    }
 }
