@@ -73,6 +73,55 @@ def http_get_json(url: str, headers: dict[str, str] | None = None, timeout: floa
         return 0, {"error": str(e)}, {}
 
 
+def refresh_claude_oauth_token(creds_path: Path, auth_data: dict) -> str | None:
+    """Attempt to refresh an expired Claude access token using the stored refresh token."""
+    oauth = auth_data.get("claudeAiOauth") or {}
+    refresh_token = oauth.get("refreshToken")
+    refresh_exp = oauth.get("refreshTokenExpiresAt")
+    if not refresh_token:
+        return None
+    if refresh_exp and refresh_exp <= time.time() * 1000:
+        # Refresh token itself has reached its end of life; user must re-authenticate
+        return None
+
+    scopes = oauth.get("scopes") or []
+    payload = {
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id": "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+        "scope": " ".join(scopes) if isinstance(scopes, list) else str(scopes),
+    }
+
+    try:
+        req = urllib.request.Request(
+            "https://platform.claude.com/v1/oauth/token",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "claude-code/2.1.319",
+            },
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            if resp.status == 200:
+                body = json.loads(resp.read().decode("utf-8"))
+                new_token = body.get("access_token")
+                if new_token:
+                    oauth["accessToken"] = new_token
+                    if "refresh_token" in body:
+                        oauth["refreshToken"] = body["refresh_token"]
+                    if "expires_in" in body:
+                        oauth["expiresAt"] = int((time.time() + float(body["expires_in"])) * 1000)
+                    if "refresh_token_expires_in" in body:
+                        oauth["refreshTokenExpiresAt"] = int((time.time() + float(body["refresh_token_expires_in"])) * 1000)
+                    auth_data["claudeAiOauth"] = oauth
+                    creds_path.write_text(json.dumps(auth_data, indent=2), encoding="utf-8")
+                    return new_token
+    except Exception:
+        pass
+    return None
+
+
 def collect_claude_quota(credentials_path: Path | str, cache_path: Path | str | None = None, now: datetime | None = None) -> dict:
     """Read Claude subscription usage via Anthropic OAuth endpoint with a 5-minute cache cooldown."""
     creds_p = Path(credentials_path).expanduser()
@@ -107,14 +156,18 @@ def collect_claude_quota(credentials_path: Path | str, cache_path: Path | str | 
         plan = claude_oauth.get("subscriptionType", "pro")
         expires_at = claude_oauth.get("expiresAt")
         if expires_at and expires_at <= time.time() * 1000:
-            return {
-                "state": "SIGN_IN_REQUIRED",
-                "used_percent": 0.0,
-                "resets_at": None,
-                "plan": plan,
-                "windows": [],
-                "reset_credits": None,
-            }
+            token = refresh_claude_oauth_token(creds_p, auth_data)
+            if not token:
+                return {
+                    "state": "SIGN_IN_REQUIRED",
+                    "used_percent": 0.0,
+                    "resets_at": None,
+                    "plan": plan,
+                    "windows": [],
+                    "reset_credits": None,
+                }
+        if not token:
+            token = refresh_claude_oauth_token(creds_p, auth_data)
         if not token:
             return {
                 "state": "SIGN_IN_REQUIRED",
@@ -142,6 +195,20 @@ def collect_claude_quota(credentials_path: Path | str, cache_path: Path | str | 
         },
         timeout=10.0,
     )
+
+    if status_code in (401, 403):
+        # Access token might have been invalidated; attempt token refresh once
+        new_token = refresh_claude_oauth_token(creds_p, auth_data)
+        if new_token:
+            token = new_token
+            status_code, body, _ = http_get_json(
+                "https://api.anthropic.com/api/oauth/usage",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "anthropic-beta": "oauth-2025-04-20",
+                },
+                timeout=10.0,
+            )
 
     if status_code in (401, 403):
         return {

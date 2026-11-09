@@ -90,6 +90,54 @@ class ProviderPulseTests(unittest.TestCase):
             self.assertEqual(res["windows"][2]["group"], "API Allowance ($200)")
             self.assertEqual(res["windows"][2]["used_percent"], 0.0)
 
+    def test_collect_claude_quota_refreshes_token_on_401(self):
+        creds_file = self.tmp_path / ".credentials.json"
+        creds_file.write_text(json.dumps({
+            "claudeAiOauth": {
+                "accessToken": "old-stale-token",
+                "refreshToken": "valid-refresh-token",
+                "subscriptionType": "max",
+                "expiresAt": 9999999999000,
+                "refreshTokenExpiresAt": 9999999999000
+            }
+        }))
+
+        mock_usage_response = {
+            "five_hour": {"utilization": 0.0, "resets_at": "2026-11-10T17:00:00Z"},
+            "seven_day": {"utilization": 5.0, "resets_at": "2026-11-11T16:59:00Z"}
+        }
+
+        with patch.object(self.pulse_module, "http_get_json") as mock_http:
+            # First call with old token -> 401, second call with new token -> 200
+            mock_http.side_effect = [
+                (401, {"error": "Invalid bearer token"}, {}),
+                (200, mock_usage_response, {})
+            ]
+            with patch.object(self.pulse_module, "refresh_claude_oauth_token", return_value="new-fresh-token") as mock_refresh:
+                res = self.pulse_module.collect_claude_quota(creds_file, cache_path=self.tmp_path / "c2.json")
+                self.assertEqual(mock_refresh.call_count, 1)
+                self.assertEqual(mock_http.call_count, 2)
+                self.assertEqual(res["state"], "HEALTHY")
+                self.assertEqual(res["used_percent"], 5.0)
+
+    def test_collect_claude_quota_reports_sign_in_required_when_refresh_token_expired(self):
+        creds_file = self.tmp_path / ".credentials.json"
+        # refreshTokenExpiresAt is in the past
+        creds_file.write_text(json.dumps({
+            "claudeAiOauth": {
+                "accessToken": "stale-token",
+                "refreshToken": "expired-refresh-token",
+                "subscriptionType": "max",
+                "expiresAt": 0,
+                "refreshTokenExpiresAt": 1000
+            }
+        }))
+
+        with patch.object(self.pulse_module, "http_get_json") as mock_http:
+            mock_http.return_value = (401, {"error": "Invalid bearer token"}, {})
+            res = self.pulse_module.collect_claude_quota(creds_file, cache_path=self.tmp_path / "c3.json")
+            self.assertEqual(res["state"], "SIGN_IN_REQUIRED")
+
     def test_collect_codex_quota_parses_limits_and_reset_credits(self):
         limits_data = {
             "rateLimits": [
