@@ -185,6 +185,25 @@ def collect_claude_quota(credentials_path: Path | str, cache_path: Path | str | 
         {"group": "7-Day Quota", "window_minutes": 10080, "used_percent": d7_util, "resets_at": seven_day.get("resets_at")},
     ]
 
+    # Extra usage / API allowance (e.g. $200 monthly credit / spend limit)
+    spend = body.get("spend") or {}
+    extra_usage = body.get("extra_usage") or {}
+    limit_minor = (spend.get("limit") or {}).get("amount_minor") or (spend.get("cap", {}).get("credits", {})).get("amount_minor", 0)
+    used_minor = (spend.get("amount_used") or {}).get("amount_minor", 0)
+    if not limit_minor:
+        limit_minor = extra_usage.get("monthly_limit", 0)
+        used_minor = extra_usage.get("used", 0)
+
+    if limit_minor > 0:
+        spend_util = (used_minor / limit_minor) * 100.0
+        limit_dollars = limit_minor // 100
+        windows.append({
+            "group": f"API Allowance (${limit_dollars})",
+            "window_minutes": 43200,
+            "used_percent": round(spend_util, 1),
+            "resets_at": None,
+        })
+
     result = {
         "state": state,
         "used_percent": primary_util,

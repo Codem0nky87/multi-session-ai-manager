@@ -25,17 +25,7 @@ enum TerminalSelectionBounds {
              "\u{257F}", // ╿ Light up heavy down
              "\u{251C}", // ├ Light vertical and right
              "\u{2524}", // ┤ Light vertical and left
-             "\u{252C}", // ┬ Light down and horizontal
-             "\u{2534}", // ┴ Light up and horizontal
-             "\u{253C}", // ┼ Light vertical and horizontal
-             "\u{250C}", // ┌ Light down and right
-             "\u{2510}", // ┐ Light down and left
-             "\u{2514}", // └ Light up and right
-             "\u{2518}", // ┘ Light up and left
-             "\u{256D}", // ╭ Light arc down and right
-             "\u{256E}", // ╮ Light arc down and left
-             "\u{256F}", // ╯ Light arc up and left
-             "\u{2570}": // ╰ Light arc up and right
+             "\u{253C}": // ┼ Light vertical and horizontal
             return true
         default:
             return false
@@ -44,7 +34,7 @@ enum TerminalSelectionBounds {
 
     /// Finds all columns that act as vertical dividers (e.g. sidebar borders or pane splitters).
     /// A column is considered a divider if it contains divider characters on at least a minimum
-    /// threshold of sampled rows.
+    /// threshold of sampled rows (at least 75% so intra-pane boxes and tables are not flagged).
     static func findVerticalDividers(
         in rows: [TerminalRenderedRow],
         cols: Int
@@ -54,7 +44,7 @@ enum TerminalSelectionBounds {
         let rowCount = sampleRows.count
         guard rowCount >= 2 else { return [] }
 
-        let threshold = max(2, Int(Double(rowCount) * 0.15))
+        let threshold = max(3, Int(Double(rowCount) * 0.75))
         var dividers: [Int] = []
 
         for c in 0..<cols {

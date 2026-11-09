@@ -52,6 +52,44 @@ class ProviderPulseTests(unittest.TestCase):
             self.assertEqual(res2["used_percent"], 100.0)
             self.assertEqual(mock_http.call_count, 1)
 
+    def test_collect_claude_quota_parses_spend_allowance(self):
+        creds_file = self.tmp_path / ".credentials.json"
+        creds_file.write_text(json.dumps({
+            "claudeAiOauth": {
+                "accessToken": "test-token-123",
+                "subscriptionType": "max",
+                "expiresAt": 9999999999000
+            }
+        }))
+
+        mock_usage_response = {
+            "five_hour": {"utilization": 0.0, "resets_at": "2026-11-10T17:00:00Z"},
+            "seven_day": {"utilization": 5.0, "resets_at": "2026-11-11T16:59:00Z"},
+            "spend": {
+                "limit": {"amount_minor": 20000, "currency": "USD"},
+                "amount_used": {"amount_minor": 0, "currency": "USD"},
+                "cap": {"credits": {"amount_minor": 20000, "currency": "USD"}}
+            },
+            "extra_usage": {
+                "is_enabled": False,
+                "monthly_limit": 20000,
+                "used": 0,
+                "utilization": 0.0,
+                "disabled_reason": "out_of_credits"
+            }
+        }
+
+        with patch.object(self.pulse_module, "http_get_json") as mock_http:
+            mock_http.return_value = (200, mock_usage_response, {})
+            res = self.pulse_module.collect_claude_quota(creds_file, cache_path=self.tmp_path / "c.json")
+            self.assertEqual(res["state"], "HEALTHY")
+            self.assertEqual(res["used_percent"], 5.0)
+            self.assertEqual(len(res["windows"]), 3)
+            self.assertEqual(res["windows"][0]["group"], "5-Hour Pool")
+            self.assertEqual(res["windows"][1]["group"], "7-Day Quota")
+            self.assertEqual(res["windows"][2]["group"], "API Allowance ($200)")
+            self.assertEqual(res["windows"][2]["used_percent"], 0.0)
+
     def test_collect_codex_quota_parses_limits_and_reset_credits(self):
         limits_data = {
             "rateLimits": [

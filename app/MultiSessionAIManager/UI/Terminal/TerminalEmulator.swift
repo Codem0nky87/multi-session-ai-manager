@@ -478,22 +478,30 @@ final class TerminalEmulator {
                 .replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression)
         }
 
-        var lineTexts: [String] = []
-        lineTexts.reserveCapacity(endRow - startRow + 1)
+        var result = ""
         for r in startRow...endRow {
             let rowStartCol = (r == startRow) ? startCol : colMin
             let rowEndCol = (r == endRow) ? endCol : colMax
             guard rowEndCol >= rowStartCol else {
-                lineTexts.append("")
+                if r < endRow { result.append("\n") }
                 continue
             }
             let start = Position(col: rowStartCol, row: max(r, 0))
             let end = Position(col: rowEndCol + 1, row: max(r, 0))
             let rawText = terminal.getText(start: start, end: end)
-            let trimmed = rawText.replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression)
-            lineTexts.append(trimmed)
+            let isNextWrapped = (r + 1 < terminal.buffer.lines.count) && terminal.buffer.lines[r + 1].isWrapped
+
+            if isNextWrapped {
+                result.append(rawText)
+            } else {
+                let trimmed = rawText.replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression)
+                result.append(trimmed)
+                if r < endRow {
+                    result.append("\n")
+                }
+            }
         }
-        return lineTexts.joined(separator: "\n")
+        return result
     }
 
     /// Plain text for the currently visible terminal viewport. Used as a local copy
@@ -513,29 +521,177 @@ final class TerminalEmulator {
             .replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression)
     }
 
+    // MARK: - Hyperlink Detection & Unwrapping
+
+    /// Clean trailing punctuation and validate standard URL schemes.
+    static func cleanURL(_ raw: String) -> URL? {
+        var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !s.isEmpty else { return nil }
+
+        // Strip trailing punctuation often attached in prose: .,:;!?'">]
+        while let last = s.last, ".,:;!?'\">]".contains(last) {
+            if last == ")" {
+                let openCount = s.filter { $0 == "(" }.count
+                let closeCount = s.filter { $0 == ")" }.count
+                if closeCount > openCount {
+                    s.removeLast()
+                    continue
+                }
+                break
+            }
+            if last == "]" {
+                let openCount = s.filter { $0 == "[" }.count
+                let closeCount = s.filter { $0 == "]" }.count
+                if closeCount > openCount {
+                    s.removeLast()
+                    continue
+                }
+                break
+            }
+            s.removeLast()
+        }
+
+        guard let url = URL(string: s) ?? URL(string: s.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""),
+              let scheme = url.scheme?.lowercased(),
+              ["http", "https", "mailto", "file", "ssh", "git"].contains(scheme)
+        else {
+            return nil
+        }
+        return url
+    }
+
+    private static let urlSchemePattern = #"(https?://|mailto:|file:|ssh://|git://)[a-zA-Z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+"#
+    private static let urlRegex: NSRegularExpression? = try? NSRegularExpression(pattern: urlSchemePattern)
+
+    private static func isBorderOrSpace(_ c: Character) -> Bool {
+        c.isWhitespace || "│┃║┆┊╎╏╽╿|".contains(c)
+    }
+
+    private func unwrappedImplicitLink(atRow row: Int, col: Int) -> URL? {
+        guard row >= 0, row < lines.count, col >= 0, col < cols else { return nil }
+        guard let regex = Self.urlRegex else { return nil }
+
+        let minStartRow = max(0, row - 4)
+        for candidateRow in minStartRow...row {
+            let lineText = lines[candidateRow].plainText
+            let nsText = lineText as NSString
+            let matches = regex.matches(in: lineText, range: NSRange(location: 0, length: nsText.length))
+
+            for match in matches {
+                let matchRange = match.range
+                let matchStr = nsText.substring(with: matchRange)
+                let startCol = matchRange.location
+                let endCol = matchRange.location + matchRange.length
+
+                var currentURLText = matchStr
+                var segments: [(row: Int, startCol: Int, endCol: Int)] = [(candidateRow, startCol, endCol)]
+                var currentRow = candidateRow
+
+                while currentRow + 1 < lines.count {
+                    let curText = lines[currentRow].plainText
+                    let curNS = curText as NSString
+                    let lastSegEnd = segments.last!.endCol
+
+                    // Check if anything other than borders/spaces follows on this row
+                    if lastSegEnd < curNS.length {
+                        let suffix = curNS.substring(from: lastSegEnd)
+                        if !suffix.allSatisfy(Self.isBorderOrSpace) {
+                            break
+                        }
+                    }
+
+                    // Check wrap indicators
+                    let isBufferWrapped = (currentRow + 1 < terminal.buffer.lines.count) && terminal.buffer.lines[currentRow + 1].isWrapped
+                    let hasWrapPunctuation = ["-", "/", "&", "=", "?", "#", "_"].contains(where: { currentURLText.hasSuffix($0) })
+                    let nearMargin = lastSegEnd >= (cols - max(2, cols / 5))
+                    let isLong = currentURLText.count >= 25
+                    let hasBoxBorder = curText.contains("│") || curText.contains("|")
+
+                    guard isBufferWrapped || hasWrapPunctuation || nearMargin || isLong || hasBoxBorder else {
+                        break
+                    }
+
+                    // Check next line
+                    let nextText = lines[currentRow + 1].plainText
+                    let nextNS = nextText as NSString
+
+                    // If next line has its own scheme, it is a new link, not a continuation
+                    let nextMatches = regex.matches(in: nextText, range: NSRange(location: 0, length: nextNS.length))
+                    if let firstNext = nextMatches.first, firstNext.range.location < 10 {
+                        break
+                    }
+
+                    // Find where content begins after leading borders and spaces
+                    var leadCol = 0
+                    while leadCol < nextNS.length {
+                        let unichar = nextNS.character(at: leadCol)
+                        let ch = Character(UnicodeScalar(unichar) ?? UnicodeScalar(32))
+                        if !Self.isBorderOrSpace(ch) { break }
+                        leadCol += 1
+                    }
+                    guard leadCol < nextNS.length else { break }
+
+                    // Extract continuation URL characters
+                    let validChars = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~:/?#[]@!$&'()*+,;=%")
+                    var contLength = 0
+                    while leadCol + contLength < nextNS.length {
+                        let unichar = nextNS.character(at: leadCol + contLength)
+                        guard let scalar = UnicodeScalar(unichar), validChars.contains(scalar) else { break }
+                        contLength += 1
+                    }
+                    guard contLength > 0 else { break }
+
+                    let contStr = nextNS.substring(with: NSRange(location: leadCol, length: contLength))
+                    let candidateFull = currentURLText + contStr
+                    guard Self.cleanURL(candidateFull) != nil else { break }
+
+                    currentURLText = candidateFull
+                    segments.append((currentRow + 1, leadCol, leadCol + contLength))
+                    currentRow += 1
+
+                    // If non-border text follows on the continuation line, the URL ended here
+                    if leadCol + contLength < nextNS.length {
+                        let rest = nextNS.substring(from: leadCol + contLength)
+                        if !rest.allSatisfy(Self.isBorderOrSpace) {
+                            break
+                        }
+                    }
+                }
+
+                // Check if target (row, col) is within any segment of this stitched URL
+                for seg in segments {
+                    if seg.row == row && col >= seg.startCol && col <= seg.endCol {
+                        return Self.cleanURL(currentURLText)
+                    }
+                }
+            }
+        }
+        return nil
+    }
+
     /// Returns a hyperlink or implicit URL at the given cell coordinates, unwrapping
     /// text that spans across terminal line wraps.
     func link(atRow row: Int, col: Int) -> URL? {
         guard row >= 0, col >= 0, col < cols else { return nil }
-        guard let linkText = terminal.link(
-            at: .buffer(Position(col: col, row: row)),
-            mode: .explicitAndImplicit
-        ) else {
-            return nil
-        }
-        let trimmed = linkText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
 
-        let parsedURL = URL(string: trimmed)
-            ?? URL(string: trimmed.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")
-        guard let url = parsedURL, let scheme = url.scheme?.lowercased() else {
-            return nil
-        }
-
-        // Support standard schemes
-        if ["http", "https", "mailto", "file"].contains(scheme) {
+        // 1. Check for explicit OSC 8 hyperlink first
+        let pos = Position(col: col, row: row)
+        if let explicitText = terminal.link(at: .buffer(pos), mode: .explicitOnly),
+           let url = Self.cleanURL(explicitText) {
             return url
         }
+
+        // 2. Check for unwrapped implicit link across lines
+        if let unwrappedURL = unwrappedImplicitLink(atRow: row, col: col) {
+            return unwrappedURL
+        }
+
+        // 3. Fallback to SwiftTerm implicit match
+        if let linkText = terminal.link(at: .buffer(pos), mode: .explicitAndImplicit),
+           let url = Self.cleanURL(linkText) {
+            return url
+        }
+
         return nil
     }
 
