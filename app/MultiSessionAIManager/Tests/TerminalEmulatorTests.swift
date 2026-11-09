@@ -849,4 +849,26 @@ final class TestTerminalFrameClock: TerminalFrameClock {
         #expect(!text.contains("\n"))
         #expect(text == longCommand)
     }
+
+    @Test func linkDetectionUnwrapsLinkSpanningManyLines() async {
+        let clock = TestTerminalFrameClock()
+        // cols = 30, URL of 180 characters spanning 6 rows
+        let longURL = "https://example.com/oauth/authorize?client_id=123456789&redirect_uri=https%3A%2F%2Fexample.com%2Fcallback&scope=user_read+user_write&state=abcdef1234567890abcdef1234567890abcdef&code=123"
+        let e = TerminalEmulator(cols: 30, rows: 10, frameClock: clock)
+        e.feed(Data((longURL + "\r\n").utf8))
+        await Task.yield()
+        clock.fire()
+
+        // Tapping on row 5 (which is 5 rows past the start, previously blocked by row - 4 lookback)
+        let linkRow5 = e.link(atRow: 5, col: 2)
+        #expect(linkRow5 == URL(string: longURL))
+
+        // Tapping on row 0 should also resolve to the full URL
+        let linkRow0 = e.link(atRow: 0, col: 5)
+        #expect(linkRow0 == URL(string: longURL))
+
+        // Tapping with touch slop (e.g. at cols - 1 on row 0, which wrapped)
+        let linkRow0End = e.link(atRow: 0, col: 29)
+        #expect(linkRow0End == URL(string: longURL))
+    }
 }

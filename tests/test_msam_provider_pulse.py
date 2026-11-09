@@ -631,6 +631,29 @@ class ProviderPulseTests(unittest.TestCase):
             self.assertEqual(analysis["effort"], "high")
             self.assertTrue(analysis["is_complex"])
 
+    def test_sample_provider_pulse_resolves_claude_candidate_paths(self):
+        claude_custom_dir = self.tmp_path / "custom_claude"
+        claude_custom_dir.mkdir(parents=True)
+        creds = claude_custom_dir / ".credentials.json"
+        creds.write_text(json.dumps({
+            "claudeAiOauth": {
+                "accessToken": "custom-token",
+                "subscriptionType": "max",
+                "expiresAt": 9999999999000,
+                "refreshTokenExpiresAt": 9999999999000
+            }
+        }))
+
+        with patch.object(self.pulse_module, "get_installed_herdr_integrations", return_value={"claude"}), \
+             patch.object(self.pulse_module, "collect_claude_quota", return_value={"state": "HEALTHY", "used_percent": 0.0}) as mock_collect, \
+             patch.object(self.pulse_module, "collect_terminal_agents", return_value=[]):
+            res = self.pulse_module.collect_provider_telemetry(
+                home_dir=self.tmp_path,
+                env={"CLAUDE_CONFIG_DIR": str(claude_custom_dir)}
+            )
+            self.assertEqual(mock_collect.call_args[0][0], creds)
+            self.assertEqual(res["providers"]["claude_code"]["state"], "HEALTHY")
+
     def test_provider_pulse_file_has_shebang_and_main_runner(self):
         target_path = resources_dir / "msam-provider-pulse.py"
         first_line = target_path.read_text(encoding="utf-8").splitlines()[0]

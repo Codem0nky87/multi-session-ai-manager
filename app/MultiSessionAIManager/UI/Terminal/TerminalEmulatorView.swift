@@ -487,7 +487,14 @@ struct TerminalEmulatorView: View {
 
         // Check if a link was tapped
         let cell = cellAt(location)
-        if let linkURL = emulator.link(atRow: cell.row, col: cell.col) {
+        var linkURL = emulator.link(atRow: cell.row, col: cell.col)
+        if linkURL == nil && cell.row > 0 {
+            linkURL = emulator.link(atRow: cell.row - 1, col: cell.col)
+        }
+        if linkURL == nil && cell.row + 1 < emulator.lines.count {
+            linkURL = emulator.link(atRow: cell.row + 1, col: cell.col)
+        }
+        if let linkURL {
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
             detectedLinkURL = linkURL
             return

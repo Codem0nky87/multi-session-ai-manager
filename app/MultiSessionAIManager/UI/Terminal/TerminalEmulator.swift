@@ -582,7 +582,17 @@ final class TerminalEmulator {
         guard row >= 0, row < lines.count, col >= 0, col < cols else { return nil }
         guard let regex = Self.urlRegex else { return nil }
 
-        let minStartRow = max(0, row - 4)
+        // Long URLs (e.g. OAuth links) can wrap across 8-16 lines in narrow mobile terminals.
+        // Look back up to 16 lines, stopping early if a blank line is encountered.
+        var minStartRow = max(0, row - 16)
+        for r in stride(from: row, through: minStartRow, by: -1) {
+            if lines[r].plainText.trimmingCharacters(in: .whitespaces).isEmpty {
+                minStartRow = r + 1
+                break
+            }
+        }
+        guard minStartRow <= row else { return nil }
+
         for candidateRow in minStartRow...row {
             let lineText = lines[candidateRow].plainText
             let nsText = lineText as NSString
@@ -673,9 +683,14 @@ final class TerminalEmulator {
                 }
 
                 // Check if target (row, col) is within any segment of this stitched URL
-                for seg in segments {
-                    if seg.row == row && col >= seg.startCol && col <= seg.endCol {
-                        return Self.cleanURL(currentURLText)
+                for (segIdx, seg) in segments.enumerated() {
+                    if seg.row == row {
+                        let hasContinuation = segIdx < segments.count - 1
+                        let maxCol = hasContinuation ? (cols - 1) : min(cols - 1, seg.endCol + 3)
+                        let minCol = max(0, seg.startCol - 3)
+                        if col >= minCol && col <= maxCol {
+                            return Self.cleanURL(currentURLText)
+                        }
                     }
                 }
             }

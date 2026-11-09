@@ -1069,8 +1069,33 @@ def collect_provider_telemetry(home_dir: Path | str | None = None, env: dict | N
     providers = {}
 
     if "claude" in installed:
-        claude_creds = home / ".claude" / ".credentials.json"
-        providers["claude_code"] = collect_claude_quota(claude_creds)
+        candidate_paths = []
+        if env and "CLAUDE_CONFIG_DIR" in env:
+            candidate_paths.append(Path(env["CLAUDE_CONFIG_DIR"]) / ".credentials.json")
+        elif "CLAUDE_CONFIG_DIR" in os.environ:
+            candidate_paths.append(Path(os.environ["CLAUDE_CONFIG_DIR"]) / ".credentials.json")
+        candidate_paths.append(Path("/run/woodhouse-machine-vault/agents/claude/.credentials.json"))
+        candidate_paths.append(home / ".claude" / ".credentials.json")
+
+        existing_creds = [p for p in candidate_paths if p.is_file()]
+        existing_creds.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+
+        claude_res = None
+        for p in existing_creds:
+            res = collect_claude_quota(p)
+            if res.get("state") == "HEALTHY":
+                claude_res = res
+                break
+            if claude_res is None:
+                claude_res = res
+        providers["claude_code"] = claude_res or {
+            "state": "SIGN_IN_REQUIRED",
+            "used_percent": 0.0,
+            "resets_at": None,
+            "plan": "pro",
+            "windows": [],
+            "reset_credits": None,
+        }
 
     if "codex" in installed:
         providers["codex"] = collect_codex_quota(home_dir=home, env=env)
