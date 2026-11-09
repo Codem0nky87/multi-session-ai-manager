@@ -798,4 +798,55 @@ final class TestTerminalFrameClock: TerminalFrameClock {
         let link1 = e.link(atRow: 1, col: 5)
         #expect(link1 == URL(string: fullURL))
     }
+
+    @Test func linkDetectionUnwrapsWhenSplitByNewlineAtWideWidth() async {
+        let clock = TestTerminalFrameClock()
+        let e = TerminalEmulator(cols: 80, rows: 6, frameClock: clock)
+        let part1 = "https://github.com/Codem0nky87/multi-session-ai-"
+        let part2 = "manager/releases/tag/v2.0"
+        let fullURL = part1 + part2
+        e.feed(Data((part1 + "\r\n" + part2 + "\r\n").utf8))
+        await Task.yield()
+        clock.fire()
+
+        let link0 = e.link(atRow: 0, col: 10)
+        #expect(link0 == URL(string: fullURL))
+
+        let link1 = e.link(atRow: 1, col: 5)
+        #expect(link1 == URL(string: fullURL))
+    }
+
+    @Test func linkDetectionUnwrapsInsideBoxWithBorders() async {
+        let clock = TestTerminalFrameClock()
+        let e = TerminalEmulator(cols: 80, rows: 6, frameClock: clock)
+        let part1 = "https://github.com/Codem0nky87/multi-session-ai-"
+        let part2 = "manager/releases/tag/v2.0"
+        let fullURL = part1 + part2
+        let row0 = "│  " + part1 + "  │\r\n"
+        let row1 = "│  " + part2 + "  │\r\n"
+        e.feed(Data((row0 + row1).utf8))
+        await Task.yield()
+        clock.fire()
+
+        let link0 = e.link(atRow: 0, col: 10)
+        #expect(link0 == URL(string: fullURL))
+
+        let link1 = e.link(atRow: 1, col: 5)
+        #expect(link1 == URL(string: fullURL))
+    }
+
+    @Test func selectedTextDoesNotInsertNewlineOnWrappedLine() async {
+        let clock = TestTerminalFrameClock()
+        // cols = 20, feeding 35 continuous characters without newline
+        let e = TerminalEmulator(cols: 20, rows: 4, frameClock: clock)
+        let longCommand = "curl -H 'Authorization: Bearer' URL"
+        e.feed(Data(longCommand.utf8))
+        await Task.yield()
+        clock.fire()
+
+        // Selected across row 0 and row 1
+        let text = e.selectedText(fromRow: 0, fromCol: 0, toRow: 1, toCol: 15)
+        #expect(!text.contains("\n"))
+        #expect(text == longCommand)
+    }
 }

@@ -207,5 +207,30 @@ import UIKit
         #expect(!text.contains("Sidebar"))
         #expect(!text.contains("│"))
     }
+
+    @Test func findVerticalDividersIgnoresSmallBoxesAndTables() {
+        let emulator = TerminalEmulator(cols: 80, rows: 10)
+        // A 3-row box inside a 10-row terminal should NOT be recognized as a pane divider
+        let box = """
+        Row 1 normal text
+        Row 2 normal text
+        ┌──────────────────────────────────────┐
+        │  Box line 1                          │
+        │  Box line 2                          │
+        └──────────────────────────────────────┘
+        Row 7 normal text
+        Row 8 normal text
+        Row 9 normal text
+        """
+        emulator.feed(Data(box.replacingOccurrences(of: "\n", with: "\r\n").utf8))
+        emulator.tick()
+
+        let dividers = TerminalSelectionBounds.findVerticalDividers(in: emulator.lines, cols: 80)
+        #expect(dividers.isEmpty)
+
+        // Column bounds in context should remain full width 0...79
+        let bounds = emulator.contextColumnBounds(around: 10)
+        #expect(bounds == 0...79)
+    }
 }
 
