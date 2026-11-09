@@ -478,6 +478,14 @@ final class TerminalEmulator {
                 .replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression)
         }
 
+        // Full-width multi-line selection uses SwiftTerm's native getText which respects isWrapped
+        if colMin == 0 && colMax >= cols - 1 {
+            let start = Position(col: startCol, row: max(startRow, 0))
+            let end = Position(col: endCol + 1, row: max(endRow, 0))
+            return terminal.getText(start: start, end: end)
+                .replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression)
+        }
+
         var result = ""
         for r in startRow...endRow {
             let rowStartCol = (r == startRow) ? startCol : colMin
@@ -489,7 +497,10 @@ final class TerminalEmulator {
             let start = Position(col: rowStartCol, row: max(r, 0))
             let end = Position(col: rowEndCol + 1, row: max(r, 0))
             let rawText = terminal.getText(start: start, end: end)
-            let isNextWrapped = (r + 1 < terminal.buffer.lines.count) && terminal.buffer.lines[r + 1].isWrapped
+            let isNextWrapped = (r < endRow) && !terminal.getText(
+                start: Position(col: max(0, cols - 1), row: max(r, 0)),
+                end: Position(col: min(cols, 1), row: max(r + 1, 0))
+            ).contains("\n")
 
             if isNextWrapped {
                 result.append(rawText)
@@ -601,7 +612,10 @@ final class TerminalEmulator {
                     }
 
                     // Check wrap indicators
-                    let isBufferWrapped = (currentRow + 1 < terminal.buffer.lines.count) && terminal.buffer.lines[currentRow + 1].isWrapped
+                    let isBufferWrapped = !terminal.getText(
+                        start: Position(col: max(0, cols - 1), row: max(0, currentRow)),
+                        end: Position(col: min(cols, 1), row: max(0, currentRow + 1))
+                    ).contains("\n")
                     let hasWrapPunctuation = ["-", "/", "&", "=", "?", "#", "_"].contains(where: { currentURLText.hasSuffix($0) })
                     let nearMargin = lastSegEnd >= (cols - max(2, cols / 5))
                     let isLong = currentURLText.count >= 25
