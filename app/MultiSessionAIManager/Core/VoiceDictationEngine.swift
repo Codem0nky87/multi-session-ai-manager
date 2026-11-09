@@ -48,6 +48,7 @@ public final class VoiceDictationEngine: ObservableObject {
     private let service: SpeechRecognitionService
     private var currentLiveText: String = ""
     private var currentAudioLevel: Float = 0.0
+    private var currentSessionID = UUID()
 
     public init(service: SpeechRecognitionService? = nil) {
         self.service = service ?? AppleSpeechRecognitionService()
@@ -72,10 +73,21 @@ public final class VoiceDictationEngine: ObservableObject {
     // MARK: - Public Control API
 
     public func startRecording() async {
+        if case .error = state {
+            state = .idle
+        }
         guard state == .idle else { return }
 
+        let session = UUID()
+        currentSessionID = session
         state = .requestingPermissions
+
         let granted = await service.requestPermissions()
+        guard currentSessionID == session && state == .requestingPermissions else {
+            // Superseded or cancelled while waiting for permissions
+            return
+        }
+
         guard granted else {
             state = .error("Microphone or Speech Recognition permission denied.")
             return
@@ -89,14 +101,14 @@ public final class VoiceDictationEngine: ObservableObject {
             try await service.startRecognition(
                 onDeviceOnly: true,
                 onPartialResult: { [weak self] partialText in
-                    guard let self = self else { return }
+                    guard let self = self, self.currentSessionID == session else { return }
                     self.currentLiveText = partialText
                     if case .listening = self.state {
                         self.state = .listening(liveText: partialText, audioLevel: self.currentAudioLevel)
                     }
                 },
                 onAudioLevel: { [weak self] level in
-                    guard let self = self else { return }
+                    guard let self = self, self.currentSessionID == session else { return }
                     let normalized = Self.normalizeAudioLevel(rms: level)
                     self.currentAudioLevel = normalized
                     if case .listening = self.state {
@@ -105,6 +117,7 @@ public final class VoiceDictationEngine: ObservableObject {
                 }
             )
         } catch {
+            guard currentSessionID == session else { return }
             state = .error(error.localizedDescription)
         }
     }
@@ -115,8 +128,13 @@ public final class VoiceDictationEngine: ObservableObject {
             return nil
         }
 
+        let session = currentSessionID
         state = .processing
         let finalRaw = await service.stopRecognition()
+        guard currentSessionID == session else {
+            return nil
+        }
+
         let candidate = finalRaw ?? currentLiveText
         let cleaned = Self.cleanTranscriptionText(candidate)
 
@@ -127,6 +145,7 @@ public final class VoiceDictationEngine: ObservableObject {
     }
 
     public func cancelRecording() {
+        currentSessionID = UUID()
         service.cancelRecognition()
         state = .idle
         currentLiveText = ""
@@ -145,6 +164,7 @@ public final class AppleSpeechRecognitionService: SpeechRecognitionService {
     private var recognitionTask: SFSpeechRecognitionTask?
     private var activeRecording = false
     private var latestTranscription: String = ""
+    private var isTapInstalled = false
 
     public var isRecording: Bool {
         activeRecording
@@ -198,7 +218,7 @@ public final class AppleSpeechRecognitionService: SpeechRecognitionService {
 
         let audioSession = AVAudioSession.sharedInstance()
         try audioSession.setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .defaultToSpeaker, .allowBluetooth])
-        try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+        try audioSession.setActive(true)
 
         let engine = AVAudioEngine()
         let request = SFSpeechAudioBufferRecognitionRequest()
@@ -209,12 +229,7 @@ public final class AppleSpeechRecognitionService: SpeechRecognitionService {
         request.requiresOnDeviceRecognition = false
 
         let inputNode = engine.inputNode
-        inputNode.removeTap(onBus: 0)
-
-        var recordingFormat = inputNode.outputFormat(forBus: 0)
-        if recordingFormat.sampleRate <= 0 || recordingFormat.channelCount == 0 {
-            recordingFormat = inputNode.inputFormat(forBus: 0)
-        }
+        let recordingFormat = inputNode.outputFormat(forBus: 0)
 
         guard recordingFormat.sampleRate > 0, recordingFormat.channelCount > 0 else {
             teardownAudio()
@@ -246,6 +261,7 @@ public final class AppleSpeechRecognitionService: SpeechRecognitionService {
                 }
             }
         }
+        self.isTapInstalled = true
 
         do {
             engine.prepare()
@@ -300,7 +316,10 @@ public final class AppleSpeechRecognitionService: SpeechRecognitionService {
             if engine.isRunning {
                 engine.stop()
             }
-            engine.inputNode.removeTap(onBus: 0)
+            if isTapInstalled {
+                engine.inputNode.removeTap(onBus: 0)
+                isTapInstalled = false
+            }
         }
         audioEngine = nil
         recognitionRequest = nil

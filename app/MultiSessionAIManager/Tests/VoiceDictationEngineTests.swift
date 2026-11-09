@@ -93,4 +93,128 @@ import Testing
         #expect(!mock.isRecording)
         #expect(engine.state == .idle)
     }
+
+    @MainActor
+    @Test func engineCancelsDuringPermissionResolutionWithoutStartingRecognition() async {
+        let mock = AsyncControllableMockSpeechRecognitionService()
+        let engine = VoiceDictationEngine(service: mock)
+
+        let startTask = Task {
+            await engine.startRecording()
+        }
+
+        // Wait until mock has actually been asked for permissions
+        await mock.waitForPermissionRequest()
+        #expect(engine.state == .requestingPermissions)
+
+        // User taps and releases quickly, cancelling while permissions are pending
+        engine.cancelRecording()
+        #expect(engine.state == .idle)
+
+        // Allow permission request to finish
+        mock.resumePermissionRequest(granted: true)
+        await startTask.value
+
+        // Must remain idle and NOT start recognition
+        #expect(engine.state == .idle)
+        #expect(!mock.startRecognitionCalled)
+        #expect(!mock.isRecording)
+    }
+
+    @MainActor
+    @Test func engineStopsDuringPermissionResolutionWithoutStartingRecognition() async {
+        let mock = AsyncControllableMockSpeechRecognitionService()
+        let engine = VoiceDictationEngine(service: mock)
+
+        let startTask = Task {
+            await engine.startRecording()
+        }
+
+        await mock.waitForPermissionRequest()
+        #expect(engine.state == .requestingPermissions)
+
+        // User finger lifted before permission finished
+        let text = await engine.stopRecording()
+        #expect(text == nil)
+        #expect(engine.state == .idle)
+
+        mock.resumePermissionRequest(granted: true)
+        await startTask.value
+
+        #expect(engine.state == .idle)
+        #expect(!mock.startRecognitionCalled)
+        #expect(!mock.isRecording)
+    }
+
+    @MainActor
+    @Test func engineRecoversFromErrorOnSubsequentStart() async {
+        let mock = MockSpeechRecognitionService()
+        mock.permissionGranted = true
+        let engine = VoiceDictationEngine(service: mock)
+
+        // Force an error state
+        mock.permissionGranted = false
+        await engine.startRecording()
+        if case .error = engine.state {
+            // expected
+        } else {
+            Issue.record("Expected .error state")
+        }
+
+        // Subsequent start should recover from .error and succeed
+        mock.permissionGranted = true
+        await engine.startRecording()
+        #expect(engine.state == .listening(liveText: "", audioLevel: 0.0))
+
+        _ = await engine.stopRecording()
+        #expect(engine.state == .idle)
+    }
+}
+
+// MARK: - Test Helpers
+
+@MainActor
+final class AsyncControllableMockSpeechRecognitionService: SpeechRecognitionService {
+    var isRecording = false
+    var startRecognitionCalled = false
+    private var permissionContinuation: CheckedContinuation<Bool, Never>?
+    private var requestWaitContinuation: CheckedContinuation<Void, Never>?
+
+    func waitForPermissionRequest() async {
+        if permissionContinuation != nil { return }
+        await withCheckedContinuation { continuation in
+            requestWaitContinuation = continuation
+        }
+    }
+
+    func resumePermissionRequest(granted: Bool) {
+        permissionContinuation?.resume(returning: granted)
+        permissionContinuation = nil
+    }
+
+    func requestPermissions() async -> Bool {
+        await withCheckedContinuation { continuation in
+            permissionContinuation = continuation
+            requestWaitContinuation?.resume()
+            requestWaitContinuation = nil
+        }
+    }
+
+    func startRecognition(
+        onDeviceOnly: Bool,
+        onPartialResult: @MainActor @Sendable @escaping (String) -> Void,
+        onAudioLevel: @MainActor @Sendable @escaping (Float) -> Void
+    ) async throws {
+        startRecognitionCalled = true
+        isRecording = true
+    }
+
+    func stopRecognition() async -> String? {
+        isRecording = false
+        return "mock text"
+    }
+
+    func cancelRecognition() {
+        isRecording = false
+    }
 }
