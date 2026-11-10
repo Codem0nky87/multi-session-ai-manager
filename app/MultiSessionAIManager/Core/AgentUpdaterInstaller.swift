@@ -301,7 +301,10 @@ final class AgentUpdaterInstaller {
         let lingerProbe: String
         switch context.platform {
         case .macOS:
-            serviceProbe = "launchctl print gui/\(context.uid)/\(serviceLabel) >/dev/null 2>&1"
+            // The service runs in the desktop session when this user is logged in at
+            // the screen, and in the background session otherwise.
+            serviceProbe = "{ launchctl print gui/\(context.uid)/\(serviceLabel) >/dev/null 2>&1"
+                + " || launchctl print user/\(context.uid)/\(serviceLabel) >/dev/null 2>&1; }"
             lingerProbe = "printf n/a"
         case .linux:
             serviceProbe = "systemctl --user is-active --quiet \(serviceFileName)"
@@ -402,18 +405,26 @@ final class AgentUpdaterInstaller {
     ) async throws -> Bool {
         guard context.platform == .macOS else { return true }
         let result = try await service.run(
-            "launchctl print gui/\(context.uid) >/dev/null 2>&1",
+            Self.macSessionProbe(uid: context.uid),
             timeout: Self.commandTimeout,
             outputLimit: Self.outputLimit
         )
         guard result.exitStatus == 0 else {
             state = .approvalRequired(.macOSLoginDomain([
-                "Sign in to the Mac desktop as \(connection.host.username) and leave that user logged in.",
-                "Return to Host Setup and tap Test Again. A per-user LaunchAgent cannot start without that macOS login domain."
+                "macOS has no launchd session for \(connection.host.username) to run the host service in. Sign in as that user, over SSH or at the Mac's screen.",
+                "Return to Host Setup and tap Test Again."
             ]))
             return false
         }
         return true
+    }
+
+    /// Succeeds when the Mac has a launchd session the host service can run in.
+    /// The desktop session (`gui/<uid>`) exists only while this user is logged in at
+    /// the screen; the background session (`user/<uid>`) exists for an SSH-only
+    /// account too, and the host installer uses whichever is there.
+    nonisolated static func macSessionProbe(uid: Int) -> String {
+        "launchctl print gui/\(uid) >/dev/null 2>&1 || launchctl print user/\(uid) >/dev/null 2>&1"
     }
 
     private func publish(_ status: AgentUpdaterServiceStatus, context: AgentUpdaterHostContext) {

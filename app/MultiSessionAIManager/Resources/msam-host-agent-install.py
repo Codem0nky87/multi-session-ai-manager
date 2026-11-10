@@ -141,6 +141,46 @@ def service_path(legacy=False):
     return HOME / '.config/systemd/user' / (LEGACY_UNIT if legacy else UNIT)
 
 
+def mac_domains():
+    uid = str(os.getuid())
+    return ('gui/' + uid, 'user/' + uid)
+
+
+def mac_domain_exists(domain):
+    try:
+        return run(['launchctl', 'print', domain], check=False).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def mac_domain():
+    """The launchd domain the service is started in.
+
+    A LaunchAgent normally lives in the user's desktop session (gui/<uid>), but
+    that session exists only while this user is logged in at the Mac's screen.
+    An account reached purely over SSH, or a Mac whose screen someone else is
+    using, has no such domain: launchctl answers "125: Domain does not support
+    specified action". The per-user background domain (user/<uid>) exists either
+    way, and nothing this service does needs the desktop.
+    """
+    desktop, background = mac_domains()
+    return desktop if mac_domain_exists(desktop) else background
+
+
+def mac_session_type(definition, domain):
+    """Make a LaunchAgent definition loadable in `domain`.
+
+    launchd only accepts a definition in the background domain if it says so
+    (`bootstrap` fails with an I/O error otherwise), and a definition marked
+    Background is in turn never loaded into a desktop session.
+    """
+    if domain.startswith('user/'):
+        definition['LimitLoadToSessionType'] = 'Background'
+    else:
+        definition.pop('LimitLoadToSessionType', None)
+    return definition
+
+
 def write_service():
     STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
     if sys.platform == 'darwin':
@@ -157,6 +197,7 @@ def write_service():
                       'RunAtLoad': True, 'KeepAlive': True, 'ProcessType': 'Background',
                       'StandardOutPath': str(STATE / 'service.stdout.log'),
                       'StandardErrorPath': str(STATE / 'service.stderr.log')}
+        mac_session_type(definition, mac_domain())
         service_path().parent.mkdir(parents=True, exist_ok=True)
         service_path().write_bytes(plistlib.dumps(definition))
         service_path().chmod(0o600)
@@ -188,17 +229,29 @@ def write_service():
 def control(action, legacy=False):
     if sys.platform == 'darwin':
         label = LEGACY_LABEL if legacy else LABEL
-        domain = 'gui/' + str(os.getuid())
         if action == 'stop':
-            run(['launchctl', 'bootout', domain + '/' + label], check=False)
+            # The service may have been started in either session: a desktop
+            # login that has since ended leaves it behind in neither, a repair
+            # over SSH leaves it in the background one.
+            for domain in mac_domains():
+                run(['launchctl', 'bootout', domain + '/' + label], check=False)
             for _ in range(40):
-                if run(['launchctl', 'print', domain + '/' + label], check=False).returncode != 0:
+                if not any(run(['launchctl', 'print', domain + '/' + label], check=False).returncode == 0
+                           for domain in mac_domains()):
                     break
                 time.sleep(.25)
             else:
                 raise RuntimeError('The previous launchd service could not be stopped.')
         else:
-            run(['launchctl', 'bootstrap', domain, str(service_path(legacy))])
+            domain = mac_domain()
+            path = service_path(legacy)
+            # The definition on disk may have been written for the other session.
+            definition = plistlib.loads(path.read_bytes())
+            aligned = mac_session_type(dict(definition), domain)
+            if aligned != definition:
+                path.write_bytes(plistlib.dumps(aligned))
+                path.chmod(0o600)
+            run(['launchctl', 'bootstrap', domain, str(path)])
             run(['launchctl', 'enable', domain + '/' + label])
             run(['launchctl', 'kickstart', '-k', domain + '/' + label])
     elif os.name == 'nt':
@@ -313,7 +366,9 @@ def install(stage):
     run([sys.executable, str(stage / 'msam-host-agent.py'), 'self-test'], timeout=30)
     require_idle()
     if sys.platform == 'darwin':
-        run(['launchctl', 'print', 'gui/' + str(os.getuid())])
+        if not mac_domain_exists(mac_domain()):
+            raise RuntimeError('This Mac has no launchd session for this user to run the host service in. '
+                               'Log in over SSH or at the screen and try again.')
     elif sys.platform.startswith('linux'):
         run(['systemctl', '--user', 'show-environment'])
         linger = run(['loginctl', 'show-user', str(os.getuid()), '-p', 'Linger', '--value']).stdout.strip()

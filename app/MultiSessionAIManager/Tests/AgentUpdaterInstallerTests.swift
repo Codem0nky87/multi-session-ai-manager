@@ -38,6 +38,20 @@ import Testing
         #expect(!combined.contains("/library/launchdaemons"))
     }
 
+    /// A Mac account used only over SSH has no desktop session, so its service lives in
+    /// the background one. Either location must count as the service being there.
+    @Test func macOSServiceIsFoundInEitherLaunchdSession() {
+        let context = AgentUpdaterHostContext(home: "/Users/alice", platform: .macOS, uid: 501)
+        let verification = AgentUpdaterInstaller.verificationCommand(for: context)
+        #expect(verification.contains("launchctl print gui/501/com.codem0nky87.msam-host-agent"))
+        #expect(verification.contains("launchctl print user/501/com.codem0nky87.msam-host-agent"))
+
+        let session = AgentUpdaterInstaller.macSessionProbe(uid: 501)
+        #expect(session.contains("launchctl print gui/501 "))
+        #expect(session.contains("launchctl print user/501 "))
+        #expect(session.contains("||"), "one session is enough; a desktop login must not be required")
+    }
+
     @Test func servicePathsAreOwnedByTheSSHUser() {
         let context = AgentUpdaterHostContext(home: "/Users/alice", platform: .macOS, uid: 501)
         #expect(AgentUpdaterInstaller.helperPath(for: context)
@@ -75,6 +89,10 @@ import Testing
         #expect(transport.writtenFiles.keys.contains { $0.hasSuffix("/manifest.json") })
         #expect(transport.structuredCommandsRun.dropFirst(connectionCommandCount).allSatisfy {
             $0.timeout > .zero && $0.outputLimit > 0
+        })
+        // Commands reach the host wrapped in a login shell, so match the probe inside it.
+        #expect(transport.structuredCommandsRun.contains {
+            $0.command.contains(AgentUpdaterInstaller.macSessionProbe(uid: 501))
         })
     }
 
@@ -171,6 +189,8 @@ import Testing
         }
         #expect(instructions.joined(separator: " ").contains("Sign in"))
         #expect(instructions.joined(separator: " ").contains("Test Again"))
+        // Being logged in at the Mac's screen is one way, never the only way.
+        #expect(!instructions.joined(separator: " ").contains("leave that user logged in"))
         #expect(transport.writtenFiles.isEmpty)
     }
 

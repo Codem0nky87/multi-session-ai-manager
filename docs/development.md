@@ -175,6 +175,14 @@ launchctl print gui/$(id -u)/com.codem0nky87.msam-host-agent
 tail -n 100 "$HOME/.local/state/msam-host-agent/service.stderr.log"
 ```
 
+The service runs in the desktop session (`gui/<uid>`) only while that user is
+logged in at the Mac's screen. For an account reached purely over SSH, or on a
+Mac whose screen someone else is using, there is no `gui/<uid>` at all
+(`launchctl` answers `125: Domain does not support specified action`), and the
+installer puts the service in the background session instead. Use `user/` in
+place of `gui/` in these commands in that case. The installer picks the session
+on every install, start and restart, and stops the service in both.
+
 On Linux, verify the user service, linger, and logs:
 
 ```sh
@@ -227,6 +235,8 @@ macOS:
 ```sh
 launchctl kickstart -k gui/$(id -u)/com.codem0nky87.msam-host-agent
 ```
+
+(`user/$(id -u)/…` when the service is in the background session; see above.)
 
 Linux:
 

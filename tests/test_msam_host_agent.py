@@ -257,6 +257,117 @@ class HostAgentTests(unittest.TestCase):
             self.assertEqual(plist['ProgramArguments'][-1], 'serve')
             self.assertEqual(plist['EnvironmentVariables']['MSAM_HOST_HOME'], str(self.home))
 
+    def fake_launchctl(self, desktop_session, user_session=True):
+        """A stand-in for `run` that answers launchctl the way macOS does.
+
+        `gui/<uid>` only exists while that user is logged in at the screen;
+        printing it otherwise fails with launchd's error 125.
+        """
+        calls, loaded = [], set()
+
+        def run(args, check=True, timeout=30, **kwargs):
+            args = [str(arg) for arg in args]
+            calls.append(args)
+            code = 0
+            if args[0] == 'launchctl':
+                verb, target = args[1], args[2] if args[1] != 'kickstart' else args[3]
+                domain = '/'.join(target.split('/')[:2])
+                available = desktop_session if domain.startswith('gui/') else user_session
+                if not available:
+                    code = 125
+                elif verb == 'print' and target.count('/') == 2:
+                    code = 0 if target in loaded else 113
+                elif verb == 'bootstrap':
+                    import plistlib
+                    definition = plistlib.loads(Path(args[3]).read_bytes())
+                    background = definition.get('LimitLoadToSessionType') == 'Background'
+                    # launchd refuses a definition whose session type does not match.
+                    if background != domain.startswith('user/'):
+                        code = 5
+                    else:
+                        loaded.add(domain + '/' + definition['Label'])
+                elif verb == 'bootout':
+                    code = 0 if target in loaded else 3
+                    loaded.discard(target)
+            if check and code:
+                raise subprocess.CalledProcessError(
+                    code, args, '', 'Could not print domain: 125: Domain does not support specified action')
+            return subprocess.CompletedProcess(args, code, '', '')
+        return run, calls, loaded
+
+    def test_mac_service_runs_in_the_background_session_without_a_desktop_login(self):
+        import plistlib
+        label = self.installer.LABEL
+        for desktop_session, domain in ((False, 'user/501'), (True, 'gui/501')):
+            run, calls, loaded = self.fake_launchctl(desktop_session)
+            with patch.object(self.installer.sys, 'platform', 'darwin'), \
+                    patch.object(self.installer.os, 'getuid', return_value=501), \
+                    patch.object(self.installer, 'run', side_effect=run):
+                self.assertEqual(self.installer.mac_domain(), domain)
+                self.installer.write_service()
+                definition = plistlib.loads(self.installer.service_path().read_bytes())
+                # Only a background-session definition may load outside the desktop session.
+                self.assertEqual(definition.get('LimitLoadToSessionType'),
+                                 None if desktop_session else 'Background')
+                self.installer.control('start')
+            self.assertEqual(loaded, {domain + '/' + label})
+            self.assertIn(['launchctl', 'kickstart', '-k', domain + '/' + label], calls)
+
+    def test_mac_start_rewrites_a_definition_left_by_the_other_session(self):
+        import plistlib
+        label = self.installer.LABEL
+        with patch.object(self.installer.sys, 'platform', 'darwin'), \
+                patch.object(self.installer.os, 'getuid', return_value=501):
+            # Installed while logged in at the screen...
+            run, _, _ = self.fake_launchctl(desktop_session=True)
+            with patch.object(self.installer, 'run', side_effect=run):
+                self.installer.write_service()
+            # ...then started again after that desktop session has ended.
+            run, _, loaded = self.fake_launchctl(desktop_session=False)
+            with patch.object(self.installer, 'run', side_effect=run):
+                self.installer.control('start')
+            self.assertEqual(loaded, {'user/501/' + label})
+            definition = plistlib.loads(self.installer.service_path().read_bytes())
+            self.assertEqual(definition['LimitLoadToSessionType'], 'Background')
+            self.assertEqual(definition['ProgramArguments'][-1], 'serve')
+            # And back again once the desktop session returns.
+            run, _, loaded = self.fake_launchctl(desktop_session=True)
+            with patch.object(self.installer, 'run', side_effect=run):
+                self.installer.control('start')
+            self.assertEqual(loaded, {'gui/501/' + label})
+            self.assertNotIn('LimitLoadToSessionType', plistlib.loads(self.installer.service_path().read_bytes()))
+
+    def test_mac_stop_clears_the_service_from_both_sessions(self):
+        label = self.installer.LABEL
+        for desktop_session in (False, True):
+            run, calls, _ = self.fake_launchctl(desktop_session)
+            with patch.object(self.installer.sys, 'platform', 'darwin'), \
+                    patch.object(self.installer.os, 'getuid', return_value=501), \
+                    patch.object(self.installer, 'run', side_effect=run):
+                self.installer.control('stop')
+            for domain in ('gui/501', 'user/501'):
+                self.assertIn(['launchctl', 'bootout', domain + '/' + label], calls)
+
+    def test_mac_install_does_not_need_a_desktop_login(self):
+        stage = self.stage()
+        run, _, _ = self.fake_launchctl(desktop_session=False)
+        with patch.object(self.installer.sys, 'platform', 'darwin'), \
+                patch.object(self.installer.os, 'getuid', return_value=501), \
+                patch.object(self.installer, 'run', side_effect=run), \
+                patch.object(self.installer, 'build_mac_launcher', side_effect=RuntimeError('past the session check')), \
+                patch.object(self.installer, 'control'):
+            with self.assertRaisesRegex(RuntimeError, 'past the session check'):
+                self.installer.install(stage)
+
+        # With no launchd session at all, say so in words rather than launchd's.
+        run, _, _ = self.fake_launchctl(desktop_session=False, user_session=False)
+        with patch.object(self.installer.sys, 'platform', 'darwin'), \
+                patch.object(self.installer.os, 'getuid', return_value=501), \
+                patch.object(self.installer, 'run', side_effect=run), \
+                patch.object(self.installer, 'control'):
+            with self.assertRaisesRegex(RuntimeError, 'launchd session'):
+                self.installer.install(stage)
+
     def test_native_launcher_preflight_failure_keeps_current_service(self):
         stage = self.stage()
         previous = self.installer.BASE / 'releases/old'
