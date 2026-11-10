@@ -56,9 +56,11 @@ private struct ToastView: View {
 
 extension View {
     /// Host toasts at the top of a screen. Place once near the app root.
-    func toastHost(_ center: ToastCenter) -> some View {
+    /// A sheet that hosts its own copy sets `isSuppressed` on the host beneath it,
+    /// so a toast raised while the sheet is up is not drawn twice.
+    func toastHost(_ center: ToastCenter, isSuppressed: Bool = false) -> some View {
         overlay(alignment: .top) {
-            if let toast = center.current {
+            if !isSuppressed, let toast = center.current {
                 ToastView(toast: toast)
                     .id(toast.id)
                     .transition(.move(edge: .top).combined(with: .opacity))

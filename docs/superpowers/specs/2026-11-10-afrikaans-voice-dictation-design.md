@@ -91,6 +91,15 @@ A `@MainActor` `ObservableObject` responsible for downloading, caching, loading,
 2. **`VoiceTranscriptionHUD.swift`**:
    - Display a compact language capsule (`AF/EN`, `AF`, or `EN`) next to the waveform so the user always sees which dictation mode is active while holding the microphone button.
 
+### 3.6 Mic Key Availability (amended 2026-11-10, after first device test)
+The thrown error in 3.4 is only a backstop. A mic key that cannot record must not look pressable:
+- `VoiceDictationAvailability.resolve(languageMode:modelState:)` decides it. `.english` is always `.ready`; `.autoAfEn` and `.afrikaans` are `.ready` only once the Whisper model is on the device, otherwise `.modelNotDownloaded`, `.modelDownloading(progress:)`, `.modelLoading` or `.modelFailed(_)`.
+- While not ready, both Push-to-Talk keys (quick-key bar and the Intelligence drawer) are dimmed, show a different glyph (plus a progress bar while downloading) and do not start a recording.
+- Touching an unavailable key answers the touch: for a missing or failed model it raises the `speechModelPrompt` alert (**Download (size)** / **Use English Only** / **Cancel**); while downloading or loading it shows the status as a toast.
+- The model is never downloaded without that explicit yes — not on launch and not on a mic press.
+- `RootView` injects and hosts the `ToastCenter` for the terminal hierarchy, not only for the settings sheet; without it the quick-key bar's dictation errors were dropped silently.
+- The mic key sits second from the left of the quick-key bar (after `esc`), clear of both the iPadOS corner gesture and the Home Indicator.
+
 ---
 
 ## 4. Error Handling & Edge Cases

@@ -280,7 +280,8 @@ import Testing
             isWhisperModelReady: { isWhisperReady }
         )
 
-        // 1. Whisper NOT downloaded + .autoAfEn -> throws actionable Settings download error
+        // 1. Whisper NOT downloaded + .autoAfEn -> throws actionable Settings download error.
+        //    It must NOT quietly record in English: half of "Afrikaans + English" is missing.
         settings.setLanguageMode(.autoAfEn)
         do {
             try await composite.startRecognition(onDeviceOnly: true, onPartialResult: { _ in }, onAudioLevel: { _ in })
@@ -288,6 +289,7 @@ import Testing
         } catch {
             #expect(error.localizedDescription.contains("Voice Dictation"))
         }
+        #expect(appleFallbackMock.isRecording == false)
 
         // 2. Whisper NOT downloaded + .english -> falls back to Apple Speech
         settings.setLanguageMode(.english)
@@ -305,14 +307,16 @@ import Testing
         #expect(whisperResult == "Goeie môre vanaf Whisper")
     }
 
-    @Test func hudLanguageBadgeAndQuickKeyBarOrderPlaceVoiceLeftAndIncludeAlt() {
+    @Test func hudLanguageBadgeAndQuickKeyBarOrderPlaceVoiceSecondFromLeftAndIncludeAlt() {
         #expect(VoiceTranscriptionHUD.languageBadgeText(for: .autoAfEn) == "AF/EN")
         #expect(VoiceTranscriptionHUD.languageBadgeText(for: .afrikaans) == "AF")
         #expect(VoiceTranscriptionHUD.languageBadgeText(for: .english) == "EN")
 
-        // Voice key must be at index 0 (far left) away from the centered iPad Home Indicator,
+        // Voice key must be at index 1 (2nd from left, right after esc) so it avoids both
+        // the iPadOS bottom-left corner swipe zone and the centered iPad Home Indicator,
         // and "alt" must be present in the quick-key bar.
-        #expect(TerminalQuickKeyBar.orderedKeyIdentifiers.first == "msam.quickkey.voice")
+        #expect(TerminalQuickKeyBar.orderedKeyIdentifiers[0] == "msam.quickkey.esc")
+        #expect(TerminalQuickKeyBar.orderedKeyIdentifiers[1] == "msam.quickkey.voice")
         #expect(TerminalQuickKeyBar.orderedKeyIdentifiers.contains("msam.quickkey.alt"))
     }
 
@@ -340,6 +344,104 @@ import Testing
         inputView.deleteBackward()
         #expect(capturedBytes.last == [0x1B, 0x7F])
         #expect(inputView.altLatchArmed == false)
+
+        // A multi-byte character gets ONE ESC in front of the whole character, not one per byte.
+        controller.toggleAlt()
+        inputView.insertText("é")
+        #expect(capturedBytes.last == [0x1B, 0xC3, 0xA9])
+        #expect(inputView.altLatchArmed == false)
+    }
+
+    /// The latches are armed on the quick-key bar but the next key usually comes from a
+    /// HARDWARE keyboard, which reaches the view through `pressesBegan`, never `insertText`.
+    @MainActor
+    @Test func stickyAltAndCtrlLatchesApplyToHardwareKeyboardKeys() {
+        let controller = KeyInputController()
+        let inputView = TerminalKeyInputView(frame: .zero)
+        var capturedBytes: [[UInt8]] = []
+        inputView.onInput = { capturedBytes.append($0) }
+        controller.view = inputView
+
+        // Alt armed on the bar, "m" on the hardware keyboard -> ESC m, and the latch disarms.
+        controller.toggleAlt()
+        #expect(inputView.handleHardwareKey(keyCode: .keyboardM, characters: "m", modifierFlags: []) == true)
+        #expect(capturedBytes.last == [0x1B, UInt8(ascii: "m")])
+        #expect(inputView.altLatchArmed == false)
+        #expect(controller.isAltArmed == false)
+
+        // The latch is one-shot: the following key is plain again.
+        #expect(inputView.handleHardwareKey(keyCode: .keyboardM, characters: "m", modifierFlags: []) == true)
+        #expect(capturedBytes.last == [UInt8(ascii: "m")])
+
+        // Pressing a bare modifier (Shift going down for a capital) must not spend the latch.
+        controller.toggleAlt()
+        #expect(inputView.handleHardwareKey(keyCode: .keyboardLeftShift, characters: "", modifierFlags: [.shift]) == false)
+        #expect(inputView.altLatchArmed == true)
+        #expect(inputView.handleHardwareKey(keyCode: .keyboardM, characters: "M", modifierFlags: [.shift]) == true)
+        #expect(capturedBytes.last == [0x1B, UInt8(ascii: "M")])
+        #expect(inputView.altLatchArmed == false)
+
+        // Alt + a key that is itself an escape sequence: one ESC in front of the sequence.
+        controller.toggleAlt()
+        #expect(inputView.handleHardwareKey(keyCode: .keyboardUpArrow, characters: "UIKeyInputUpArrow", modifierFlags: []) == true)
+        #expect(capturedBytes.last == EscapeSequences.meta + EscapeSequences.up)
+        #expect(controller.isAltArmed == false)
+
+        // Alt + Return is how TUIs take a newline without submitting.
+        controller.toggleAlt()
+        #expect(inputView.handleHardwareKey(keyCode: .keyboardReturnOrEnter, characters: "\r", modifierFlags: []) == true)
+        #expect(capturedBytes.last == EscapeSequences.meta + EscapeSequences.return)
+
+        // Ctrl armed on the bar, "c" on the hardware keyboard -> 0x03, and the latch disarms.
+        controller.toggleCtrl()
+        #expect(inputView.handleHardwareKey(keyCode: .keyboardC, characters: "c", modifierFlags: []) == true)
+        #expect(capturedBytes.last == [0x03])
+        #expect(inputView.ctrlLatchArmed == false)
+        #expect(controller.isCtrlArmed == false)
+
+        // Ctrl has no control-code form for an arrow; the sequence must survive intact.
+        controller.toggleCtrl()
+        #expect(inputView.handleHardwareKey(keyCode: .keyboardUpArrow, characters: "UIKeyInputUpArrow", modifierFlags: []) == true)
+        #expect(capturedBytes.last == EscapeSequences.up)
+        #expect(controller.isCtrlArmed == false)
+
+        // A physically held Option still works exactly as before, with no latch involved.
+        #expect(inputView.handleHardwareKey(keyCode: .keyboardLeftArrow, characters: "UIKeyInputLeftArrow", modifierFlags: [.alternate]) == true)
+        #expect(capturedBytes.last == EscapeSequences.meta + EscapeSequences.leftMeta)
+
+        // Cmd shortcuts stay with UIKit and leave an armed latch alone.
+        controller.toggleAlt()
+        #expect(inputView.handleHardwareKey(keyCode: .keyboardV, characters: "v", modifierFlags: [.command]) == false)
+        #expect(inputView.altLatchArmed == true)
+    }
+
+    /// The mic key is only usable when everything the chosen language needs is on the device.
+    @Test func dictationAvailabilityNeedsTheWhisperModelForAfrikaansModesOnly() {
+        let everyState: [WhisperModelManager.ModelState] = [
+            .notDownloaded, .downloading(progress: 0.4), .loading, .failed("disk full"), .ready(variant: .small),
+        ]
+
+        // English runs on Apple's built-in recogniser, so nothing ever has to be downloaded.
+        for state in everyState {
+            #expect(VoiceDictationAvailability.resolve(languageMode: .english, modelState: state) == .ready)
+        }
+
+        for mode in [DictationLanguageMode.autoAfEn, .afrikaans] {
+            #expect(VoiceDictationAvailability.resolve(languageMode: mode, modelState: .notDownloaded) == .modelNotDownloaded)
+            #expect(VoiceDictationAvailability.resolve(languageMode: mode, modelState: .downloading(progress: 0.4)) == .modelDownloading(progress: 0.4))
+            #expect(VoiceDictationAvailability.resolve(languageMode: mode, modelState: .loading) == .modelLoading)
+            #expect(VoiceDictationAvailability.resolve(languageMode: mode, modelState: .failed("disk full")) == .modelFailed("disk full"))
+            #expect(VoiceDictationAvailability.resolve(languageMode: mode, modelState: .ready(variant: .largeV3Turbo)) == .ready)
+        }
+
+        #expect(VoiceDictationAvailability.ready.isReady == true)
+        #expect(VoiceDictationAvailability.modelNotDownloaded.isReady == false)
+        // Only a missing or failed model can be fixed by offering the download.
+        #expect(VoiceDictationAvailability.modelNotDownloaded.offersDownload == true)
+        #expect(VoiceDictationAvailability.modelFailed("disk full").offersDownload == true)
+        #expect(VoiceDictationAvailability.modelDownloading(progress: 0.4).offersDownload == false)
+        #expect(VoiceDictationAvailability.modelLoading.offersDownload == false)
+        #expect(VoiceDictationAvailability.modelDownloading(progress: 0.42).statusText == "Downloading the speech model… 42%")
     }
 }
 

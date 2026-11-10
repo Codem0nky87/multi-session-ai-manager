@@ -20,12 +20,12 @@ final class TerminalKeyInputView: UIView, UIKeyInput {
     var onInput: (([UInt8]) -> Void)?
     /// Reports whether the terminal is in application-cursor mode (DECCKM).
     var applicationCursorProvider: () -> Bool = { false }
-    /// Sticky Ctrl from the phone quick-key bar: armed, the next typed
-    /// character is sent as its control code and the latch disarms. Hardware
-    /// Ctrl combos bypass it (they already carry the modifier).
+    /// Sticky Ctrl from the quick-key bar: armed, the next key -- typed on the
+    /// software keyboard OR pressed on a hardware one -- is sent as its control
+    /// code and the latch disarms.
     var ctrlLatchArmed = false
-    /// Sticky Alt/Meta from the quick-key bar: armed, the next typed character
-    /// is prefixed with ESC (`\u{1b}`) and the latch disarms.
+    /// Sticky Alt/Meta from the quick-key bar: armed, the next key (software or
+    /// hardware) is prefixed with ESC (`\u{1b}`) and the latch disarms.
     var altLatchArmed = false
     private let hardwareRepeater = RepeatKeyPressController()
     private var repeatingHardwareKey: UIKeyboardHIDUsage?
@@ -94,7 +94,8 @@ final class TerminalKeyInputView: UIView, UIKeyInput {
             onCtrlLatchChanged?(false)
         }
         if altLatchArmed {
-            data = data.reduce(into: [UInt8]()) { $0 += EscapeSequences.meta + [$1] }
+            // One ESC for the whole insert: a multi-byte character is still one key.
+            data = EscapeSequences.meta + data
             altLatchArmed = false
             onAltLatchChanged?(false)
         }
@@ -149,15 +150,35 @@ final class TerminalKeyInputView: UIView, UIKeyInput {
     }
 
     private func handleKey(_ key: UIKey) -> Bool {
+        handleHardwareKey(keyCode: key.keyCode,
+                          characters: key.characters,
+                          modifierFlags: key.modifierFlags)
+    }
+
+    /// Translates one hardware key press into terminal bytes. Takes the `UIKey`
+    /// fields rather than the `UIKey` (which has no public initialiser) so tests
+    /// can drive it. Returns false when UIKit should handle the press instead.
+    ///
+    /// A hardware key never reaches `insertText`, so the quick-key bar's sticky
+    /// Ctrl / Alt have to be honoured here as well: an armed latch counts as that
+    /// modifier being held for exactly this one key.
+    func handleHardwareKey(keyCode: UIKeyboardHIDUsage,
+                           characters: String,
+                           modifierFlags: UIKeyModifierFlags) -> Bool {
         // Let UIKit handle cmd shortcuts.
-        if key.modifierFlags.contains(.command) {
+        if modifierFlags.contains(.command) {
             return false
         }
 
         let appCursor = applicationCursorProvider()
-        let shiftHeld = key.modifierFlags.contains(.shift)
+        let shiftHeld = modifierFlags.contains(.shift)
+        let ctrlActive = modifierFlags.contains(.control) || ctrlLatchArmed
+        let altActive = modifierFlags.contains(.alternate) || altLatchArmed
+        // Only a character key has a control-code form; a special key's escape
+        // sequence must reach the PTY intact.
+        var isCharacterKey = false
         var keyData: [UInt8]
-        switch key.keyCode {
+        switch keyCode {
         case .keyboardReturnOrEnter:     keyData = EscapeSequences.return
         case .keyboardEscape:            keyData = EscapeSequences.meta
         case .keyboardDeleteOrBackspace: keyData = EscapeSequences.backspace
@@ -177,7 +198,7 @@ final class TerminalKeyInputView: UIView, UIKeyInput {
                 : (appCursor ? EscapeSequences.downApp : EscapeSequences.down)
 
         case .keyboardLeftArrow:
-            if key.modifierFlags.contains(.alternate) {
+            if altActive {
                 keyData = EscapeSequences.leftMeta
             } else if shiftHeld {
                 keyData = appCursor ? EscapeSequences.leftShiftApp : EscapeSequences.leftShift
@@ -185,7 +206,7 @@ final class TerminalKeyInputView: UIView, UIKeyInput {
                 keyData = appCursor ? EscapeSequences.leftApp : EscapeSequences.left
             }
         case .keyboardRightArrow:
-            if key.modifierFlags.contains(.alternate) {
+            if altActive {
                 keyData = EscapeSequences.rightMeta
             } else if shiftHeld {
                 keyData = appCursor ? EscapeSequences.rightShiftApp : EscapeSequences.rightShift
@@ -198,29 +219,46 @@ final class TerminalKeyInputView: UIView, UIKeyInput {
 
         case .keyboardF1, .keyboardF2, .keyboardF3, .keyboardF4, .keyboardF5, .keyboardF6,
              .keyboardF7, .keyboardF8, .keyboardF9, .keyboardF10, .keyboardF11, .keyboardF12:
-            let index = key.keyCode.rawValue - UIKeyboardHIDUsage.keyboardF1.rawValue
+            let index = keyCode.rawValue - UIKeyboardHIDUsage.keyboardF1.rawValue
             keyData = TerminalFunctionKey.bytes(for: index + 1) ?? []
 
         default:
-            keyData = Array(key.characters.utf8)
+            keyData = Array(characters.utf8)
+            isCharacterKey = true
         }
 
+        // A bare modifier going down (Shift, on its way to a capital) carries no
+        // text. It is not "the next key", so it must leave an armed latch armed.
         if keyData.isEmpty {
             return false
         }
 
-        // Ctrl: translate to control codes.
-        if key.modifierFlags.contains(.control) {
-            keyData = keyData.map(\.controlCharacter)
+        if ctrlLatchArmed {
+            ctrlLatchArmed = false
+            onCtrlLatchChanged?(false)
         }
-        // Meta/Alt: prefix each byte with ESC.
-        if key.modifierFlags.contains(.alternate) {
-            keyData = keyData.reduce(into: [UInt8]()) { $0 += EscapeSequences.meta + [$1] }
+        if altLatchArmed {
+            altLatchArmed = false
+            onAltLatchChanged?(false)
         }
 
-        if TerminalHardwareKeyRepeatPolicy.shouldRepeat(keyCode: key.keyCode,
-                                                        modifiers: key.modifierFlags) {
-            startRepeatingKey(key.keyCode, bytes: keyData)
+        if keyCode == .keyboardDeleteOrBackspace && (ctrlActive || altActive) {
+            // Ctrl/Alt-Backspace: delete word backwards, as `deleteBackward` does.
+            keyData = EscapeSequences.meta + EscapeSequences.backspace
+        } else {
+            // Ctrl: translate to control codes.
+            if ctrlActive && isCharacterKey {
+                keyData = keyData.map(\.controlCharacter)
+            }
+            // Meta/Alt: one ESC in front of the key's whole sequence.
+            if altActive {
+                keyData = EscapeSequences.meta + keyData
+            }
+        }
+
+        if TerminalHardwareKeyRepeatPolicy.shouldRepeat(keyCode: keyCode,
+                                                        modifiers: modifierFlags) {
+            startRepeatingKey(keyCode, bytes: keyData)
         } else {
             onInput?(keyData)
         }

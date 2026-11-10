@@ -59,12 +59,92 @@ public enum WhisperModelVariant: String, CaseIterable, Codable, Sendable, Identi
         }
     }
 
+    /// Download size, stated wherever the app offers to fetch the model.
+    public var approximateSize: String {
+        switch self {
+        case .largeV3Turbo:
+            return "~600 MB"
+        case .small:
+            return "~240 MB"
+        }
+    }
+
     public var sizeDescription: String {
         switch self {
         case .largeV3Turbo:
-            return "~600 MB • Best Afrikaans + English accuracy"
+            return "\(approximateSize) • Best Afrikaans + English accuracy"
         case .small:
-            return "~240 MB • Faster download"
+            return "\(approximateSize) • Faster download"
+        }
+    }
+}
+
+// MARK: - Availability
+
+/// Whether Push-to-Talk can run right now, given the chosen language and what is on
+/// the device. Apple ships no Afrikaans speech model, so both Afrikaans modes depend
+/// on the downloaded Whisper model; English runs on Apple's built-in recogniser and
+/// never needs a download. Anything other than `.ready` keeps the mic key unavailable
+/// rather than letting a press do nothing.
+public enum VoiceDictationAvailability: Equatable, Sendable {
+    case ready
+    case modelNotDownloaded
+    case modelDownloading(progress: Double)
+    case modelLoading
+    case modelFailed(String)
+
+    public static func resolve(
+        languageMode: DictationLanguageMode,
+        modelState: WhisperModelManager.ModelState
+    ) -> VoiceDictationAvailability {
+        guard languageMode != .english else { return .ready }
+        switch modelState {
+        case .ready:
+            return .ready
+        case .notDownloaded:
+            return .modelNotDownloaded
+        case .downloading(let progress):
+            return .modelDownloading(progress: progress)
+        case .loading:
+            return .modelLoading
+        case .failed(let message):
+            return .modelFailed(message)
+        }
+    }
+
+    public var isReady: Bool {
+        self == .ready
+    }
+
+    /// True when fetching the model is the fix, so the mic key can offer exactly that.
+    public var offersDownload: Bool {
+        switch self {
+        case .modelNotDownloaded, .modelFailed:
+            return true
+        case .ready, .modelDownloading, .modelLoading:
+            return false
+        }
+    }
+
+    /// Download progress clamped to 0...1 (a not-yet-sized download can report NaN).
+    public var downloadFraction: Double? {
+        guard case .modelDownloading(let progress) = self else { return nil }
+        return progress.isFinite ? min(max(progress, 0.0), 1.0) : 0.0
+    }
+
+    /// One line saying why the mic is unavailable; nil when it can be used.
+    public var statusText: String? {
+        switch self {
+        case .ready:
+            return nil
+        case .modelNotDownloaded:
+            return "Afrikaans dictation needs the on-device speech model."
+        case .modelDownloading:
+            return "Downloading the speech model… \(Int(((downloadFraction ?? 0.0) * 100.0).rounded()))%"
+        case .modelLoading:
+            return "Preparing the speech model…"
+        case .modelFailed(let message):
+            return "The speech model could not be set up: \(message)"
         }
     }
 }

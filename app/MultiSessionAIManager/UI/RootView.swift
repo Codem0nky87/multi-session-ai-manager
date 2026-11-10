@@ -356,6 +356,11 @@ struct RootView: View {
         }
         .background(HerdrTheme.background)
         .environment(terminalSettings)
+        // The terminal hierarchy reports through toasts too (the quick-key bar's
+        // dictation errors), so it needs the centre as much as the settings sheet
+        // does. That sheet hosts its own copy; this one stands down while it is up.
+        .environment(toastCenter)
+        .toastHost(toastCenter, isSuppressed: showingSettings)
         .preferredColorScheme(.dark)
         // The status bar is deliberately VISIBLE: its inset is what separates
         // the tab strip from the physical edge, and the clock is wanted. Do not

@@ -320,6 +320,24 @@ private actor RestoreOperationStartGate {
         #expect(source.contains(".toastHost(toastCenter)"))
     }
 
+    /// The quick-key bar reports dictation failures through the `ToastCenter`, and it
+    /// lives in the terminal hierarchy, not the settings sheet. Without an injection
+    /// there its optional `@Environment` is nil and every error is dropped silently --
+    /// which is how a missing speech model once looked like a dead mic button. The
+    /// sheet keeps its own host, so the root one stands down while the sheet is up.
+    @Test func rootViewInjectsTheToastCenterIntoTheTerminalHierarchy() throws {
+        let source = try sourceFile("UI/RootView.swift")
+        #expect(source.components(separatedBy: ".environment(toastCenter)").count - 1 == 2)
+        #expect(source.contains(".toastHost(toastCenter, isSuppressed: showingSettings)"))
+    }
+
+    /// The speech model is hundreds of megabytes. It is fetched only when the user
+    /// asks for it (the mic key's prompt, or Settings), never as a launch side effect.
+    @Test func rootViewNeverDownloadsTheSpeechModelOnLaunch() throws {
+        let source = try sourceFile("UI/RootView.swift")
+        #expect(!source.contains("downloadSelectedModel"))
+    }
+
     @Test func hostSetupWiresSessionRestoreToTheSharedConnection() throws {
         let source = try sourceFile("UI/Hosts/HostSetupHelpSheet.swift")
 
