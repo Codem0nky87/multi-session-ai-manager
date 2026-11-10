@@ -40,6 +40,27 @@ struct TerminalQuickKeyBar: View {
     @State private var isShiftArmed = false
     @State private var showingFunctionKeys = false
 
+    /// Canonical left-to-right key order. `voice` sits at the far left so holding
+    /// or dragging Push-to-Talk never collides with the centered iPad Home Indicator bar.
+    static let orderedKeyIdentifiers: [String] = [
+        "msam.quickkey.voice",
+        "msam.quickkey.esc",
+        "msam.quickkey.tab",
+        "msam.quickkey.ctrl",
+        "msam.quickkey.alt",
+        "msam.quickkey.ctrl-slash",
+        "msam.quickkey.ctrl-c",
+        "msam.quickkey.shift",
+        "msam.function-keys",
+        "msam.quickkey.left",
+        "msam.quickkey.up",
+        "msam.quickkey.down",
+        "msam.quickkey.right",
+        "msam.quickkey.pageup",
+        "msam.quickkey.pagedown",
+        "msam.quickkey.keyboard",
+    ]
+
     private var isRecordingVoice: Bool {
         if case .listening = voiceEngine.state { return true }
         if case .processing = voiceEngine.state { return true }
@@ -48,20 +69,29 @@ struct TerminalQuickKeyBar: View {
 
     var body: some View {
         HStack(spacing: 4) {
+            voiceKey
+
             textKey("esc", id: "esc") {
                 isShiftArmed = false
+                controller.disarmAlt()
                 send(EscapeSequences.meta)
             }
             textKey("tab", id: "tab") {
                 if isShiftArmed {
                     isShiftArmed = false
                     send(EscapeSequences.backtab)
+                } else if controller.isAltArmed {
+                    controller.disarmAlt()
+                    send(EscapeSequences.meta + EscapeSequences.tab)
                 } else {
                     send(EscapeSequences.tab)
                 }
             }
             textKey("ctrl", id: "ctrl", active: controller.isCtrlArmed) {
                 controller.toggleCtrl()
+            }
+            textKey("alt", id: "alt", active: controller.isAltArmed) {
+                controller.toggleAlt()
             }
             textKey("^/", id: "ctrl-slash") {
                 send(EscapeSequences.ctrlSlash)
@@ -87,23 +117,41 @@ struct TerminalQuickKeyBar: View {
                 .presentationCompactAdaptation(.popover)
             }
 
-            voiceKey
-
             symbolKey("arrow.left", id: "left") {
-                send(shifted(emulator.applicationCursor ? EscapeSequences.leftShiftApp : EscapeSequences.leftShift,
-                             plain: emulator.applicationCursor ? EscapeSequences.leftApp : EscapeSequences.left))
+                if controller.isAltArmed {
+                    controller.disarmAlt()
+                    send(EscapeSequences.meta + EscapeSequences.leftMeta)
+                } else {
+                    send(shifted(emulator.applicationCursor ? EscapeSequences.leftShiftApp : EscapeSequences.leftShift,
+                                 plain: emulator.applicationCursor ? EscapeSequences.leftApp : EscapeSequences.left))
+                }
             }
             symbolKey("arrow.up", id: "up") {
-                send(shifted(emulator.applicationCursor ? EscapeSequences.upShiftApp : EscapeSequences.upShift,
-                             plain: emulator.applicationCursor ? EscapeSequences.upApp : EscapeSequences.up))
+                if controller.isAltArmed {
+                    controller.disarmAlt()
+                    send(EscapeSequences.meta + (emulator.applicationCursor ? EscapeSequences.upApp : EscapeSequences.up))
+                } else {
+                    send(shifted(emulator.applicationCursor ? EscapeSequences.upShiftApp : EscapeSequences.upShift,
+                                 plain: emulator.applicationCursor ? EscapeSequences.upApp : EscapeSequences.up))
+                }
             }
             symbolKey("arrow.down", id: "down") {
-                send(shifted(emulator.applicationCursor ? EscapeSequences.downShiftApp : EscapeSequences.downShift,
-                             plain: emulator.applicationCursor ? EscapeSequences.downApp : EscapeSequences.down))
+                if controller.isAltArmed {
+                    controller.disarmAlt()
+                    send(EscapeSequences.meta + (emulator.applicationCursor ? EscapeSequences.downApp : EscapeSequences.down))
+                } else {
+                    send(shifted(emulator.applicationCursor ? EscapeSequences.downShiftApp : EscapeSequences.downShift,
+                                 plain: emulator.applicationCursor ? EscapeSequences.downApp : EscapeSequences.down))
+                }
             }
             symbolKey("arrow.right", id: "right") {
-                send(shifted(emulator.applicationCursor ? EscapeSequences.rightShiftApp : EscapeSequences.rightShift,
-                             plain: emulator.applicationCursor ? EscapeSequences.rightApp : EscapeSequences.right))
+                if controller.isAltArmed {
+                    controller.disarmAlt()
+                    send(EscapeSequences.meta + EscapeSequences.rightMeta)
+                } else {
+                    send(shifted(emulator.applicationCursor ? EscapeSequences.rightShiftApp : EscapeSequences.rightShift,
+                                 plain: emulator.applicationCursor ? EscapeSequences.rightApp : EscapeSequences.right))
+                }
             }
             symbolKey("chevron.compact.up", id: "pageup") { page(up: true) }
             symbolKey("chevron.compact.down", id: "pagedown") { page(up: false) }

@@ -83,6 +83,8 @@ targets:
         product: NIOSSH
       - package: Citadel
         product: Citadel
+      - package: WhisperKit
+        product: WhisperKit
   MultiSessionAIManagerTests:
     type: bundle.unit-test
     platform: iOS
@@ -134,3 +136,6 @@ packages:
   Citadel:
     url: https://github.com/orlandos-nl/Citadel.git
     from: 0.12.1
+  WhisperKit:
+    url: https://github.com/argmaxinc/WhisperKit.git
+    from: 1.1.1

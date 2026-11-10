@@ -1240,11 +1240,24 @@ final class KeyInputController {
     private(set) var wasFocusedBeforeDeactivation = false
     /// Sticky-Ctrl state mirrored from the key-input view for the quick-key bar.
     private(set) var isCtrlArmed = false
+    /// Sticky-Alt state mirrored from the key-input view for the quick-key bar.
+    private(set) var isAltArmed = false
     weak var view: TerminalKeyInputView? {
         didSet {
             guard let view else { return }
             view.onCtrlLatchChanged = { [weak self] armed in
-                Task { @MainActor [weak self] in self?.isCtrlArmed = armed }
+                if Thread.isMainThread {
+                    MainActor.assumeIsolated { self?.isCtrlArmed = armed }
+                } else {
+                    Task { @MainActor [weak self] in self?.isCtrlArmed = armed }
+                }
+            }
+            view.onAltLatchChanged = { [weak self] armed in
+                if Thread.isMainThread {
+                    MainActor.assumeIsolated { self?.isAltArmed = armed }
+                } else {
+                    Task { @MainActor [weak self] in self?.isAltArmed = armed }
+                }
             }
             guard isFocusRequested else { return }
             Task { @MainActor [weak self] in
@@ -1256,8 +1269,22 @@ final class KeyInputController {
 
     /// Arm/disarm the sticky Ctrl used by the phone quick-key bar.
     func toggleCtrl() {
-        isCtrlArmed.toggle()
-        view?.ctrlLatchArmed = isCtrlArmed
+        let next = !(view?.ctrlLatchArmed ?? isCtrlArmed)
+        isCtrlArmed = next
+        view?.ctrlLatchArmed = next
+    }
+
+    /// Arm/disarm the sticky Alt/Meta used by the quick-key bar.
+    func toggleAlt() {
+        let next = !(view?.altLatchArmed ?? isAltArmed)
+        isAltArmed = next
+        view?.altLatchArmed = next
+    }
+
+    func disarmAlt() {
+        guard isAltArmed else { return }
+        isAltArmed = false
+        view?.altLatchArmed = false
     }
 
     func focus() {

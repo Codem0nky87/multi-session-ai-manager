@@ -189,6 +189,158 @@ import Testing
         let didStop = await BackgroundCallbackSimulator.simulateRecognitionErrorOnBackgroundQueue()
         #expect(didStop == true)
     }
+
+    @MainActor
+    @Test func voiceDictationSettingsPersistenceAndDefaults() {
+        let suiteName = "com.codem0nky87.msam.tests.voice.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let settings = VoiceDictationSettings(defaults: defaults)
+        #expect(settings.languageMode == .autoAfEn)
+        #expect(settings.modelVariant == .largeV3Turbo)
+        #expect(settings.languageMode.shortBadge == "AF/EN")
+
+        settings.setLanguageMode(.afrikaans)
+        settings.setModelVariant(.small)
+
+        let reloaded = VoiceDictationSettings(defaults: defaults)
+        #expect(reloaded.languageMode == .afrikaans)
+        #expect(reloaded.modelVariant == .small)
+        #expect(reloaded.languageMode.shortBadge == "AF")
+    }
+
+    @Test func selectBilingualLanguagePrefersAfOverDutchAndComparesAfVsEn() {
+        // Even if Dutch ("nl") has 0.65 probability, .autoAfEn compares only "af" vs "en"
+        let dutchSkewedProbs: [String: Float] = ["nl": 0.65, "af": 0.22, "en": 0.08]
+        #expect(VoiceDictationSettings.selectBilingualLanguage(from: dutchSkewedProbs, mode: .autoAfEn) == "af")
+
+        let englishProbs: [String: Float] = ["en": 0.72, "af": 0.12, "nl": 0.10]
+        #expect(VoiceDictationSettings.selectBilingualLanguage(from: englishProbs, mode: .autoAfEn) == "en")
+
+        // When pinned explicitly, ignore probabilities
+        #expect(VoiceDictationSettings.selectBilingualLanguage(from: englishProbs, mode: .afrikaans) == "af")
+        #expect(VoiceDictationSettings.selectBilingualLanguage(from: dutchSkewedProbs, mode: .english) == "en")
+    }
+
+    @Test func silenceAndShortBufferGuardRejectsEmptyAndSilentClips() {
+        // Under 0.25s (< 4,000 samples at 16 kHz)
+        let shortSamples = Array(repeating: Float(0.2), count: 2_000)
+        #expect(VoiceDictationSettings.isSilentOrTooShort(samples: shortSamples, sampleRate: 16_000) == true)
+
+        // 0.5s but near-zero amplitude
+        let silentSamples = Array(repeating: Float(0.0001), count: 8_000)
+        #expect(VoiceDictationSettings.isSilentOrTooShort(samples: silentSamples, sampleRate: 16_000) == true)
+
+        // 0.5s of speech-level amplitude
+        let speechSamples = Array(repeating: Float(0.05), count: 8_000)
+        #expect(VoiceDictationSettings.isSilentOrTooShort(samples: speechSamples, sampleRate: 16_000) == false)
+    }
+
+    @Test func cleanWhisperTextStripsBlankAudioAndSpecialTokens() {
+        #expect(VoiceDictationSettings.cleanWhisperText("[BLANK_AUDIO]") == nil)
+        #expect(VoiceDictationSettings.cleanWhisperText(" <|startoftranscript|><|af|><|transcribe|><|notimestamps|> Hoe gaan dit vandag? <|endoftext|> ") == "Hoe gaan dit vandag?")
+        #expect(VoiceDictationSettings.cleanWhisperText("(music) [Stilte]") == nil)
+    }
+
+    @Test func whisperModelDirectoryCompletenessCheck() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("msam-whisper-test-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        #expect(WhisperModelManager.isModelDirectoryComplete(tempDir) == false)
+
+        for folder in ["AudioEncoder.mlmodelc", "TextDecoder.mlmodelc", "MelSpectrogram.mlmodelc"] {
+            try FileManager.default.createDirectory(
+                at: tempDir.appendingPathComponent(folder, isDirectory: true),
+                withIntermediateDirectories: true
+            )
+        }
+        #expect(WhisperModelManager.isModelDirectoryComplete(tempDir) == true)
+    }
+
+    @MainActor
+    @Test func compositeSpeechServiceRoutesBetweenWhisperAndAppleFallback() async throws {
+        let suiteName = "com.codem0nky87.msam.tests.composite.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let settings = VoiceDictationSettings(defaults: defaults)
+        let whisperMock = MockSpeechRecognitionService()
+        whisperMock.transcribedResult = "Goeie môre vanaf Whisper"
+        let appleFallbackMock = MockSpeechRecognitionService()
+        appleFallbackMock.transcribedResult = "Good morning from Apple Speech"
+
+        var isWhisperReady = false
+        let composite = CompositeSpeechRecognitionService(
+            settings: settings,
+            whisperService: whisperMock,
+            fallbackService: appleFallbackMock,
+            isWhisperModelReady: { isWhisperReady }
+        )
+
+        // 1. Whisper NOT downloaded + .autoAfEn -> throws actionable Settings download error
+        settings.setLanguageMode(.autoAfEn)
+        do {
+            try await composite.startRecognition(onDeviceOnly: true, onPartialResult: { _ in }, onAudioLevel: { _ in })
+            Issue.record("Expected error when Whisper model is not downloaded in .autoAfEn mode")
+        } catch {
+            #expect(error.localizedDescription.contains("Voice Dictation"))
+        }
+
+        // 2. Whisper NOT downloaded + .english -> falls back to Apple Speech
+        settings.setLanguageMode(.english)
+        try await composite.startRecognition(onDeviceOnly: true, onPartialResult: { _ in }, onAudioLevel: { _ in })
+        #expect(appleFallbackMock.isRecording == true)
+        let fallbackResult = await composite.stopRecognition()
+        #expect(fallbackResult == "Good morning from Apple Speech")
+
+        // 3. Whisper IS ready + .autoAfEn -> uses Whisper service
+        isWhisperReady = true
+        settings.setLanguageMode(.autoAfEn)
+        try await composite.startRecognition(onDeviceOnly: true, onPartialResult: { _ in }, onAudioLevel: { _ in })
+        #expect(whisperMock.isRecording == true)
+        let whisperResult = await composite.stopRecognition()
+        #expect(whisperResult == "Goeie môre vanaf Whisper")
+    }
+
+    @Test func hudLanguageBadgeAndQuickKeyBarOrderPlaceVoiceLeftAndIncludeAlt() {
+        #expect(VoiceTranscriptionHUD.languageBadgeText(for: .autoAfEn) == "AF/EN")
+        #expect(VoiceTranscriptionHUD.languageBadgeText(for: .afrikaans) == "AF")
+        #expect(VoiceTranscriptionHUD.languageBadgeText(for: .english) == "EN")
+
+        // Voice key must be at index 0 (far left) away from the centered iPad Home Indicator,
+        // and "alt" must be present in the quick-key bar.
+        #expect(TerminalQuickKeyBar.orderedKeyIdentifiers.first == "msam.quickkey.voice")
+        #expect(TerminalQuickKeyBar.orderedKeyIdentifiers.contains("msam.quickkey.alt"))
+    }
+
+    @MainActor
+    @Test func stickyAltKeyPrefixesEscapeAndDisarmsOnInputAndBackspace() {
+        let controller = KeyInputController()
+        let inputView = TerminalKeyInputView(frame: .zero)
+        var capturedBytes: [[UInt8]] = []
+        inputView.onInput = { capturedBytes.append($0) }
+        controller.view = inputView
+
+        #expect(controller.isAltArmed == false)
+        controller.toggleAlt()
+        #expect(controller.isAltArmed == true)
+        #expect(inputView.altLatchArmed == true)
+
+        // Typing "b" while Alt is armed sends ESC + "b" (backward-word in readline/shell) and disarms
+        inputView.insertText("b")
+        #expect(capturedBytes.last == [0x1B, UInt8(ascii: "b")])
+        #expect(inputView.altLatchArmed == false)
+
+        // Arming Alt again and pressing Backspace sends ESC + DEL (backward-kill-word) and disarms
+        controller.toggleAlt()
+        #expect(inputView.altLatchArmed == true)
+        inputView.deleteBackward()
+        #expect(capturedBytes.last == [0x1B, 0x7F])
+        #expect(inputView.altLatchArmed == false)
+    }
 }
 
 // MARK: - Background Thread Objective-C Callback Simulator

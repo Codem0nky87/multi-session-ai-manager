@@ -51,7 +51,7 @@ public final class VoiceDictationEngine: ObservableObject {
     private var currentSessionID = UUID()
 
     public init(service: SpeechRecognitionService? = nil) {
-        self.service = service ?? AppleSpeechRecognitionService()
+        self.service = service ?? CompositeSpeechRecognitionService()
     }
 
     // MARK: - Static Helpers
@@ -404,6 +404,291 @@ public final class AppleSpeechRecognitionService: SpeechRecognitionService {
         recognitionRequest = nil
         recognitionTask = nil
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
+}
+
+// MARK: - Thread-Safe Audio Sample Buffer for On-Device Whisper
+
+public final class WhisperAudioSampleAccumulator: @unchecked Sendable {
+    private let lock = NSLock()
+    private var samples: [Float] = []
+
+    public nonisolated init() {}
+
+    public nonisolated func append(_ chunk: [Float]) {
+        lock.lock()
+        samples.append(contentsOf: chunk)
+        lock.unlock()
+    }
+
+    public nonisolated func snapshot() -> [Float] {
+        lock.lock()
+        let copy = samples
+        lock.unlock()
+        return copy
+    }
+
+    public nonisolated func reset() {
+        lock.lock()
+        samples.removeAll(keepingCapacity: false)
+        lock.unlock()
+    }
+}
+
+// MARK: - Whisper On-Device Speech Recognition Service
+
+@MainActor
+public final class WhisperSpeechRecognitionService: SpeechRecognitionService {
+    private let settings: VoiceDictationSettings
+    private let modelManager: WhisperModelManager
+    private let sampleAccumulator = WhisperAudioSampleAccumulator()
+    private var audioEngine: AVAudioEngine?
+    private var activeRecording = false
+    private var isTapInstalled = false
+
+    public var isRecording: Bool {
+        activeRecording
+    }
+
+    public init(
+        settings: VoiceDictationSettings = .shared,
+        modelManager: WhisperModelManager = .shared
+    ) {
+        self.settings = settings
+        self.modelManager = modelManager
+    }
+
+    public nonisolated static func makeWhisperAudioTapBlock(
+        accumulator: WhisperAudioSampleAccumulator,
+        onAudioLevel: @MainActor @Sendable @escaping (Float) -> Void
+    ) -> AVAudioNodeTapBlock {
+        return { buffer, _ in
+            let resampled = VoiceDictationSettings.extract16kHzMonoSamples(from: buffer)
+            if !resampled.isEmpty {
+                accumulator.append(resampled)
+            }
+
+            guard let channelData = buffer.floatChannelData?[0] else { return }
+            let frameLength = Int(buffer.frameLength)
+            guard frameLength > 0 else { return }
+
+            var sum: Float = 0.0
+            for i in 0..<frameLength {
+                let sample = channelData[i]
+                if !sample.isNaN && !sample.isInfinite {
+                    sum += sample * sample
+                }
+            }
+            let rms = sqrt(sum / Float(frameLength))
+            if !rms.isNaN && !rms.isInfinite {
+                Task { @MainActor in
+                    onAudioLevel(rms * 12.0)
+                }
+            }
+        }
+    }
+
+    private nonisolated static func installWhisperTapNonisolated(
+        on inputNode: AVAudioNode,
+        accumulator: WhisperAudioSampleAccumulator,
+        onAudioLevel: @MainActor @Sendable @escaping (Float) -> Void
+    ) {
+        let tapBlock = Self.makeWhisperAudioTapBlock(
+            accumulator: accumulator,
+            onAudioLevel: onAudioLevel
+        )
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: nil, block: tapBlock)
+    }
+
+    private nonisolated static func requestMicPermissionOnlyNonisolated() async -> Bool {
+        if #available(iOS 17.0, *) {
+            if AVAudioApplication.shared.recordPermission == .granted {
+                return true
+            }
+            return await withCheckedContinuation { continuation in
+                AVAudioApplication.requestRecordPermission { granted in
+                    continuation.resume(returning: granted)
+                }
+            }
+        } else {
+            if AVAudioSession.sharedInstance().recordPermission == .granted {
+                return true
+            }
+            return await withCheckedContinuation { continuation in
+                AVAudioSession.sharedInstance().requestRecordPermission { granted in
+                    continuation.resume(returning: granted)
+                }
+            }
+        }
+    }
+
+    public func requestPermissions() async -> Bool {
+        await Self.requestMicPermissionOnlyNonisolated()
+    }
+
+    public func startRecognition(
+        onDeviceOnly: Bool,
+        onPartialResult: @MainActor @Sendable @escaping (String) -> Void,
+        onAudioLevel: @MainActor @Sendable @escaping (Float) -> Void
+    ) async throws {
+        teardownAudio()
+        sampleAccumulator.reset()
+
+        let audioSession = AVAudioSession.sharedInstance()
+        try audioSession.setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .defaultToSpeaker, .allowBluetoothHFP])
+        try audioSession.setActive(true)
+
+        let engine = AVAudioEngine()
+        let inputNode = engine.inputNode
+        let inputFormat = inputNode.inputFormat(forBus: 0)
+        let outputFormat = inputNode.outputFormat(forBus: 0)
+
+        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0,
+              outputFormat.sampleRate > 0, outputFormat.channelCount > 0 else {
+            teardownAudio()
+            throw NSError(
+                domain: "VoiceDictation",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "Audio hardware is initializing. Please tap and hold again in a moment."]
+            )
+        }
+
+        Self.installWhisperTapNonisolated(
+            on: inputNode,
+            accumulator: sampleAccumulator,
+            onAudioLevel: onAudioLevel
+        )
+        self.isTapInstalled = true
+
+        do {
+            engine.prepare()
+            try engine.start()
+        } catch {
+            teardownAudio()
+            throw error
+        }
+
+        self.audioEngine = engine
+        self.activeRecording = true
+    }
+
+    public func stopRecognition() async -> String? {
+        let wasActive = activeRecording
+        activeRecording = false
+        let capturedSamples = sampleAccumulator.snapshot()
+        teardownAudio()
+        sampleAccumulator.reset()
+
+        guard wasActive, !capturedSamples.isEmpty else {
+            return nil
+        }
+
+        return try? await modelManager.transcribeSamples(
+            capturedSamples,
+            languageMode: settings.languageMode
+        )
+    }
+
+    public func cancelRecognition() {
+        activeRecording = false
+        teardownAudio()
+        sampleAccumulator.reset()
+    }
+
+    private func teardownAudio() {
+        if let engine = audioEngine {
+            if engine.isRunning {
+                engine.stop()
+            }
+            if isTapInstalled {
+                engine.inputNode.removeTap(onBus: 0)
+                isTapInstalled = false
+            }
+        }
+        audioEngine = nil
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
+}
+
+// MARK: - Composite Speech Recognition Service (Whisper + Apple Fallback)
+
+@MainActor
+public final class CompositeSpeechRecognitionService: SpeechRecognitionService {
+    private let settings: VoiceDictationSettings
+    private let whisperService: SpeechRecognitionService
+    private let fallbackService: SpeechRecognitionService
+    private let isWhisperModelReady: @MainActor () -> Bool
+    private var activeBackend: SpeechRecognitionService?
+
+    public var isRecording: Bool {
+        activeBackend?.isRecording ?? false
+    }
+
+    public init(
+        settings: VoiceDictationSettings = .shared,
+        whisperService: SpeechRecognitionService? = nil,
+        fallbackService: SpeechRecognitionService? = nil,
+        isWhisperModelReady: (@MainActor () -> Bool)? = nil
+    ) {
+        self.settings = settings
+        self.whisperService = whisperService ?? WhisperSpeechRecognitionService(settings: settings)
+        self.fallbackService = fallbackService ?? AppleSpeechRecognitionService(locale: Locale(identifier: "en-ZA"))
+        self.isWhisperModelReady = isWhisperModelReady ?? {
+            WhisperModelManager.shared.isSelectedModelReadyOrDownloaded
+        }
+    }
+
+    public func requestPermissions() async -> Bool {
+        if isWhisperModelReady() || settings.languageMode != .english {
+            return await whisperService.requestPermissions()
+        }
+        return await fallbackService.requestPermissions()
+    }
+
+    public func startRecognition(
+        onDeviceOnly: Bool,
+        onPartialResult: @MainActor @Sendable @escaping (String) -> Void,
+        onAudioLevel: @MainActor @Sendable @escaping (Float) -> Void
+    ) async throws {
+        if isWhisperModelReady() {
+            activeBackend = whisperService
+            try await whisperService.startRecognition(
+                onDeviceOnly: onDeviceOnly,
+                onPartialResult: onPartialResult,
+                onAudioLevel: onAudioLevel
+            )
+            return
+        }
+
+        if settings.languageMode == .english {
+            activeBackend = fallbackService
+            try await fallbackService.startRecognition(
+                onDeviceOnly: onDeviceOnly,
+                onPartialResult: onPartialResult,
+                onAudioLevel: onAudioLevel
+            )
+            return
+        }
+
+        activeBackend = nil
+        throw NSError(
+            domain: "VoiceDictation",
+            code: 11,
+            userInfo: [
+                NSLocalizedDescriptionKey: "Download the on-device Whisper model in MSAM Settings → Voice Dictation to use Afrikaans dictation."
+            ]
+        )
+    }
+
+    public func stopRecognition() async -> String? {
+        guard let backend = activeBackend else { return nil }
+        activeBackend = nil
+        return await backend.stopRecognition()
+    }
+
+    public func cancelRecognition() {
+        activeBackend?.cancelRecognition()
+        activeBackend = nil
     }
 }
 

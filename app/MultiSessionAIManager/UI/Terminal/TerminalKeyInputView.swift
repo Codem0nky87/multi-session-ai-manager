@@ -24,6 +24,9 @@ final class TerminalKeyInputView: UIView, UIKeyInput {
     /// character is sent as its control code and the latch disarms. Hardware
     /// Ctrl combos bypass it (they already carry the modifier).
     var ctrlLatchArmed = false
+    /// Sticky Alt/Meta from the quick-key bar: armed, the next typed character
+    /// is prefixed with ESC (`\u{1b}`) and the latch disarms.
+    var altLatchArmed = false
     private let hardwareRepeater = RepeatKeyPressController()
     private var repeatingHardwareKey: UIKeyboardHIDUsage?
 
@@ -90,14 +93,25 @@ final class TerminalKeyInputView: UIView, UIKeyInput {
             ctrlLatchArmed = false
             onCtrlLatchChanged?(false)
         }
+        if altLatchArmed {
+            data = data.reduce(into: [UInt8]()) { $0 += EscapeSequences.meta + [$1] }
+            altLatchArmed = false
+            onAltLatchChanged?(false)
+        }
         onInput?(data)
     }
 
     func deleteBackward() {
-        if ctrlLatchArmed {
-            // Ctrl-Backspace: delete word backwards (readline convention).
-            ctrlLatchArmed = false
-            onCtrlLatchChanged?(false)
+        if ctrlLatchArmed || altLatchArmed {
+            // Ctrl/Alt-Backspace: delete word backwards (readline convention).
+            if ctrlLatchArmed {
+                ctrlLatchArmed = false
+                onCtrlLatchChanged?(false)
+            }
+            if altLatchArmed {
+                altLatchArmed = false
+                onAltLatchChanged?(false)
+            }
             onInput?(EscapeSequences.meta + EscapeSequences.backspace)
             return
         }
@@ -106,6 +120,8 @@ final class TerminalKeyInputView: UIView, UIKeyInput {
 
     /// Reports sticky-Ctrl state changes so the quick-key bar can light up.
     var onCtrlLatchChanged: ((Bool) -> Void)?
+    /// Reports sticky-Alt state changes so the quick-key bar can light up.
+    var onAltLatchChanged: ((Bool) -> Void)?
 
     // MARK: - Hardware keyboard
 
