@@ -106,6 +106,222 @@ def _retry_after_seconds(headers: dict) -> float:
         return 0.0
 
 
+def _claude_pricing_tier(model: str | None) -> dict[str, float]:
+    """Return per-million-token USD rates for a Claude model matching Claude Code's built-in catalog."""
+    m = (model or "").lower()
+    if "haiku-5-5" in m or "haiku-5.5" in m:
+        return {"in": 0.1, "out": 0.5, "cw5": 0.125, "cw1h": 0.2, "cr": 0.01}
+    if "haiku-4" in m:
+        return {"in": 1.0, "out": 5.0, "cw5": 1.25, "cw1h": 2.0, "cr": 0.1}
+    if "haiku" in m:
+        return {"in": 0.8, "out": 4.0, "cw5": 1.0, "cw1h": 1.6, "cr": 0.08}
+    if "sonnet-5-5" in m or "sonnet-5.5" in m:
+        return {"in": 2.0, "out": 10.0, "cw5": 2.5, "cw1h": 4.0, "cr": 0.1}
+    if "sonnet-5" in m:
+        return {"in": 2.0, "out": 10.0, "cw5": 2.5, "cw1h": 4.0, "cr": 0.2}
+    if "sonnet" in m:
+        return {"in": 3.0, "out": 15.0, "cw5": 3.75, "cw1h": 6.0, "cr": 0.3}
+    if "opus-5-5" in m or "opus-5.5" in m:
+        return {"in": 4.0, "out": 20.0, "cw5": 5.0, "cw1h": 8.0, "cr": 0.2}
+    if any(k in m for k in ("opus-4-5", "opus-4-6", "opus-4-7", "opus-4-8", "opus-5")):
+        return {"in": 5.0, "out": 25.0, "cw5": 6.25, "cw1h": 10.0, "cr": 0.5}
+    if "opus" in m:
+        return {"in": 15.0, "out": 75.0, "cw5": 18.75, "cw1h": 30.0, "cr": 1.5}
+    return {"in": 4.0, "out": 20.0, "cw5": 5.0, "cw1h": 8.0, "cr": 0.2}
+
+
+def _extract_claude_transcript_metrics(path: Path) -> tuple[str | None, int | None, float | None]:
+    """Extract (model, session_tokens, session_cost_usd) from a Claude Code .jsonl transcript."""
+    if not path.is_file():
+        return None, None, None
+    model: str | None = None
+    cost_state_usd: float | None = None
+    cost_state_tokens: int | None = None
+    turn_tokens_by_id: dict[str, int] = {}
+    turn_cost_by_id: dict[str, float] = {}
+    post_cost_state_tokens: dict[str, int] = {}
+    post_cost_state_usd: dict[str, float] = {}
+
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as f:
+            if size > 2 * 1024 * 1024:
+                f.seek(size - 2 * 1024 * 1024)
+            raw_lines = f.read().splitlines()
+        for idx, line in enumerate(raw_lines):
+            if not line or (b'"cost-state"' not in line and b'"usage"' not in line and b'"model"' not in line):
+                continue
+            try:
+                ev = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(ev, dict):
+                continue
+            if ev.get("type") == "cost-state":
+                try:
+                    cost_state_usd = float(ev.get("totalCostUSD") or 0.0)
+                except (TypeError, ValueError):
+                    pass
+                model_usage = ev.get("modelUsage")
+                if isinstance(model_usage, dict) and model_usage:
+                    tok_sum = 0
+                    best_model = None
+                    best_cost = -1.0
+                    for m_name, m_stats in model_usage.items():
+                        if not isinstance(m_stats, dict):
+                            continue
+                        t = (
+                            int(m_stats.get("inputTokens") or 0)
+                            + int(m_stats.get("outputTokens") or 0)
+                            + int(m_stats.get("cacheReadInputTokens") or 0)
+                            + int(m_stats.get("cacheCreationInputTokens") or 0)
+                        )
+                        tok_sum += t
+                        c = float(m_stats.get("costUSD") or 0.0)
+                        if c > best_cost:
+                            best_cost = c
+                            best_model = str(m_name)
+                    if tok_sum > 0:
+                        cost_state_tokens = tok_sum
+                    if best_model and not model:
+                        model = best_model
+                post_cost_state_tokens.clear()
+                post_cost_state_usd.clear()
+                continue
+
+            msg = ev.get("message")
+            if isinstance(msg, dict):
+                if msg.get("model"):
+                    model = str(msg["model"])
+                usage = msg.get("usage")
+                if isinstance(usage, dict):
+                    in_tok = int(usage.get("input_tokens") or 0)
+                    out_tok = int(usage.get("output_tokens") or 0)
+                    cr_tok = int(usage.get("cache_read_input_tokens") or 0)
+                    cw_tok = int(usage.get("cache_creation_input_tokens") or 0)
+                    cc = usage.get("cache_creation") if isinstance(usage.get("cache_creation"), dict) else {}
+                    cw_1h = int(cc.get("ephemeral_1h_input_tokens") or 0)
+                    cw_5m = max(0, cw_tok - cw_1h)
+                    tot = in_tok + out_tok + cr_tok + cw_tok
+                    if tot > 0:
+                        rates = _claude_pricing_tier(model)
+                        c_usd = (
+                            in_tok * rates["in"]
+                            + out_tok * rates["out"]
+                            + cr_tok * rates["cr"]
+                            + cw_5m * rates["cw5"]
+                            + cw_1h * rates["cw1h"]
+                        ) / 1_000_000.0
+                        msg_id = str(msg.get("id") or ev.get("requestId") or ev.get("uuid") or f"line_{idx}")
+                        turn_tokens_by_id[msg_id] = tot
+                        turn_cost_by_id[msg_id] = c_usd
+                        if cost_state_usd is not None:
+                            post_cost_state_tokens[msg_id] = tot
+                            post_cost_state_usd[msg_id] = c_usd
+    except Exception:
+        pass
+
+    if cost_state_usd is not None:
+        total_usd = cost_state_usd + sum(post_cost_state_usd.values())
+        if cost_state_tokens is not None:
+            total_tokens = cost_state_tokens + sum(post_cost_state_tokens.values())
+        else:
+            total_tokens = sum(turn_tokens_by_id.values())
+        return model, (total_tokens if total_tokens > 0 else None), round(total_usd, 4)
+
+    if turn_tokens_by_id:
+        return model, sum(turn_tokens_by_id.values()), round(sum(turn_cost_by_id.values()), 4)
+
+    return model, None, None
+
+
+def _extract_codex_transcript_metrics(path: Path) -> tuple[str | None, int | None, float | None]:
+    """Extract (model, session_tokens, session_cost_usd) from a Codex .jsonl transcript."""
+    if not path.is_file():
+        return None, None, None
+    model: str | None = None
+    session_tokens: int | None = None
+    session_cost_usd: float | None = None
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as f:
+            f.seek(max(0, size - 256 * 1024))
+            for line in f.read().splitlines():
+                if not line or (b'"turn_context"' not in line and b'"token_count"' not in line):
+                    continue
+                try:
+                    ev = json.loads(line)
+                except Exception:
+                    continue
+                if not isinstance(ev, dict):
+                    continue
+                payload = ev.get("payload")
+                if not isinstance(payload, dict):
+                    continue
+                if ev.get("type") == "turn_context" and payload.get("model"):
+                    model = str(payload["model"])
+                elif ev.get("type") == "event_msg" and payload.get("type") == "token_count":
+                    info = payload.get("info") if isinstance(payload.get("info"), dict) else {}
+                    tot_usage = info.get("total_token_usage") if isinstance(info.get("total_token_usage"), dict) else {}
+                    tot_tok = int(tot_usage.get("total_tokens") or 0)
+                    if tot_tok > 0:
+                        session_tokens = tot_tok
+                        in_tok = int(tot_usage.get("input_tokens") or 0)
+                        cached_in = int(tot_usage.get("cached_input_tokens") or 0)
+                        out_tok = int(tot_usage.get("output_tokens") or 0)
+                        uncached_in = max(0, in_tok - cached_in)
+                        session_cost_usd = round((uncached_in * 2.5 + cached_in * 0.25 + out_tok * 10.0) / 1_000_000.0, 4)
+    except Exception:
+        pass
+    return model, session_tokens, session_cost_usd
+
+
+def _collect_claude_api_spend(claude_dir: Path) -> tuple[float, float, float]:
+    """Aggregate (spend_5h_usd, spend_7d_usd, spend_30d_usd) across Claude Code transcripts."""
+    roots = [claude_dir / "projects"]
+    try:
+        if claude_dir.resolve() == (Path.home() / ".claude").resolve():
+            vault_projects = Path("/run/woodhouse-machine-vault/agents/claude/projects")
+            if vault_projects.is_dir():
+                roots.append(vault_projects)
+    except Exception:
+        pass
+
+    existing_roots = [r for r in roots if r.is_dir()]
+    if not existing_roots:
+        return 0.0, 0.0, 0.0
+
+    now_ts = time.time()
+    spend_5h = 0.0
+    spend_7d = 0.0
+    spend_30d = 0.0
+    seen_stems: set[str] = set()
+
+    for root in existing_roots:
+        try:
+            for p in root.rglob("*.jsonl"):
+                try:
+                    st = p.stat()
+                except Exception:
+                    continue
+                if st.st_mtime < now_ts - 30 * 86400:
+                    continue
+                if p.stem in seen_stems:
+                    continue
+                seen_stems.add(p.stem)
+                _, _, cost = _extract_claude_transcript_metrics(p)
+                if cost and cost > 0:
+                    if st.st_mtime >= now_ts - 5 * 3600:
+                        spend_5h += cost
+                    if st.st_mtime >= now_ts - 7 * 86400:
+                        spend_7d += cost
+                    spend_30d += cost
+        except Exception:
+            continue
+
+    return round(spend_5h, 2), round(spend_7d, 2), round(spend_30d, 2)
+
+
 def collect_claude_quota(credentials_path: Path | str, cache_path: Path | str | None = None, now: datetime | None = None) -> dict:
     """Read Claude subscription usage via Anthropic OAuth endpoint with a 5-minute cache cooldown.
 
@@ -117,7 +333,8 @@ def collect_claude_quota(credentials_path: Path | str, cache_path: Path | str | 
     cache_p = Path(cache_path).expanduser() if cache_path else creds_p.parent / ".claude_usage_cache.json"
 
     cached = _read_usage_cache(cache_p)
-    if time.time() - cached.get("_cached_at", 0) < cached.get("_cooldown", CACHE_COOLDOWN_SECONDS):
+    has_spend_schema = cached.get("state") not in ("HEALTHY", "RATE_LIMITED") or "spend_5h_usd" in cached
+    if has_spend_schema and time.time() - cached.get("_cached_at", 0) < cached.get("_cooldown", CACHE_COOLDOWN_SECONDS):
         return {k: v for k, v in cached.items() if not k.startswith("_")}
     last_good = cached.get("_last_good")
     if cached.get("state") in ("HEALTHY", "RATE_LIMITED"):
@@ -175,13 +392,16 @@ def collect_claude_quota(credentials_path: Path | str, cache_path: Path | str | 
     resets_at = seven_day.get("resets_at") or five_hour.get("resets_at")
     state = "RATE_LIMITED" if primary_util >= 100.0 else "HEALTHY"
 
+    spend_5h, spend_7d, spend_30d = _collect_claude_api_spend(creds_p.parent)
+    h5_label = f"5-Hour Pool (${spend_5h:,.2f} API)" if spend_5h > 0 else "5-Hour Pool"
+    d7_label = f"7-Day Quota (${spend_7d:,.2f} API)" if spend_7d > 0 else "7-Day Quota"
+
     windows = [
-        {"group": "5-Hour Pool", "window_minutes": 300, "used_percent": h5_util, "resets_at": five_hour.get("resets_at")},
-        {"group": "7-Day Quota", "window_minutes": 10080, "used_percent": d7_util, "resets_at": seven_day.get("resets_at")},
+        {"group": h5_label, "window_minutes": 300, "used_percent": h5_util, "resets_at": five_hour.get("resets_at")},
+        {"group": d7_label, "window_minutes": 10080, "used_percent": d7_util, "resets_at": seven_day.get("resets_at")},
     ]
 
-    # Extra usage beyond the subscription (e.g. a $200 monthly cap). Shown only while
-    # enabled: a disabled allowance (e.g. out_of_credits) cannot be spent.
+    # Extra usage beyond the subscription (e.g. a $200 monthly cap).
     def section(source, key) -> dict:
         value = source.get(key) if isinstance(source, dict) else None
         return value if isinstance(value, dict) else {}
@@ -192,15 +412,30 @@ def collect_claude_quota(credentials_path: Path | str, cache_path: Path | str | 
         limit_minor = float(limit.get("amount_minor") or extra_usage.get("monthly_limit") or 0)
         used_minor = float(used.get("amount_minor", extra_usage.get("used_credits")) or 0)
         exponent = int(limit.get("exponent", extra_usage.get("decimal_places", 2)))
-        if enabled and limit_minor > 0:
+        if limit_minor > 0:
+            limit_dollars = limit_minor / (10 ** exponent)
+            used_dollars = used_minor / (10 ** exponent)
+            if enabled:
+                allowance_label = f"API Allowance (${used_dollars:,.2f} / ${limit_dollars:,.0f})"
+            else:
+                allowance_label = f"API Allowance (${used_dollars:,.2f} / ${limit_dollars:,.0f} · Out of credits)"
             windows.append({
-                "group": f"API Allowance (${limit_minor / 10 ** exponent:,.0f})",
+                "group": allowance_label,
                 "window_minutes": 43200,
                 "used_percent": round(used_minor / limit_minor * 100.0, 1),
                 "resets_at": None,
             })
     except (TypeError, ValueError, OverflowError):
         pass
+
+    if spend_30d > 0:
+        windows.append({
+            "group": f"30-Day API Spend (${spend_30d:,.2f})",
+            "window_minutes": 43200,
+            "used_percent": round(min(100.0, d7_util), 1),
+            "resets_at": None,
+            "value_text": f"${spend_30d:,.2f}",
+        })
 
     result = {
         "state": state,
@@ -209,6 +444,9 @@ def collect_claude_quota(credentials_path: Path | str, cache_path: Path | str | 
         "plan": plan,
         "windows": windows,
         "reset_credits": None,
+        "spend_5h_usd": spend_5h,
+        "spend_7d_usd": spend_7d,
+        "spend_30d_usd": spend_30d,
     }
 
     _write_usage_cache(cache_p, result, CACHE_COOLDOWN_SECONDS)
@@ -1124,24 +1362,52 @@ def collect_terminal_agents(home_dir: Path | str | None = None, herdr_bin: str =
         except Exception:
             pass
 
-    # Build transcript index for codex and claude
+    # Build transcript index for codex and claude (including Woodhouse vault roots if accessible)
     index: dict[tuple[str, str], Path] = {}
-    for provider, root in [('codex', home / '.codex/sessions'), ('claude', home / '.claude/projects'), ('claude_code', home / '.claude/projects')]:
+    search_roots: list[tuple[str, Path]] = [
+        ('codex', home / '.codex/sessions'),
+        ('claude', home / '.claude/projects'),
+        ('claude_code', home / '.claude/projects'),
+    ]
+    try:
+        if home.resolve() == Path.home().resolve():
+            vault_claude = Path('/run/woodhouse-machine-vault/agents/claude/projects')
+            vault_codex = Path('/run/woodhouse-machine-vault/agents/codex/sessions')
+            if vault_claude.is_dir():
+                search_roots.extend([('claude', vault_claude), ('claude_code', vault_claude)])
+            if vault_codex.is_dir():
+                search_roots.append(('codex', vault_codex))
+    except Exception:
+        pass
+
+    for provider, root in search_roots:
         if root.exists():
-            for p in root.rglob("*.jsonl"):
-                match = UUID_REGEX.search(p.stem)
-                if match:
-                    index[(provider, match.group().lower())] = p
+            try:
+                for p in root.rglob("*.jsonl"):
+                    index[(provider, p.stem.lower())] = p
+                    match = UUID_REGEX.search(p.stem)
+                    if match:
+                        index[(provider, match.group().lower())] = p
+            except Exception:
+                pass
 
     terminals = []
     for a in raw_agents.values():
-        agent_type = str(a.get("agent") or "").lower()
+        agent_type = str(a.get("agent") or (a.get("agent_session") or {}).get("agent") or "").lower()
         name_str = str(a.get("name") or "").lower()
         title_str = str(a.get("terminal_title") or a.get("terminal_title_stripped") or "").lower()
         cmd_str = str(a.get("command") or "").lower()
         combined = f"{agent_type} {name_str} {title_str} {cmd_str}"
 
-        if "claude" in combined:
+        if "claude" in agent_type:
+            norm_provider = "claude_code"
+        elif "codex" in agent_type:
+            norm_provider = "codex"
+        elif any(k in agent_type for k in ("agy", "antigravity")):
+            norm_provider = "antigravity"
+        elif "hermes" in agent_type:
+            norm_provider = "hermes"
+        elif "claude" in combined:
             norm_provider = "claude_code"
         elif "codex" in combined:
             norm_provider = "codex"
@@ -1162,6 +1428,7 @@ def collect_terminal_agents(home_dir: Path | str | None = None, herdr_bin: str =
         transcript_path = ""
         model = None
         session_tokens = None
+        session_cost_usd = None
 
         if norm_provider == 'hermes':
             s = _query_hermes_session(home, session_id if session_id else None)
@@ -1188,30 +1455,10 @@ def collect_terminal_agents(home_dir: Path | str | None = None, herdr_bin: str =
             matched_p = index.get((norm_provider, session_id)) or index.get((agent_type, session_id))
             if matched_p and matched_p.exists():
                 transcript_path = str(matched_p.resolve())
-                try:
-                    # Read last 256KB to quickly extract model and token count
-                    with matched_p.open('rb') as f:
-                        f.seek(max(0, matched_p.stat().st_size - 256 * 1024))
-                        for line in f.read().splitlines():
-                            try:
-                                ev = json.loads(line)
-                                if norm_provider == 'codex':
-                                    if ev.get("type") == "turn_context" and "model" in ev.get("payload", {}):
-                                        model = ev["payload"]["model"]
-                                    if ev.get("type") == "event_msg" and ev.get("payload", {}).get("type") == "token_count":
-                                        info = ev["payload"].get("info", {})
-                                        session_tokens = (info.get("total_token_usage") or {}).get("total_tokens")
-                                elif norm_provider == 'claude_code':
-                                    msg = ev.get("message") or {}
-                                    if "model" in msg:
-                                        model = msg["model"]
-                                    usage = msg.get("usage") or {}
-                                    if usage:
-                                        session_tokens = sum(usage.values())
-                            except Exception:
-                                continue
-                except Exception:
-                    pass
+                if norm_provider == 'codex':
+                    model, session_tokens, session_cost_usd = _extract_codex_transcript_metrics(matched_p)
+                elif norm_provider == 'claude_code':
+                    model, session_tokens, session_cost_usd = _extract_claude_transcript_metrics(matched_p)
 
         cwd = str(a.get("foreground_cwd") or a.get("cwd") or "")
         project = Path(cwd).name if cwd else ""
@@ -1225,6 +1472,7 @@ def collect_terminal_agents(home_dir: Path | str | None = None, herdr_bin: str =
             "state": status,
             "model": model,
             "session_tokens": session_tokens,
+            "session_cost_usd": round(session_cost_usd, 2) if session_cost_usd is not None else None,
             "transcript_path": transcript_path,
             "is_limit_reached": is_limit_reached,
         })

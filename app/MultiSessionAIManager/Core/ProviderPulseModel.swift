@@ -22,6 +22,7 @@ public struct UsageWindow: Decodable, Equatable, Identifiable, Sendable {
     public let windowMinutes: Int
     public let usedPercent: Double
     public let resetsAt: String?
+    public let valueText: String?
 
     enum CodingKeys: String, CodingKey {
         case group
@@ -29,13 +30,15 @@ public struct UsageWindow: Decodable, Equatable, Identifiable, Sendable {
         case windowMinutes = "window_minutes"
         case usedPercent = "used_percent"
         case resetsAt = "resets_at"
+        case valueText = "value_text"
     }
 
-    public init(group: String, windowMinutes: Int, usedPercent: Double, resetsAt: String? = nil) {
+    public init(group: String, windowMinutes: Int, usedPercent: Double, resetsAt: String? = nil, valueText: String? = nil) {
         self.group = group
         self.windowMinutes = windowMinutes
         self.usedPercent = usedPercent
         self.resetsAt = resetsAt
+        self.valueText = valueText
     }
 
     public init(from decoder: Decoder) throws {
@@ -47,6 +50,7 @@ public struct UsageWindow: Decodable, Equatable, Identifiable, Sendable {
         self.windowMinutes = try container.decodeIfPresent(Int.self, forKey: .windowMinutes) ?? 300
         self.usedPercent = try container.decodeIfPresent(Double.self, forKey: .usedPercent) ?? 0.0
         self.resetsAt = try container.decodeIfPresent(String.self, forKey: .resetsAt)
+        self.valueText = try container.decodeIfPresent(String.self, forKey: .valueText)
     }
 }
 
@@ -59,6 +63,9 @@ public struct ProviderQuota: Decodable, Equatable, Identifiable, Sendable {
     public let plan: String?
     public let windows: [UsageWindow]
     public let resetCredits: ResetCredits?
+    public let spend5hUSD: Double?
+    public let spend7dUSD: Double?
+    public let spend30dUSD: Double?
 
     enum CodingKeys: String, CodingKey {
         case state
@@ -67,6 +74,9 @@ public struct ProviderQuota: Decodable, Equatable, Identifiable, Sendable {
         case plan
         case windows
         case resetCredits = "reset_credits"
+        case spend5hUSD = "spend_5h_usd"
+        case spend7dUSD = "spend_7d_usd"
+        case spend30dUSD = "spend_30d_usd"
     }
 
     public init(from decoder: Decoder) throws {
@@ -78,9 +88,12 @@ public struct ProviderQuota: Decodable, Equatable, Identifiable, Sendable {
         self.plan = try container.decodeIfPresent(String.self, forKey: .plan)
         self.windows = try container.decodeIfPresent([UsageWindow].self, forKey: .windows) ?? []
         self.resetCredits = try container.decodeIfPresent(ResetCredits.self, forKey: .resetCredits)
+        self.spend5hUSD = try container.decodeIfPresent(Double.self, forKey: .spend5hUSD)
+        self.spend7dUSD = try container.decodeIfPresent(Double.self, forKey: .spend7dUSD)
+        self.spend30dUSD = try container.decodeIfPresent(Double.self, forKey: .spend30dUSD)
     }
 
-    public init(name: String, state: String = "HEALTHY", usedPercent: Double = 0.0, resetsAt: String? = nil, plan: String? = nil, windows: [UsageWindow] = [], resetCredits: ResetCredits? = nil) {
+    public init(name: String, state: String = "HEALTHY", usedPercent: Double = 0.0, resetsAt: String? = nil, plan: String? = nil, windows: [UsageWindow] = [], resetCredits: ResetCredits? = nil, spend5hUSD: Double? = nil, spend7dUSD: Double? = nil, spend30dUSD: Double? = nil) {
         self.name = name
         self.state = state
         self.usedPercent = usedPercent
@@ -88,6 +101,9 @@ public struct ProviderQuota: Decodable, Equatable, Identifiable, Sendable {
         self.plan = plan
         self.windows = windows
         self.resetCredits = resetCredits
+        self.spend5hUSD = spend5hUSD
+        self.spend7dUSD = spend7dUSD
+        self.spend30dUSD = spend30dUSD
     }
 
     public var isRateLimited: Bool {
@@ -115,6 +131,7 @@ public struct TerminalAgentSession: Decodable, Equatable, Identifiable, Sendable
     public let state: String
     public let model: String?
     public let sessionTokens: Int?
+    public let sessionCostUSD: Double?
     public let transcriptPath: String?
     public let isLimitReached: Bool
 
@@ -127,11 +144,12 @@ public struct TerminalAgentSession: Decodable, Equatable, Identifiable, Sendable
         case state
         case model
         case sessionTokens = "session_tokens"
+        case sessionCostUSD = "session_cost_usd"
         case transcriptPath = "transcript_path"
         case isLimitReached = "is_limit_reached"
     }
 
-    public init(paneID: String, tabID: String = "", name: String, provider: String, project: String, state: String = "idle", model: String? = nil, sessionTokens: Int? = nil, transcriptPath: String? = nil, isLimitReached: Bool = false) {
+    public init(paneID: String, tabID: String = "", name: String, provider: String, project: String, state: String = "idle", model: String? = nil, sessionTokens: Int? = nil, sessionCostUSD: Double? = nil, transcriptPath: String? = nil, isLimitReached: Bool = false) {
         self.paneID = paneID
         self.tabID = tabID
         self.name = name
@@ -140,6 +158,7 @@ public struct TerminalAgentSession: Decodable, Equatable, Identifiable, Sendable
         self.state = state
         self.model = model
         self.sessionTokens = sessionTokens
+        self.sessionCostUSD = sessionCostUSD
         self.transcriptPath = transcriptPath
         self.isLimitReached = isLimitReached
     }
@@ -155,6 +174,7 @@ public struct TerminalAgentSession: Decodable, Equatable, Identifiable, Sendable
         self.state = try container.decodeIfPresent(String.self, forKey: .state) ?? "idle"
         self.model = try container.decodeIfPresent(String.self, forKey: .model)
         self.sessionTokens = try container.decodeIfPresent(Int.self, forKey: .sessionTokens)
+        self.sessionCostUSD = try container.decodeIfPresent(Double.self, forKey: .sessionCostUSD)
         self.transcriptPath = try container.decodeIfPresent(String.self, forKey: .transcriptPath)
         self.isLimitReached = try container.decodeIfPresent(Bool.self, forKey: .isLimitReached) ?? false
     }

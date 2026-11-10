@@ -94,7 +94,7 @@ struct ProviderDetailSheet: View {
                                             }
                                         }
                                         Spacer()
-                                        Text("\(Int(win.usedPercent.rounded()))%")
+                                        Text(win.valueText ?? "\(Int(win.usedPercent.rounded()))%")
                                             .font(HerdrTheme.mono(.caption, weight: .bold))
                                             .foregroundStyle(win.usedPercent >= 100 ? HerdrTheme.red : HerdrTheme.subtext)
                                     }
@@ -161,6 +161,11 @@ struct ProviderDetailSheet: View {
                                             Text("Tokens: \(formatTokens(tokens))")
                                                 .font(HerdrTheme.mono(.caption))
                                                 .foregroundStyle(HerdrTheme.subtext)
+                                        }
+                                        if let cost = term.sessionCostUSD, cost > 0 {
+                                            Text(String(format: "API Spend: $%.2f", cost))
+                                                .font(HerdrTheme.mono(.caption, weight: .semibold))
+                                                .foregroundStyle(HerdrTheme.accent)
                                         }
                                     }
 

@@ -85,13 +85,16 @@ class ProviderPulseTests(unittest.TestCase):
             self.assertEqual(len(res["windows"]), 3)
             self.assertEqual(res["windows"][0]["group"], "5-Hour Pool")
             self.assertEqual(res["windows"][1]["group"], "7-Day Quota")
-            self.assertEqual(res["windows"][2]["group"], "API Allowance ($200)")
+            self.assertEqual(res["windows"][2]["group"], "API Allowance ($50.00 / $200)")
             self.assertEqual(res["windows"][2]["used_percent"], 25.0)
 
-            # A disabled allowance (out of credits) cannot be spent, so it is not shown as available.
+            # A disabled allowance (out of credits) still reports its $0.00 / $200 status.
             mock_http.return_value = (200, usage(False, 0), {})
             res = self.pulse_module.collect_claude_quota(creds_file, cache_path=self.tmp_path / "c-disabled.json")
-            self.assertEqual([w["group"] for w in res["windows"]], ["5-Hour Pool", "7-Day Quota"])
+            self.assertEqual(
+                [w["group"] for w in res["windows"]],
+                ["5-Hour Pool", "7-Day Quota", "API Allowance ($0.00 / $200 · Out of credits)"],
+            )
 
     def test_collect_claude_quota_never_refreshes_or_writes_the_login(self):
         creds_file = self.tmp_path / ".credentials.json"
@@ -796,6 +799,87 @@ class ProviderPulseTests(unittest.TestCase):
             )
             self.assertEqual(mock_collect.call_args[0][0], creds)
             self.assertEqual(res["providers"]["claude_code"]["state"], "HEALTHY")
+
+    def test_extract_claude_transcript_metrics_and_api_spend(self):
+        from datetime import datetime, timezone
+        projects_dir = self.tmp_path / ".claude" / "projects" / "my-proj"
+        projects_dir.mkdir(parents=True, exist_ok=True)
+        transcript = projects_dir / "sess-123.jsonl"
+        now_iso = datetime.now(timezone.utc).isoformat()
+        lines = [
+            json.dumps({
+                "type": "assistant",
+                "timestamp": now_iso,
+                "message": {
+                    "model": "claude-opus-4-7",
+                    "usage": {
+                        "input_tokens": 100000,
+                        "output_tokens": 20000,
+                        "cache_creation_input_tokens": 50000,
+                        "cache_read_input_tokens": 200000,
+                        "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 50000},
+                        "service_tier": "standard",
+                        "inference_geo": "not_available"
+                    }
+                }
+            }),
+            json.dumps({
+                "type": "cost-state",
+                "sessionId": "sess-123",
+                "totalCostUSD": 12.34
+            })
+        ]
+        transcript.write_text("\n".join(lines) + "\n")
+
+        model, tokens, cost_usd = self.pulse_module._extract_claude_transcript_metrics(transcript)
+        self.assertEqual(model, "claude-opus-4-7")
+        self.assertEqual(tokens, 370000)
+        self.assertEqual(cost_usd, 12.34)
+
+        s5h, s7d, s30d = self.pulse_module._collect_claude_api_spend(self.tmp_path / ".claude")
+        self.assertEqual(s5h, 12.34)
+        self.assertEqual(s7d, 12.34)
+        self.assertEqual(s30d, 12.34)
+
+        # Verify collect_terminal_agents populates session_tokens and session_cost_usd
+        # and does not misclassify a codex agent named 'ondevice-claude' as claude_code
+        herdr_agents_cache = self.tmp_path / ".local" / "state" / "msam-host-agent" / "agents.json"
+        herdr_agents_cache.parent.mkdir(parents=True, exist_ok=True)
+        herdr_agents_cache.write_text(json.dumps({
+            "sessions": [
+                {
+                    "agents": [
+                        {
+                            "pane_id": "wD:p7",
+                            "agent": "claude",
+                            "name": "claude-worker",
+                            "agent_session": {"value": "sess-123"},
+                            "agent_status": "working",
+                            "cwd": "/workspace/my-proj"
+                        },
+                        {
+                            "pane_id": "wQ:p2",
+                            "agent": "codex",
+                            "name": "ondevice-claude",
+                            "agent_session": {"value": "codex-999"},
+                            "agent_status": "idle",
+                            "cwd": "/workspace/ondevice"
+                        }
+                    ]
+                }
+            ]
+        }))
+
+        terminals = self.pulse_module.collect_terminal_agents(home_dir=self.tmp_path)
+        self.assertEqual(len(terminals), 2)
+        t_claude = next(t for t in terminals if t["pane_id"] == "wD:p7")
+        self.assertEqual(t_claude["provider"], "claude_code")
+        self.assertEqual(t_claude["model"], "claude-opus-4-7")
+        self.assertEqual(t_claude["session_tokens"], 370000)
+        self.assertEqual(t_claude["session_cost_usd"], 12.34)
+
+        t_codex = next(t for t in terminals if t["pane_id"] == "wQ:p2")
+        self.assertEqual(t_codex["provider"], "codex")
 
     def test_provider_pulse_file_has_shebang_and_main_runner(self):
         target_path = resources_dir / "msam-provider-pulse.py"

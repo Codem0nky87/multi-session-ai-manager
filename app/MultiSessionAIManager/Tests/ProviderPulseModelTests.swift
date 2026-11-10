@@ -174,4 +174,77 @@ import Testing
         #expect(quota.windows[1].windowMinutes == 300)
         #expect(quota.windows[1].usedPercent == 41.0)
     }
+
+    @Test func decodesAPISpendAndSessionCostFromProviderPulse() throws {
+        let json = """
+        {
+            "providers": {
+                "claude_code": {
+                    "state": "HEALTHY",
+                    "used_percent": 59.0,
+                    "resets_at": "2026-11-10T12:00:00Z",
+                    "plan": "max",
+                    "spend_5h_usd": 112.32,
+                    "spend_7d_usd": 198.47,
+                    "spend_30d_usd": 3000.47,
+                    "windows": [
+                        {
+                            "group": "5-Hour Pool ($112.32 API)",
+                            "window_minutes": 300,
+                            "used_percent": 59.0,
+                            "resets_at": "2026-11-10T12:00:00Z"
+                        },
+                        {
+                            "group": "API Allowance ($0.00 / $200 · Out of credits)",
+                            "window_minutes": 43200,
+                            "used_percent": 0.0,
+                            "value_text": "$0.00",
+                            "resets_at": null
+                        },
+                        {
+                            "group": "30-Day API Spend ($3,000.47)",
+                            "window_minutes": 43200,
+                            "used_percent": 100.0,
+                            "value_text": "$3,000.47",
+                            "resets_at": null
+                        }
+                    ]
+                }
+            },
+            "terminal_agents": [
+                {
+                    "pane_id": "wD:p7",
+                    "tab_id": "wD:t7",
+                    "name": "claude-worker",
+                    "provider": "claude_code",
+                    "project": "multi-session-ai-manager",
+                    "state": "working",
+                    "model": "claude-opus-4-7",
+                    "session_tokens": 69304056,
+                    "session_cost_usd": 24.76,
+                    "transcript_path": "/home/rufus/.claude/projects/test/sess.jsonl",
+                    "is_limit_reached": false
+                }
+            ]
+        }
+        """
+
+        let payload = try JSONDecoder().decode(HostMetricsModel.MetricsPayload.self, from: Data(json.utf8))
+        let metrics = HostMetricsModel()
+        metrics.update(from: payload)
+
+        let claude = try #require(metrics.pulse.providers["claude_code"])
+        #expect(claude.spend5hUSD == 112.32)
+        #expect(claude.spend7dUSD == 198.47)
+        #expect(claude.spend30dUSD == 3000.47)
+        #expect(claude.windows.count == 3)
+        #expect(claude.windows[0].valueText == nil)
+        #expect(claude.windows[1].valueText == "$0.00")
+        #expect(claude.windows[2].valueText == "$3,000.47")
+
+        let terms = metrics.pulse.terminals(for: "claude_code")
+        #expect(terms.count == 1)
+        #expect(terms[0].sessionTokens == 69304056)
+        #expect(terms[0].sessionCostUSD == 24.76)
+    }
 }
