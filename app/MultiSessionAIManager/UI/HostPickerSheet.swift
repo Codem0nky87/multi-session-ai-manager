@@ -31,7 +31,7 @@ struct HostPickerSheet: View {
                         } label: {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(host.name)
-                                Text("\(host.username)@\(host.address):\(host.port)")
+                                Text(host.sshDestination)
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }

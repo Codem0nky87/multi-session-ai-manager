@@ -68,9 +68,15 @@ extension Color {
 /// A glassy elevated card: dark surface, hairline stroke, soft depth.
 struct GlassCard<Content: View>: View {
     var padding: CGFloat = Theme.Space.md
+    /// Cards are form sections: each takes the full row, so a stack of them shares
+    /// one pair of edges. Left to hug its content, a card with a short line is
+    /// narrower than its neighbours and floats in the middle (most visible at
+    /// phone width). Turn off for a card that is meant to hug, like an overlay.
+    var fillsWidth = true
     @ViewBuilder var content: Content
     var body: some View {
         content
+            .frame(maxWidth: fillsWidth ? .infinity : nil, alignment: .leading)
             .padding(padding)
             .background(
                 RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous)

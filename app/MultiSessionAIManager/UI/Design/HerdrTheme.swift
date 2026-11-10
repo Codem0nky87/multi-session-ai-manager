@@ -63,6 +63,12 @@ enum HerdrChromeMetrics {
     /// painted in the terminal's own background so it reads as margin, not gap.
     static let resizeGripClearance: CGFloat = 20
 
+    /// Margin kept under the terminal's last row. Only iPadOS draws the resize
+    /// grip, so a phone keeps the rows instead of a blank strip above its keys.
+    static func terminalBottomClearance(isPhone: Bool) -> CGFloat {
+        isPhone ? 0 : resizeGripClearance
+    }
+
     static let paneBorderWidth: CGFloat = 1
     static let focusedPaneBorderWidth: CGFloat = 2
 }

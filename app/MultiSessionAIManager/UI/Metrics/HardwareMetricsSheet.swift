@@ -72,6 +72,8 @@ struct HardwareMetricsSheet: View {
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                 }
                 .padding()
+                // The sheet scrolls as one page; each panel is laid out in full.
+                .environment(\.metricsDetailIsEmbedded, true)
             }
             .background(HerdrTheme.background)
             .navigationTitle("Host Telemetry")

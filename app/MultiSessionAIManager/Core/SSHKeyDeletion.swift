@@ -35,6 +35,6 @@ enum SSHKeyDeletion {
 
     static let confirmationTitle = "Delete this key?"
     static let confirmationMessage =
-        "The private key is removed from this iPad's keychain and cannot be recovered. "
+        "The private key is removed from this device's keychain and cannot be recovered. "
         + "Any host still authorised with it will need a new key installed."
 }

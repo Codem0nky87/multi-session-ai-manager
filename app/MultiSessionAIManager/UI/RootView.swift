@@ -354,6 +354,14 @@ struct RootView: View {
                 EmptyHostState { showingPicker = true }
             }
         }
+        // Phone: this screen never resizes itself for the software keyboard.
+        // `HostTerminalView` lifts its quick-key bar by the keyboard's height, so
+        // letting SwiftUI shrink the screen as well moved the bar up TWICE -- a
+        // keyboard-sized dead gap under it and five rows of terminal above. The
+        // opt-out sits here, on the whole screen, so nothing inside ever sees a
+        // keyboard inset; on the terminal alone it left a phone on its side with
+        // the top strip pushed half off the screen.
+        .ignoresSafeArea(Self.keyboardRegionsIgnoredByTheScreen, edges: .bottom)
         .background(HerdrTheme.background)
         .environment(terminalSettings)
         // The terminal hierarchy reports through toasts too (the quick-key bar's
@@ -695,6 +703,16 @@ struct RootView: View {
         return tabStore.tabs.first(where: { $0.id == id })
     }
 
+    /// Phone: the keyboard, because the quick-key bar's own inset accounts for it --
+    /// together with the container, in ONE modifier. SwiftUI counts the keyboard
+    /// region as only the part of the keyboard above the home-indicator strip, so
+    /// ignoring the keyboard alone (or the two regions in separate modifiers) leaves
+    /// that strip's 34pt applied on top of the bar's own inset.
+    /// iPad: nothing, so it keeps its existing, separately tuned behaviour.
+    static var keyboardRegionsIgnoredByTheScreen: SafeAreaRegions {
+        UIDevice.current.userInterfaceIdiom == .phone ? [.container, .keyboard] : []
+    }
+
     /// Phone layout. iPhone (portrait AND landscape) and iPad compact split-view
     /// select the slim top bar with single gauge/sparkles icons and the quick-key
     /// strip; full-screen iPad keeps the expanded metrics bar and toolbar.
@@ -768,12 +786,19 @@ struct HostTerminalView: View {
     /// wants every row it can get), so the quick-key bar has to lift itself
     /// clear of the swipe-up strip explicitly.
     @State private var homeInset: CGFloat = 0
+    /// The window's home-indicator inset, refreshed whenever this view's size
+    /// changes (rotation, keyboard). See `KeyboardVisibilityModel.barBottomInset`.
+    @State private var windowHomeInset: CGFloat = 0
 
     /// Space the bar must clear at the bottom: the docked keyboard while it is
     /// up (it covers the home indicator, so the larger figure wins), and the
     /// home-indicator inset when it is down.
     private var barBottomInset: CGFloat {
-        return max(homeInset, keyboard.height)
+        KeyboardVisibilityModel.barBottomInset(
+            keyboardOverlap: keyboard.height,
+            measuredHomeInset: homeInset,
+            windowHomeInset: windowHomeInset,
+            isPhone: UIDevice.current.userInterfaceIdiom == .phone)
     }
 
     var body: some View {
@@ -782,8 +807,10 @@ struct HostTerminalView: View {
                 TerminalEmulatorView(
                     emulator: session.terminal,
                     // Keeps the remote's bottom row out of the window-resize grip,
-                    // which swallows clicks before the app can forward them.
-                    bottomInset: HerdrChromeMetrics.resizeGripClearance,
+                    // which swallows clicks before the app can forward them. iPad
+                    // only: a phone has no grip.
+                    bottomInset: HerdrChromeMetrics.terminalBottomClearance(
+                        isPhone: UIDevice.current.userInterfaceIdiom == .phone),
                     inputEnabled: session.status == .live,
                     onInputBytes: { session.terminal.feedInputToPTY($0) },
                     onGridChange: { cols, rows in session.resize(cols: cols, rows: rows) },
@@ -835,6 +862,9 @@ struct HostTerminalView: View {
                 Color.clear
                     .preference(key: BottomSafeAreaInsetKey.self,
                                 value: proxy.safeAreaInsets.bottom)
+                    .onChange(of: proxy.size, initial: true) { _, _ in
+                        windowHomeInset = KeyboardVisibilityModel.windowBottomSafeAreaInset
+                    }
             }
             .ignoresSafeArea()
         )

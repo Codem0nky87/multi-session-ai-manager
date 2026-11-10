@@ -46,9 +46,9 @@ enum HostReadinessIssue: Equatable, Sendable {
     var message: String {
         switch self {
         case .routeUnavailable:
-            "The address did not resolve or refused the connection. Check the address, and that whatever carries this iPad to the host — VPN, tunnel, or local network — is connected."
+            "The address did not resolve or refused the connection. Check the address, and that whatever carries this device to the host — VPN, tunnel, or local network — is connected."
         case .networkUnavailable:
-            "Connect this iPad to a network, then retry."
+            "Connect this device to a network, then retry."
         case .sshPortRefused:
             "The private destination answered but is not accepting TCP on the configured SSH port."
         case .reachabilityTimedOut:

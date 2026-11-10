@@ -37,7 +37,7 @@ struct HerdrPortForwardingSheet: View {
             case .idle, .connecting:
                 statusScreen(
                     title: "Connecting to SSH host",
-                    detail: "Port-forward definitions remain on this iPad and start only over the authenticated host connection.",
+                    detail: "Port-forward definitions remain on this device and start only over the authenticated host connection.",
                     retry: nil
                 )
             case .failed(let message):

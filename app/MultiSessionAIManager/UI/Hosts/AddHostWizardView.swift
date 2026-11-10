@@ -205,7 +205,7 @@ struct AddHostWizardView: View {
                     if let warning = HostAgentUpdaterPresentation.warning(for: model.updaterSetup) {
                         problem(warning)
                     } else {
-                        Text("The host service processes updates you queue from AI Agent Updates, even after the iPad disconnects.")
+                        Text("The host service processes updates you queue from AI Agent Updates, even after this device disconnects.")
                             .foregroundStyle(Theme.textSecondary)
                     }
                     Text("macOS downloaded-app approval")

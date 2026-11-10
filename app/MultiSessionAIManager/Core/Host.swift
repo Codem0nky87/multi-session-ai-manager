@@ -74,6 +74,13 @@ struct Host: Identifiable, Codable, Equatable, Sendable {
     /// Key used in `KnownHostsStore`. Keep port 22 on the legacy address-only key
     /// so existing trusted pins keep working; isolate non-default SSH ports so
     /// `host:22` and `host:2222` do not trip false host-key-changed warnings.
+    /// `user@address:port` for display. Built as a plain `String` on purpose: a
+    /// `Text("…\(port)")` interpolation localises the number and prints port 2222
+    /// as "2 222" (or "2,222") in most locales.
+    var sshDestination: String {
+        "\(username)@\(address):\(String(port))"
+    }
+
     var knownHostsKey: String {
         port == 22 ? address : "[\(address)]:\(port)"
     }

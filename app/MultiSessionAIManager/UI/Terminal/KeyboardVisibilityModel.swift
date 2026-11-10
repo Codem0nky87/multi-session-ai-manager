@@ -63,12 +63,40 @@ final class KeyboardVisibilityModel: NSObject {
     /// which previously padded the quick-key bar past the whole window.
     @MainActor
     static var windowHeight: CGFloat {
+        keyWindow?.bounds.maxY ?? UIScreen.main.bounds.maxY
+    }
+
+    /// The key window's bottom safe-area inset: the home-indicator strip. Unlike a
+    /// SwiftUI view's own reading, it does not drop to zero for a view that ignores
+    /// the safe area, and it does not include the keyboard.
+    @MainActor
+    static var windowBottomSafeAreaInset: CGFloat {
+        keyWindow?.safeAreaInsets.bottom ?? 0
+    }
+
+    @MainActor
+    private static var keyWindow: UIWindow? {
         let scene = UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
             .first { $0.activationState == .foregroundActive }
             ?? UIApplication.shared.connectedScenes.first as? UIWindowScene
-        let window = scene?.windows.first { $0.isKeyWindow } ?? scene?.windows.first
-        return window?.bounds.maxY ?? UIScreen.main.bounds.maxY
+        return scene?.windows.first { $0.isKeyWindow } ?? scene?.windows.first
+    }
+
+    /// Space the quick-key bar keeps beneath it: the docked keyboard while it is up
+    /// (it covers the home indicator, so the larger figure wins), the home-indicator
+    /// strip otherwise.
+    ///
+    /// `measuredHomeInset` is what the terminal view reads from its own geometry. That
+    /// view ignores the bottom safe area, so the reading is 0: on a phone, whose bar
+    /// wraps onto two rows, that left the whole bottom row of keys inside the
+    /// swipe-up strip. A phone therefore uses the window's inset. iPad keeps the
+    /// measured figure and its existing flush-to-the-edge bar.
+    nonisolated static func barBottomInset(keyboardOverlap: CGFloat,
+                                           measuredHomeInset: CGFloat,
+                                           windowHomeInset: CGFloat,
+                                           isPhone: Bool) -> CGFloat {
+        max(isPhone ? windowHomeInset : measuredHomeInset, keyboardOverlap)
     }
 
     /// Points of bottom-edge screen the docked keyboard covers, or 0 when it

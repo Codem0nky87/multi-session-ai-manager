@@ -125,13 +125,14 @@ struct HostEditView: View {
                     validationFeedback
                 }
                 .padding(.horizontal, Theme.Space.md)
-                .padding(.top, Theme.Space.md)
-                .padding(.bottom, 100) // clears the pinned Save bar
+                .padding(.vertical, Theme.Space.md)
             }
             .accessibilityIdentifier("host.editor.form")
             .scrollDismissesKeyboard(.interactively)
-
-            saveBar
+            // The Save/Next bar is a bottom INSET, not an overlay: the form ends
+            // above it and scrolls clear of it, so no row is ever drawn underneath
+            // (on a phone the overlay sat across the last fields of the form).
+            .safeAreaInset(edge: .bottom, spacing: 0) { saveBar }
         }
     }
 
@@ -286,7 +287,7 @@ struct HostEditView: View {
         GlassCard {
             VStack(alignment: .leading, spacing: Theme.Space.md) {
                 SectionLabel(text: "SSH")
-                Text("This address and port must be reachable from this iPad — over your VPN, tunnel, or local network.")
+                Text("This address and port must be reachable from this device — over your VPN, tunnel, or local network.")
                     .font(Theme.body(13))
                     .foregroundStyle(Theme.textSecondary)
                 DarkField(label: "Name", text: $name,
@@ -401,7 +402,7 @@ struct HostEditView: View {
                 SectionLabel(text: "Port forwarding")
                 Text(portForwardingHost == nil
                      ? "Save this host and install a key first — a tunnel runs over an authenticated SSH connection."
-                     : "Forward a port on this host to the iPad and open it in the in-app browser. A started tunnel keeps running after this window closes; stop it here or in the manager.")
+                     : "Forward a port on this host to this device and open it in the in-app browser. A started tunnel keeps running after this window closes; stop it here or in the manager.")
                     .font(Theme.body(13))
                     .foregroundStyle(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -598,21 +599,14 @@ struct HostEditView: View {
     // MARK: - Save bar
 
     private var saveBar: some View {
-        VStack(spacing: 0) {
-            Spacer()
-            NeonButton(title: onContinue == nil ? "Save host" : "Next",
-                       systemImage: onContinue == nil ? "checkmark" : "arrow.right", enabled: isValid) {
-                save()
-            }
-            .padding(.horizontal, Theme.Space.md)
-            .padding(.top, Theme.Space.sm)
-            .padding(.bottom, Theme.Space.xs)
-            .background(
-                Theme.bg.opacity(0.92)
-                    .blur(radius: 0.5)
-                    .ignoresSafeArea(edges: .bottom)
-            )
+        NeonButton(title: onContinue == nil ? "Save host" : "Next",
+                   systemImage: onContinue == nil ? "checkmark" : "arrow.right", enabled: isValid) {
+            save()
         }
+        .padding(.horizontal, Theme.Space.md)
+        .padding(.top, Theme.Space.sm)
+        .padding(.bottom, Theme.Space.xs)
+        .background(Theme.bg.ignoresSafeArea(edges: .bottom))
     }
 
     // MARK: - Sheets
@@ -902,7 +896,9 @@ struct DarkField: View {
     init(label: String, value: Binding<Int>, accessibilityID: String? = nil) {
         self.label = label
         self.value = value
-        self.keyboard = .numberPad
+        // Not `.numberPad`: on a phone that pad has no Return key, so nothing but
+        // tapping another field could dismiss it, and it hid the fields below.
+        self.keyboard = .numbersAndPunctuation
         self.accessibilityID = accessibilityID
     }
 
@@ -947,7 +943,8 @@ struct DarkField: View {
             TextField(placeholder, text: text)
                 .accessibilityIdentifier(accessibilityID ?? "")
         } else if let value {
-            TextField(label, value: value, format: .number)
+            // A port is not a quantity: no digit grouping ("2 222").
+            TextField(label, value: value, format: .number.grouping(.never))
                 .accessibilityIdentifier(accessibilityID ?? "")
         }
     }

@@ -210,11 +210,16 @@ struct HostListView: View {
                     Text(host.name)
                         .font(Theme.title())
                         .foregroundStyle(Theme.textPrimary)
-                    Text("Private SSH · \(host.username)@\(host.address):\(host.port)")
-                        .font(Theme.mono(13))
-                        .foregroundStyle(Theme.textSecondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                    // Phone width cannot fit the route label and the destination on one
+                    // line; the destination is the part that identifies the host.
+                    ViewThatFits(in: .horizontal) {
+                        Text("Private SSH · " + host.sshDestination)
+                        Text(host.sshDestination)
+                        Text(host.sshDestination).truncationMode(.middle)
+                    }
+                    .font(Theme.mono(13))
+                    .foregroundStyle(Theme.textSecondary)
+                    .lineLimit(1)
                     if host.agentUpdaterSetup.needsWarning {
                         Label("Background updates need setup", systemImage: "exclamationmark.triangle.fill")
                             .font(Theme.body(12))

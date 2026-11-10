@@ -40,26 +40,67 @@ struct TerminalQuickKeyBar: View {
     @State private var isShiftArmed = false
     @State private var showingFunctionKeys = false
 
-    /// Canonical left-to-right key order. `voice` sits 2nd from the left (after `esc`)
-    /// so it avoids both the iPadOS bottom-left corner gesture zone and the centered Home Indicator bar.
-    static let orderedKeyIdentifiers: [String] = [
-        "msam.quickkey.esc",
-        "msam.quickkey.voice",
-        "msam.quickkey.tab",
-        "msam.quickkey.ctrl",
-        "msam.quickkey.alt",
-        "msam.quickkey.ctrl-slash",
-        "msam.quickkey.ctrl-c",
-        "msam.quickkey.shift",
-        "msam.function-keys",
-        "msam.quickkey.left",
-        "msam.quickkey.up",
-        "msam.quickkey.down",
-        "msam.quickkey.right",
-        "msam.quickkey.pageup",
-        "msam.quickkey.pagedown",
-        "msam.quickkey.keyboard",
-    ]
+    /// One key of the bar, in canonical left-to-right order. `voice` sits 2nd from the
+    /// left (after `esc`) so it avoids both the iPadOS bottom-left corner gesture zone
+    /// and the centered Home Indicator bar.
+    enum Key: String, CaseIterable {
+        case esc, voice, tab, ctrl, alt
+        case ctrlSlash = "ctrl-slash"
+        case ctrlC = "ctrl-c"
+        case shift
+        case functionKeys = "function-keys"
+        case left, up, down, right
+        case pageUp = "pageup"
+        case pageDown = "pagedown"
+        case keyboard
+
+        var identifier: String {
+            self == .functionKeys ? "msam.function-keys" : "msam.quickkey.\(rawValue)"
+        }
+    }
+
+    static let orderedKeyIdentifiers: [String] = Key.allCases.map(\.identifier)
+
+    // MARK: - Layout
+
+    static let keySpacing: CGFloat = 4
+    static let horizontalPadding: CGFloat = 6
+    /// The narrowest a key may get. Any narrower and its label ("ctrl", in the bar's
+    /// font) no longer fits on one line and the key is too small to hit reliably.
+    static let minimumKeyWidth: CGFloat = 36
+    /// Height of each row once the keys wrap onto more than one.
+    static let wrappedRowHeight: CGFloat = 40
+
+    /// Width the bar needs to show every key on a single row.
+    nonisolated static var singleRowMinimumWidth: CGFloat {
+        let count = CGFloat(Key.allCases.count)
+        return count * minimumKeyWidth + (count - 1) * keySpacing + 2 * horizontalPadding
+    }
+
+    /// Rows the keys need in `width` points. A phone held upright cannot give sixteen
+    /// keys a usable width on one row (they shrank to ~20pt and their labels broke in
+    /// two), so there they wrap onto two rows of eight. An iPad, or a phone on its
+    /// side, keeps the single row and the terminal keeps the height.
+    nonisolated static func rowCount(forWidth width: CGFloat) -> Int {
+        width >= singleRowMinimumWidth ? 1 : 2
+    }
+
+    /// The keys of each row: canonical order, split evenly.
+    nonisolated static func keyRows(_ count: Int) -> [[Key]] {
+        let keys = Key.allCases
+        guard count > 1 else { return [Array(keys)] }
+        let perRow = (keys.count + count - 1) / count
+        return stride(from: 0, to: keys.count, by: perRow).map {
+            Array(keys[$0..<min($0 + perRow, keys.count)])
+        }
+    }
+
+    /// Total height of the bar for a row count. The terminal above gives up exactly this.
+    nonisolated static func height(rows: Int) -> CGFloat {
+        rows <= 1
+            ? HerdrChromeMetrics.minimumHitTarget
+            : CGFloat(rows) * wrappedRowHeight + CGFloat(rows - 1) * keySpacing
+    }
 
     private var isRecordingVoice: Bool {
         if case .listening = voiceEngine.state { return true }
@@ -68,15 +109,54 @@ struct TerminalQuickKeyBar: View {
     }
 
     var body: some View {
-        HStack(spacing: 4) {
+        // Decided inside the layout pass, from the width actually offered: the first
+        // arrangement whose keys all keep `minimumKeyWidth` wins.
+        ViewThatFits(in: .horizontal) {
+            keyGrid(rows: 1).frame(minWidth: Self.singleRowMinimumWidth)
+            keyGrid(rows: 2)
+        }
+        .background(HerdrTheme.panel)
+        .overlay(alignment: .top) {
+            // Floats just above the bar, whatever its height.
+            VoiceTranscriptionHUD(engine: voiceEngine)
+                .alignmentGuide(.top) { $0[.bottom] + 10 }
+        }
+        .onChange(of: voiceEngine.state) { _, newState in
+            if case .error(let msg) = newState {
+                toasts?.error(msg)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("msam.quickkeys")
+    }
+
+    private func keyGrid(rows count: Int) -> some View {
+        let rows = Self.keyRows(count)
+        return VStack(spacing: Self.keySpacing) {
+            ForEach(rows.indices, id: \.self) { index in
+                HStack(spacing: Self.keySpacing) {
+                    ForEach(rows[index], id: \.self) { key in
+                        keyView(key)
+                    }
+                }
+                .frame(height: count > 1 ? Self.wrappedRowHeight : HerdrChromeMetrics.minimumHitTarget)
+            }
+        }
+        .padding(.horizontal, Self.horizontalPadding)
+    }
+
+    @ViewBuilder
+    private func keyView(_ key: Key) -> some View {
+        switch key {
+        case .esc:
             textKey("esc", id: "esc") {
                 isShiftArmed = false
                 controller.disarmAlt()
                 send(EscapeSequences.meta)
             }
-
+        case .voice:
             voiceKey
-
+        case .tab:
             textKey("tab", id: "tab") {
                 if isShiftArmed {
                     isShiftArmed = false
@@ -88,23 +168,28 @@ struct TerminalQuickKeyBar: View {
                     send(EscapeSequences.tab)
                 }
             }
+        case .ctrl:
             textKey("ctrl", id: "ctrl", active: controller.isCtrlArmed) {
                 controller.toggleCtrl()
             }
+        case .alt:
             textKey("alt", id: "alt", active: controller.isAltArmed) {
                 controller.toggleAlt()
             }
+        case .ctrlSlash:
             textKey("^/", id: "ctrl-slash") {
                 send(EscapeSequences.ctrlSlash)
             }
+        case .ctrlC:
             textKey("^c", id: "ctrl-c") {
                 send(EscapeSequences.ctrlC)
             }
+        case .shift:
             symbolKey("shift", id: "shift", active: isShiftArmed) {
                 isShiftArmed.toggle()
             }
             .accessibilityLabel("shift")
-
+        case .functionKeys:
             textKey("fn", id: "msam.function-keys", active: showingFunctionKeys, disabled: !isLive) {
                 showingFunctionKeys.toggle()
             }
@@ -117,7 +202,7 @@ struct TerminalQuickKeyBar: View {
                 }
                 .presentationCompactAdaptation(.popover)
             }
-
+        case .left:
             symbolKey("arrow.left", id: "left") {
                 if controller.isAltArmed {
                     controller.disarmAlt()
@@ -127,6 +212,7 @@ struct TerminalQuickKeyBar: View {
                                  plain: emulator.applicationCursor ? EscapeSequences.leftApp : EscapeSequences.left))
                 }
             }
+        case .up:
             symbolKey("arrow.up", id: "up") {
                 if controller.isAltArmed {
                     controller.disarmAlt()
@@ -136,6 +222,7 @@ struct TerminalQuickKeyBar: View {
                                  plain: emulator.applicationCursor ? EscapeSequences.upApp : EscapeSequences.up))
                 }
             }
+        case .down:
             symbolKey("arrow.down", id: "down") {
                 if controller.isAltArmed {
                     controller.disarmAlt()
@@ -145,6 +232,7 @@ struct TerminalQuickKeyBar: View {
                                  plain: emulator.applicationCursor ? EscapeSequences.downApp : EscapeSequences.down))
                 }
             }
+        case .right:
             symbolKey("arrow.right", id: "right") {
                 if controller.isAltArmed {
                     controller.disarmAlt()
@@ -154,8 +242,11 @@ struct TerminalQuickKeyBar: View {
                                  plain: emulator.applicationCursor ? EscapeSequences.rightApp : EscapeSequences.right))
                 }
             }
+        case .pageUp:
             symbolKey("chevron.compact.up", id: "pageup") { page(up: true) }
+        case .pageDown:
             symbolKey("chevron.compact.down", id: "pagedown") { page(up: false) }
+        case .keyboard:
             symbolKey(keyboard.isVisible ? "keyboard.chevron.compact.down" : "keyboard",
                       id: "keyboard",
                       active: false) {
@@ -166,20 +257,6 @@ struct TerminalQuickKeyBar: View {
                 }
             }
         }
-        .padding(.horizontal, 6)
-        .frame(height: HerdrChromeMetrics.minimumHitTarget)
-        .background(HerdrTheme.panel)
-        .overlay(alignment: .bottom) {
-            VoiceTranscriptionHUD(engine: voiceEngine)
-                .offset(y: -HerdrChromeMetrics.minimumHitTarget - 10)
-        }
-        .onChange(of: voiceEngine.state) { _, newState in
-            if case .error(let msg) = newState {
-                toasts?.error(msg)
-            }
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("msam.quickkeys")
     }
 
     private var voiceKey: some View {
@@ -267,6 +344,8 @@ struct TerminalQuickKeyBar: View {
         Button(action: action) {
             Text(label)
                 .font(HerdrTheme.mono(.footnote, weight: .semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
                 .foregroundStyle(disabled ? HerdrTheme.muted : (active ? HerdrTheme.background : HerdrTheme.subtext))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(active ? HerdrTheme.accent : HerdrTheme.selection,

@@ -52,7 +52,7 @@ final class HostSetupModel {
     var statusMessage: String {
         switch state {
         case .idle:
-            "Check that this iPad can open an SSH connection to \(endpoint.displayName)."
+            "Check that this device can open an SSH connection to \(endpoint.displayName)."
         case .checking:
             "Opening a TCP connection to \(endpoint.displayName)…"
         case .reachable:

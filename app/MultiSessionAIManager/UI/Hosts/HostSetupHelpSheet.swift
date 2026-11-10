@@ -145,7 +145,7 @@ struct HostSetupHelpSheet: View {
             VStack(alignment: .leading, spacing: Theme.Space.md) {
                 setupSectionLabel("5 · Background agent updates")
                 Text(
-                    "Install a host-owned per-user service so update checks and rolling conversation restores continue after this iPad disconnects. Every Claude Code, Codex, and Antigravity conversation is included; ordinary panes are left running."
+                    "Install a host-owned per-user service so update checks and rolling conversation restores continue after this device disconnects. Every Claude Code, Codex, and Antigravity conversation is included; ordinary panes are left running."
                 )
                 .font(.system(.callout, design: .rounded, weight: .regular))
                 .foregroundStyle(Theme.textSecondary)

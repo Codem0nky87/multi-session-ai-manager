@@ -34,7 +34,7 @@ struct MSAMSettingsView: View {
                 Section("About") {
                     LabeledContent("App", value: "MSAM Herdr Client")
                     LabeledContent("Version", value: Self.version)
-                    Text("A native iPad client for Herdr over SSH.")
+                    Text("A native iPhone and iPad client for Herdr over SSH.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }

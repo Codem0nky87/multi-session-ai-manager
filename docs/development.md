@@ -275,6 +275,28 @@ MSAM_TEST_PW=… xcodebuild -scheme MultiSessionAIManager \
   -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M5)' test
 ```
 
+**Reviewing a phone (or iPad) layout.** `UITests/PhoneLayoutLiveUITests.swift`
+adds a host through the wizard, then walks the terminal, keyboard, text size,
+sheets, host editor and landscape, saving a screenshot of each to
+`exchangeDirectory/shots`. It is opt-in: set `TEST_RUNNER_MSAM_PHONE_IT=1` and
+`TEST_RUNNER_MSAM_PHONE_FIXTURE` to a JSON file with `name`, `address`, `port`,
+`username` and `exchangeDirectory`, and run it on the simulator to review:
+
+```sh
+TEST_RUNNER_MSAM_PHONE_IT=1 TEST_RUNNER_MSAM_PHONE_FIXTURE=/tmp/msam-phone/fixture.json \
+  xcodebuild test -project MultiSessionAIManager.xcodeproj -scheme MultiSessionAIManager \
+  -destination 'platform=iOS Simulator,name=iPhone 17' \
+  -only-testing:MultiSessionAIManagerUITests/PhoneLayoutLiveUITests \
+  CODE_SIGN_IDENTITY=- CODE_SIGNING_ALLOWED=YES
+```
+
+It needs no account password. The wizard generates a key, the test writes the
+public half to `exchangeDirectory/pubkey`, and waits for a file named
+`authorized` to appear there once you have added that key to the host's
+`~/.ssh/authorized_keys`. Remove the key from the host when you are done. The
+terminal steps type into the host's real Herdr session, so point it at a pane
+that is idle.
+
 **Verifying terminal rendering.** Rendering fixes are verified by driving a real
 TUI in the app and comparing what is on screen against `tmux capture-pane`
 ground truth from the same session. Screenshots alone do not establish that the

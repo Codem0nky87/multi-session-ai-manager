@@ -24,18 +24,43 @@ import Charts
     }
 }
 
-extension View {
-    /// Wraps a metrics detail view in a width-fixed, screen-height-capped,
-    /// scrollable popover body so long panels always fit on short windows.
-    @MainActor func metricsPopoverBody(width: CGFloat) -> some View {
-        ScrollView(.vertical) {
-            self
-                .frame(width: width)
-                .background(HerdrTheme.background)
+extension EnvironmentValues {
+    /// True when a metrics detail view is a section of a page that scrolls as a whole
+    /// (the phone's Host Telemetry sheet) rather than the body of its own popover.
+    @Entry var metricsDetailIsEmbedded = false
+}
+
+/// The body of a metrics detail view. In a popover it is a width-fixed,
+/// screen-height-capped scroll view, so long panels always fit short windows.
+/// Embedded in a page that already scrolls, it must be neither: a fixed 360pt is
+/// wider than a phone's card, and a scroll view inside a scroll view collapses to a
+/// short window that cuts the panel off and swallows the page's own scrolling.
+private struct MetricsPopoverBody: ViewModifier {
+    let width: CGFloat
+    @Environment(\.metricsDetailIsEmbedded) private var isEmbedded
+
+    func body(content: Content) -> some View {
+        if isEmbedded {
+            content
+                .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            ScrollView(.vertical) {
+                content
+                    .frame(width: width)
+                    .background(HerdrTheme.background)
+            }
+            .frame(width: width)
+            .frame(maxHeight: MetricsPopoverMetrics.maxHeight)
+            .background(HerdrTheme.background)
         }
-        .frame(width: width)
-        .frame(maxHeight: MetricsPopoverMetrics.maxHeight)
-        .background(HerdrTheme.background)
+    }
+}
+
+extension View {
+    /// Wraps a metrics detail view as a popover body, or lays it out in full when it
+    /// is embedded in a scrolling page (see `MetricsPopoverBody`).
+    @MainActor func metricsPopoverBody(width: CGFloat) -> some View {
+        modifier(MetricsPopoverBody(width: width))
     }
 }
 

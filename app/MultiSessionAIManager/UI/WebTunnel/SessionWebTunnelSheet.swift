@@ -51,7 +51,7 @@ struct SessionWebTunnelSheet: View {
                         ContentUnavailableView {
                             Label("No Web Tunnels", systemImage: "network")
                         } description: {
-                            Text("Add any HTTP/HTTPS/VNC service reachable from this SSH host. The app tunnels it to a local port — web pages open in the app or Safari, VNC hands off to your VNC client — even when the iPad cannot route to the target IP itself.")
+                            Text("Add any HTTP/HTTPS/VNC service reachable from this SSH host. The app tunnels it to a local port — web pages open in the app or Safari, VNC hands off to your VNC client — even when this device cannot route to the target IP itself.")
                         }
                     }
                 } else {
@@ -252,7 +252,7 @@ struct SessionWebTunnelSheet: View {
             Text("Status")
         } footer: {
             Text(
-                "Keep AI Manager running while you use Safari. iPadOS may suspend "
+                "Keep AI Manager running while you use Safari. The system may suspend "
                 + "the tunnel in the background; return to AI Manager and refresh "
                 + "Safari if the page stops loading."
             )
@@ -722,7 +722,7 @@ private struct SessionWebTunnelBrowserScreen: View {
     private func failureOverlay(_ message: String) -> some View {
         ZStack {
             Theme.bg.opacity(0.9)
-            GlassCard {
+            GlassCard(fillsWidth: false) {
                 VStack(spacing: Theme.Space.md) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.system(size: 36))
