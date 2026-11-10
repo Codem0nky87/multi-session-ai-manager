@@ -881,6 +881,42 @@ class ProviderPulseTests(unittest.TestCase):
         t_codex = next(t for t in terminals if t["pane_id"] == "wQ:p2")
         self.assertEqual(t_codex["provider"], "codex")
 
+    def test_collect_claude_quota_keeps_api_equivalent_spend_out_of_subscription_rows(self):
+        # The 5-hour and 7-day rows are SUBSCRIPTION quota. The dollar figure summed from
+        # local transcripts is what that usage would have cost at API rates, not money
+        # owed, so it must never be printed on those rows or as a quota row of its own.
+        claude_dir = self.tmp_path / ".claude"
+        project_dir = claude_dir / "projects" / "my-proj"
+        project_dir.mkdir(parents=True, exist_ok=True)
+        (project_dir / "sess-1.jsonl").write_text(
+            json.dumps({"type": "cost-state", "sessionId": "sess-1", "totalCostUSD": 12.34}) + "\n"
+        )
+        creds_file = claude_dir / ".credentials.json"
+        creds_file.write_text(json.dumps({
+            "claudeAiOauth": {"accessToken": "t", "subscriptionType": "max", "expiresAt": 9999999999000}
+        }))
+        body = {
+            "five_hour": {"utilization": 3.0, "resets_at": "2026-11-10T17:00:00Z"},
+            "seven_day": {"utilization": 11.0, "resets_at": "2026-11-11T16:59:00Z"},
+            "spend": {
+                "used": {"amount_minor": 5000, "currency": "USD", "exponent": 2},
+                "limit": {"amount_minor": 20000, "currency": "USD", "exponent": 2},
+                "enabled": True,
+            },
+        }
+
+        with patch.object(self.pulse_module, "http_get_json", return_value=(200, body, {})):
+            res = self.pulse_module.collect_claude_quota(creds_file, cache_path=self.tmp_path / "c.json")
+
+        self.assertEqual(
+            [w["group"] for w in res["windows"]],
+            ["5-Hour Pool", "7-Day Quota", "API Allowance ($50.00 / $200)"],
+        )
+        # Only the allowance is a real dollar balance, so only it carries a dollar value.
+        self.assertEqual([w.get("value_text") for w in res["windows"]], [None, None, "$50.00"])
+        # The estimate is still reported, as its own fields rather than as quota.
+        self.assertEqual(res["spend_30d_usd"], 12.34)
+
     def test_provider_pulse_file_has_shebang_and_main_runner(self):
         target_path = resources_dir / "msam-provider-pulse.py"
         first_line = target_path.read_text(encoding="utf-8").splitlines()[0]

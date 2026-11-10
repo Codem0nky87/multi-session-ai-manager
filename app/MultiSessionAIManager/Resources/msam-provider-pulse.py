@@ -393,12 +393,10 @@ def collect_claude_quota(credentials_path: Path | str, cache_path: Path | str | 
     state = "RATE_LIMITED" if primary_util >= 100.0 else "HEALTHY"
 
     spend_5h, spend_7d, spend_30d = _collect_claude_api_spend(creds_p.parent)
-    h5_label = f"5-Hour Pool (${spend_5h:,.2f} API)" if spend_5h > 0 else "5-Hour Pool"
-    d7_label = f"7-Day Quota (${spend_7d:,.2f} API)" if spend_7d > 0 else "7-Day Quota"
 
     windows = [
-        {"group": h5_label, "window_minutes": 300, "used_percent": h5_util, "resets_at": five_hour.get("resets_at")},
-        {"group": d7_label, "window_minutes": 10080, "used_percent": d7_util, "resets_at": seven_day.get("resets_at")},
+        {"group": "5-Hour Pool", "window_minutes": 300, "used_percent": h5_util, "resets_at": five_hour.get("resets_at")},
+        {"group": "7-Day Quota", "window_minutes": 10080, "used_percent": d7_util, "resets_at": seven_day.get("resets_at")},
     ]
 
     # Extra usage beyond the subscription (e.g. a $200 monthly cap).
@@ -424,18 +422,10 @@ def collect_claude_quota(credentials_path: Path | str, cache_path: Path | str | 
                 "window_minutes": 43200,
                 "used_percent": round(used_minor / limit_minor * 100.0, 1),
                 "resets_at": None,
+                "value_text": f"${used_dollars:,.2f}",
             })
     except (TypeError, ValueError, OverflowError):
         pass
-
-    if spend_30d > 0:
-        windows.append({
-            "group": f"30-Day API Spend (${spend_30d:,.2f})",
-            "window_minutes": 43200,
-            "used_percent": round(min(100.0, d7_util), 1),
-            "resets_at": None,
-            "value_text": f"${spend_30d:,.2f}",
-        })
 
     result = {
         "state": state,
