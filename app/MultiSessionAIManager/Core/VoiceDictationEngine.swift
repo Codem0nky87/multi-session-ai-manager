@@ -181,67 +181,34 @@ public final class AppleSpeechRecognitionService: SpeechRecognitionService {
         return r
     }
 
-    public func requestPermissions() async -> Bool {
-        let micStatus: Bool = await withCheckedContinuation { continuation in
-            if #available(iOS 17.0, *) {
-                AVAudioApplication.requestRecordPermission { granted in
-                    continuation.resume(returning: granted)
-                }
-            } else {
-                AVAudioSession.sharedInstance().requestRecordPermission { granted in
-                    continuation.resume(returning: granted)
-                }
-            }
+    // MARK: - Nonisolated Objective-C Callback Bridges
+    //
+    // CRITICAL (Swift 6 Strict Concurrency):
+    // SFSpeechRecognizer.requestAuthorization, AVAudioSession.requestRecordPermission,
+    // AVAudioNode.installTap, and SFSpeechRecognizer.recognitionTask take Objective-C
+    // blocks that are NOT marked @Sendable in Apple's SDK headers, yet Apple invokes
+    // them on background queues (com.apple.root.default-qos / realtime CoreAudio IO thread).
+    // If those closures are formed inside a @MainActor method, Swift 6 infers @MainActor
+    // isolation on the closure and injects `_swift_task_checkIsolatedSwift`
+    // (`dispatch_assert_queue(main_queue)`), causing an immediate SIGTRAP crash when
+    // iOS invokes the callback off the main thread.
+    // Forming all Objective-C blocks inside `nonisolated static` functions prevents
+    // Swift 6 from inferring @MainActor isolation on the blocks.
+
+    public nonisolated static func makeSpeechAuthHandler(
+        resuming continuation: CheckedContinuation<Bool, Never>
+    ) -> (SFSpeechRecognizerAuthorizationStatus) -> Void {
+        return { authStatus in
+            continuation.resume(returning: authStatus == .authorized)
         }
-
-        guard micStatus else { return false }
-
-        let speechStatus: Bool = await withCheckedContinuation { continuation in
-            SFSpeechRecognizer.requestAuthorization { authStatus in
-                continuation.resume(returning: authStatus == .authorized)
-            }
-        }
-
-        return speechStatus
     }
 
-    public func startRecognition(
-        onDeviceOnly: Bool,
-        onPartialResult: @MainActor @Sendable @escaping (String) -> Void,
+    public nonisolated static func makeAudioTapBlock(
+        request: SFSpeechAudioBufferRecognitionRequest?,
         onAudioLevel: @MainActor @Sendable @escaping (Float) -> Void
-    ) async throws {
-        guard let recognizer = getOrCreateRecognizer(), recognizer.isAvailable else {
-            throw NSError(domain: "VoiceDictation", code: 1, userInfo: [NSLocalizedDescriptionKey: "Speech recognizer is not available."])
-        }
-
-        teardownAudio()
-
-        let audioSession = AVAudioSession.sharedInstance()
-        try audioSession.setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .defaultToSpeaker, .allowBluetooth])
-        try audioSession.setActive(true)
-
-        let engine = AVAudioEngine()
-        let request = SFSpeechAudioBufferRecognitionRequest()
-        request.shouldReportPartialResults = true
-
-        // Default to false so iOS prefers on-device recognition when available,
-        // but gracefully falls back without crashing if local models are not yet downloaded.
-        request.requiresOnDeviceRecognition = false
-
-        let inputNode = engine.inputNode
-        let recordingFormat = inputNode.outputFormat(forBus: 0)
-
-        guard recordingFormat.sampleRate > 0, recordingFormat.channelCount > 0 else {
-            teardownAudio()
-            throw NSError(
-                domain: "VoiceDictation",
-                code: 2,
-                userInfo: [NSLocalizedDescriptionKey: "Audio hardware is initializing. Please tap and hold again in a moment."]
-            )
-        }
-
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { buffer, _ in
-            request.append(buffer)
+    ) -> AVAudioNodeTapBlock {
+        return { buffer, _ in
+            request?.append(buffer)
 
             guard let channelData = buffer.floatChannelData?[0] else { return }
             let frameLength = Int(buffer.frameLength)
@@ -261,6 +228,117 @@ public final class AppleSpeechRecognitionService: SpeechRecognitionService {
                 }
             }
         }
+    }
+
+    public nonisolated static func makeRecognitionResultHandler(
+        onResult: @MainActor @Sendable @escaping (String?, Bool) -> Void
+    ) -> (SFSpeechRecognitionResult?, Error?) -> Void {
+        return { result, error in
+            let text = result?.bestTranscription.formattedString
+            let shouldStop = (error != nil) || (result?.isFinal ?? false)
+            Task { @MainActor in
+                onResult(text, shouldStop)
+            }
+        }
+    }
+
+    private nonisolated static func requestMicrophonePermissionNonisolated() async -> Bool {
+        if #available(iOS 17.0, *) {
+            if AVAudioApplication.shared.recordPermission == .granted {
+                return true
+            }
+            return await withCheckedContinuation { continuation in
+                AVAudioApplication.requestRecordPermission { granted in
+                    continuation.resume(returning: granted)
+                }
+            }
+        } else {
+            if AVAudioSession.sharedInstance().recordPermission == .granted {
+                return true
+            }
+            return await withCheckedContinuation { continuation in
+                AVAudioSession.sharedInstance().requestRecordPermission { granted in
+                    continuation.resume(returning: granted)
+                }
+            }
+        }
+    }
+
+    private nonisolated static func requestSpeechAuthorizationNonisolated() async -> Bool {
+        if SFSpeechRecognizer.authorizationStatus() == .authorized {
+            return true
+        }
+        return await withCheckedContinuation { continuation in
+            SFSpeechRecognizer.requestAuthorization(Self.makeSpeechAuthHandler(resuming: continuation))
+        }
+    }
+
+    private nonisolated static func installTapNonisolated(
+        on inputNode: AVAudioNode,
+        request: SFSpeechAudioBufferRecognitionRequest,
+        onAudioLevel: @MainActor @Sendable @escaping (Float) -> Void
+    ) {
+        let tapBlock = Self.makeAudioTapBlock(request: request, onAudioLevel: onAudioLevel)
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: nil, block: tapBlock)
+    }
+
+    private nonisolated static func startRecognitionTaskNonisolated(
+        recognizer: SFSpeechRecognizer,
+        request: SFSpeechAudioBufferRecognitionRequest,
+        onResult: @MainActor @Sendable @escaping (String?, Bool) -> Void
+    ) -> SFSpeechRecognitionTask {
+        let handler = Self.makeRecognitionResultHandler(onResult: onResult)
+        return recognizer.recognitionTask(with: request, resultHandler: handler)
+    }
+
+    public func requestPermissions() async -> Bool {
+        let micStatus = await Self.requestMicrophonePermissionNonisolated()
+        guard micStatus else { return false }
+        return await Self.requestSpeechAuthorizationNonisolated()
+    }
+
+    public func startRecognition(
+        onDeviceOnly: Bool,
+        onPartialResult: @MainActor @Sendable @escaping (String) -> Void,
+        onAudioLevel: @MainActor @Sendable @escaping (Float) -> Void
+    ) async throws {
+        guard let recognizer = getOrCreateRecognizer(), recognizer.isAvailable else {
+            throw NSError(domain: "VoiceDictation", code: 1, userInfo: [NSLocalizedDescriptionKey: "Speech recognizer is not available."])
+        }
+
+        teardownAudio()
+
+        let audioSession = AVAudioSession.sharedInstance()
+        try audioSession.setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .defaultToSpeaker, .allowBluetoothHFP])
+        try audioSession.setActive(true)
+
+        let engine = AVAudioEngine()
+        let request = SFSpeechAudioBufferRecognitionRequest()
+        request.shouldReportPartialResults = true
+
+        // Default to false so iOS prefers on-device recognition when available,
+        // but gracefully falls back without crashing if local models are not yet downloaded.
+        request.requiresOnDeviceRecognition = false
+
+        let inputNode = engine.inputNode
+        let inputFormat = inputNode.inputFormat(forBus: 0)
+        let outputFormat = inputNode.outputFormat(forBus: 0)
+
+        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0,
+              outputFormat.sampleRate > 0, outputFormat.channelCount > 0 else {
+            teardownAudio()
+            throw NSError(
+                domain: "VoiceDictation",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "Audio hardware is initializing. Please tap and hold again in a moment."]
+            )
+        }
+
+        Self.installTapNonisolated(
+            on: inputNode,
+            request: request,
+            onAudioLevel: onAudioLevel
+        )
         self.isTapInstalled = true
 
         do {
@@ -276,19 +354,20 @@ public final class AppleSpeechRecognitionService: SpeechRecognitionService {
         self.latestTranscription = ""
         self.activeRecording = true
 
-        self.recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
-            Task { @MainActor [weak self] in
+        self.recognitionTask = Self.startRecognitionTaskNonisolated(
+            recognizer: recognizer,
+            request: request,
+            onResult: { [weak self] text, shouldStop in
                 guard let self = self else { return }
-                if let result = result {
-                    let text = result.bestTranscription.formattedString
+                if let text = text {
                     self.latestTranscription = text
                     onPartialResult(text)
                 }
-                if error != nil || (result?.isFinal ?? false) {
+                if shouldStop {
                     self.activeRecording = false
                 }
             }
-        }
+        )
     }
 
     public func stopRecognition() async -> String? {

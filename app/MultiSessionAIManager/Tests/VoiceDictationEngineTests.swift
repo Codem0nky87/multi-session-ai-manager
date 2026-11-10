@@ -1,4 +1,6 @@
 import Foundation
+import AVFoundation
+import Speech
 import Testing
 @testable import MultiSessionAIManager
 
@@ -168,6 +170,79 @@ import Testing
 
         _ = await engine.stopRecording()
         #expect(engine.state == .idle)
+    }
+
+    @MainActor
+    @Test func appleSpeechCallbacksExecuteSafelyOnBackgroundQueuesWithoutMainActorTrap() async {
+        // 1. Speech authorization handler invoked from a background TCC queue
+        let authAuthorized = await BackgroundCallbackSimulator.simulateSpeechAuthOnBackgroundQueue(status: .authorized)
+        #expect(authAuthorized == true)
+
+        let authDenied = await BackgroundCallbackSimulator.simulateSpeechAuthOnBackgroundQueue(status: .denied)
+        #expect(authDenied == false)
+
+        // 2. Audio tap block invoked from a background CoreAudio realtime thread
+        let reportedLevel = await BackgroundCallbackSimulator.simulateAudioTapOnBackgroundQueue(sampleAmplitude: 0.1)
+        #expect(reportedLevel > 0.0)
+
+        // 3. Recognition result handler invoked from a background Speech queue
+        let didStop = await BackgroundCallbackSimulator.simulateRecognitionErrorOnBackgroundQueue()
+        #expect(didStop == true)
+    }
+}
+
+// MARK: - Background Thread Objective-C Callback Simulator
+
+enum BackgroundCallbackSimulator {
+    static func simulateSpeechAuthOnBackgroundQueue(
+        status: SFSpeechRecognizerAuthorizationStatus
+    ) async -> Bool {
+        await withCheckedContinuation { continuation in
+            let handler = AppleSpeechRecognitionService.makeSpeechAuthHandler(resuming: continuation)
+            nonisolated(unsafe) let unsafeHandler = handler
+            DispatchQueue.global(qos: .userInteractive).async {
+                unsafeHandler(status)
+            }
+        }
+    }
+
+    static func simulateAudioTapOnBackgroundQueue(
+        sampleAmplitude: Float
+    ) async -> Float {
+        await withCheckedContinuation { continuation in
+            let tapBlock = AppleSpeechRecognitionService.makeAudioTapBlock(
+                request: nil,
+                onAudioLevel: { level in
+                    continuation.resume(returning: level)
+                }
+            )
+            nonisolated(unsafe) let unsafeTapBlock = tapBlock
+            DispatchQueue.global(qos: .userInteractive).async {
+                let format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1)!
+                let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1024)!
+                buffer.frameLength = 1024
+                if let channelData = buffer.floatChannelData?[0] {
+                    for i in 0..<1024 {
+                        channelData[i] = sampleAmplitude
+                    }
+                }
+                let time = AVAudioTime(sampleTime: 0, atRate: 48_000)
+                unsafeTapBlock(buffer, time)
+            }
+        }
+    }
+
+    static func simulateRecognitionErrorOnBackgroundQueue() async -> Bool {
+        await withCheckedContinuation { continuation in
+            let handler = AppleSpeechRecognitionService.makeRecognitionResultHandler { _, shouldStop in
+                continuation.resume(returning: shouldStop)
+            }
+            nonisolated(unsafe) let unsafeHandler = handler
+            DispatchQueue.global(qos: .userInteractive).async {
+                let err = NSError(domain: "TestSpeechError", code: -1)
+                unsafeHandler(nil, err)
+            }
+        }
     }
 }
 
