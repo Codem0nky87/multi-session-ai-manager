@@ -1,5 +1,7 @@
 # On-Device Afrikaans & Bilingual Voice Dictation Implementation Plan
 
+> **Withdrawn 2026-11-10.** This plan was executed and the feature was then removed the same day; see the status note in `docs/superpowers/specs/2026-11-10-afrikaans-voice-dictation-design.md`. Do not execute it again.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add 100% on-device Afrikaans (`af`) and bilingual (`af` + `en`) Push-to-Talk voice dictation on iPad/iPhone using `WhisperKit` CoreML models with constrained `af`/`en` language detection, on-demand model downloads, and settings/HUD controls.

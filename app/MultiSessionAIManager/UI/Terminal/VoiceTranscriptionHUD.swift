@@ -11,21 +11,12 @@ import SwiftUI
 
 public struct VoiceTranscriptionHUD: View {
     @ObservedObject var engine: VoiceDictationEngine
-    @ObservedObject var settings: VoiceDictationSettings
 
-    public init(
-        engine: VoiceDictationEngine = .shared,
-        settings: VoiceDictationSettings = .shared
-    ) {
+    public init(engine: VoiceDictationEngine = .shared) {
         self.engine = engine
-        self.settings = settings
     }
 
     // MARK: - Static Helpers for Testability
-
-    public nonisolated static func languageBadgeText(for mode: DictationLanguageMode) -> String {
-        mode.shortBadge
-    }
 
     public nonisolated static func shouldDisplay(for state: VoiceDictationState) -> Bool {
         switch state {
@@ -86,17 +77,6 @@ public struct VoiceTranscriptionHUD: View {
                         }
                     }
                     .frame(height: 24)
-
-                    // Language mode badge (AF/EN, AF, EN)
-                    Text(Self.languageBadgeText(for: settings.languageMode))
-                        .font(.system(size: 10, weight: .bold, design: .monospaced))
-                        .foregroundStyle(HerdrTheme.accent)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(
-                            HerdrTheme.accent.opacity(0.16),
-                            in: Capsule()
-                        )
 
                     // Live transcription preview
                     Text(Self.displayText(for: engine.state))

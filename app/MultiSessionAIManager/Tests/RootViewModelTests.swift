@@ -331,11 +331,14 @@ private actor RestoreOperationStartGate {
         #expect(source.contains(".toastHost(toastCenter, isSuppressed: showingSettings)"))
     }
 
-    /// The speech model is hundreds of megabytes. It is fetched only when the user
-    /// asks for it (the mic key's prompt, or Settings), never as a launch side effect.
-    @Test func rootViewNeverDownloadsTheSpeechModelOnLaunch() throws {
-        let source = try sourceFile("UI/RootView.swift")
-        #expect(!source.contains("downloadSelectedModel"))
+    /// Whisper dictation was withdrawn. Dictation is Apple's recogniser only: no model
+    /// download, no WhisperKit, and launch clears whatever the old builds stored.
+    @Test func whisperDictationIsGoneAndItsLeftoversAreClearedAtLaunch() throws {
+        #expect(try sourceFile("App/MultiSessionAIManagerApp.swift").contains("RetiredWhisperDictation.removeLeftovers()"))
+        #expect(!(try sourceFile("project.yml").contains("WhisperKit")))
+        let engine = try sourceFile("Core/VoiceDictationEngine.swift")
+        #expect(engine.contains("self.service = service ?? AppleSpeechRecognitionService()"))
+        #expect(!engine.contains("import WhisperKit"))
     }
 
     @Test func hostSetupWiresSessionRestoreToTheSharedConnection() throws {

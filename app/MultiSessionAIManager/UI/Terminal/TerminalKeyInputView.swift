@@ -152,7 +152,41 @@ final class TerminalKeyInputView: UIView, UIKeyInput {
     private func handleKey(_ key: UIKey) -> Bool {
         handleHardwareKey(keyCode: key.keyCode,
                           characters: key.characters,
+                          charactersIgnoringModifiers: key.charactersIgnoringModifiers,
                           modifierFlags: key.modifierFlags)
+    }
+
+    /// US-ANSI Shift pairs, used only to rebuild Alt+Shift+symbol (see `typedText`).
+    private static let shiftedSymbols: [Character: Character] = [
+        "1": "!", "2": "@", "3": "#", "4": "$", "5": "%", "6": "^", "7": "&", "8": "*",
+        "9": "(", "0": ")", "-": "_", "=": "+", "[": "{", "]": "}", "\\": "|",
+        ";": ":", "'": "\"", ",": "<", ".": ">", "/": "?", "`": "~",
+    ]
+
+    /// The text a character key contributes. Normally that is what iPadOS composed
+    /// (`characters`). With Option held it is not: Option+M arrives as "µ", and a
+    /// terminal wants Alt+M. So a held Option is read from the unmodified key, with
+    /// Shift (and Caps Lock, for a letter) put back by hand, because
+    /// `charactersIgnoringModifiers` drops those too. iPadOS offers no "Shift but not
+    /// Option" lookup, so a shifted SYMBOL assumes a US layout; letters do not.
+    static func typedText(characters: String,
+                          charactersIgnoringModifiers: String?,
+                          modifierFlags: UIKeyModifierFlags) -> String {
+        guard modifierFlags.contains(.alternate),
+              let unmodified = charactersIgnoringModifiers, !unmodified.isEmpty else {
+            return characters
+        }
+        guard unmodified.count == 1, let character = unmodified.first else {
+            return unmodified
+        }
+        let shiftHeld = modifierFlags.contains(.shift)
+        if character.isLetter {
+            return shiftHeld || modifierFlags.contains(.alphaShift) ? unmodified.uppercased() : unmodified
+        }
+        if shiftHeld, let shifted = shiftedSymbols[character] {
+            return String(shifted)
+        }
+        return unmodified
     }
 
     /// Translates one hardware key press into terminal bytes. Takes the `UIKey`
@@ -161,9 +195,11 @@ final class TerminalKeyInputView: UIView, UIKeyInput {
     ///
     /// A hardware key never reaches `insertText`, so the quick-key bar's sticky
     /// Ctrl / Alt have to be honoured here as well: an armed latch counts as that
-    /// modifier being held for exactly this one key.
+    /// modifier being held for exactly this one key. The physical Option key is
+    /// Alt too (see `typedText`).
     func handleHardwareKey(keyCode: UIKeyboardHIDUsage,
                            characters: String,
+                           charactersIgnoringModifiers: String? = nil,
                            modifierFlags: UIKeyModifierFlags) -> Bool {
         // Let UIKit handle cmd shortcuts.
         if modifierFlags.contains(.command) {
@@ -223,7 +259,9 @@ final class TerminalKeyInputView: UIView, UIKeyInput {
             keyData = TerminalFunctionKey.bytes(for: index + 1) ?? []
 
         default:
-            keyData = Array(characters.utf8)
+            keyData = Array(Self.typedText(characters: characters,
+                                           charactersIgnoringModifiers: charactersIgnoringModifiers,
+                                           modifierFlags: modifierFlags).utf8)
             isCharacterKey = true
         }
 

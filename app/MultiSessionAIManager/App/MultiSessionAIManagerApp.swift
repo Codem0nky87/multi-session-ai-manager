@@ -25,6 +25,12 @@ struct MultiSessionAIManagerApp: App {
             keyStore: keyStore,
             knownHosts: knownHosts
         ))
+
+        // Clear out whatever the withdrawn Whisper dictation stored. Off the main
+        // thread: a downloaded model is hundreds of megabytes of files.
+        Task.detached(priority: .utility) {
+            RetiredWhisperDictation.removeLeftovers()
+        }
     }
 
     var body: some Scene {

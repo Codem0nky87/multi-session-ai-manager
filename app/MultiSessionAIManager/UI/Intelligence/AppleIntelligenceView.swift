@@ -12,13 +12,9 @@ public struct AppleIntelligenceView: View {
 
     @State private var engine: AppleIntelligenceEngine
     @ObservedObject private var voiceEngine: VoiceDictationEngine
-    @ObservedObject private var dictationSettings: VoiceDictationSettings = .shared
-    @ObservedObject private var whisperManager: WhisperModelManager = .shared
-    @Environment(ToastCenter.self) private var toasts: ToastCenter?
     @State private var inputText: String = ""
     @State private var attachedContext: String? = nil
     @State private var isVoicePressed: Bool = false
-    @State private var showingSpeechModelPrompt = false
 
     public init(
         engine: AppleIntelligenceEngine = .shared,
@@ -75,16 +71,6 @@ public struct AppleIntelligenceView: View {
         if case .listening = voiceEngine.state { return true }
         if case .processing = voiceEngine.state { return true }
         return false
-    }
-
-    private var dictationAvailability: VoiceDictationAvailability {
-        .resolve(languageMode: dictationSettings.languageMode, modelState: whisperManager.state)
-    }
-
-    /// Same rule as the quick-key bar's mic: unavailable while the chosen language
-    /// is missing its speech model, except during a recording already in flight.
-    private var isDictationBlocked: Bool {
-        !dictationAvailability.isReady && !isRecordingVoice && !isVoicePressed
     }
 
     public var body: some View {
@@ -421,19 +407,17 @@ public struct AppleIntelligenceView: View {
 
     // MARK: - Voice Push-To-Talk Button
     private var voiceKey: some View {
-        let availability = dictationAvailability
-        let isBlocked = isDictationBlocked
-        return Button(action: {}) {
-            Image(systemName: isBlocked ? availability.micKeySymbol : "mic.fill")
+        Button(action: {}) {
+            Image(systemName: "mic.fill")
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(
-                    !engine.availability.isReady || isBlocked
+                    !engine.availability.isReady
                         ? HerdrTheme.muted
                         : (isRecordingVoice ? Color.white : HerdrTheme.subtext)
                 )
                 .frame(width: 32, height: 32)
                 .background(
-                    isRecordingVoice ? Color.red.opacity(0.85) : HerdrTheme.selection.opacity(isBlocked ? 0.45 : 1.0),
+                    isRecordingVoice ? Color.red.opacity(0.85) : HerdrTheme.selection,
                     in: Circle()
                 )
         }
@@ -442,7 +426,7 @@ public struct AppleIntelligenceView: View {
         .simultaneousGesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { _ in
-                    guard engine.availability.isReady, !isBlocked else { return }
+                    guard engine.availability.isReady else { return }
                     if !isVoicePressed {
                         isVoicePressed = true
                         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
@@ -452,13 +436,7 @@ public struct AppleIntelligenceView: View {
                     }
                 }
                 .onEnded { value in
-                    guard engine.availability.isReady else { return }
-                    guard isVoicePressed else {
-                        if isBlocked, abs(value.translation.height) <= 50, abs(value.translation.width) <= 50 {
-                            availability.explainUnavailableMicKey(showingPrompt: $showingSpeechModelPrompt, toasts: toasts)
-                        }
-                        return
-                    }
+                    guard engine.availability.isReady, isVoicePressed else { return }
                     isVoicePressed = false
 
                     if abs(value.translation.height) > 50 || abs(value.translation.width) > 50 {
@@ -478,9 +456,7 @@ public struct AppleIntelligenceView: View {
                     }
                 }
         )
-        .speechModelPrompt(isPresented: $showingSpeechModelPrompt)
         .accessibilityLabel("Hold to Dictate")
-        .accessibilityValue(isBlocked ? (availability.statusText ?? "") : "")
     }
 
     // MARK: - Actions

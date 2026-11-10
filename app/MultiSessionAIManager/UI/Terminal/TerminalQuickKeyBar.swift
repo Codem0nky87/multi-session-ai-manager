@@ -25,11 +25,8 @@ struct TerminalQuickKeyBar: View {
     let onInputBytes: ([UInt8]) -> Void
 
     @ObservedObject var voiceEngine: VoiceDictationEngine = .shared
-    @ObservedObject private var dictationSettings: VoiceDictationSettings = .shared
-    @ObservedObject private var whisperManager: WhisperModelManager = .shared
     @Environment(ToastCenter.self) private var toasts: ToastCenter?
     @State private var isVoicePressed = false
-    @State private var showingSpeechModelPrompt = false
 
     /// Wheel notches per page-key press. Matches roughly a half-page of a
     /// phone-height Herdr pane without flying past the prompt.
@@ -68,17 +65,6 @@ struct TerminalQuickKeyBar: View {
         if case .listening = voiceEngine.state { return true }
         if case .processing = voiceEngine.state { return true }
         return isVoicePressed
-    }
-
-    private var dictationAvailability: VoiceDictationAvailability {
-        .resolve(languageMode: dictationSettings.languageMode, modelState: whisperManager.state)
-    }
-
-    /// True while the mic key cannot record because something the chosen language
-    /// needs is not on the device yet. A recording already in flight wins: the model
-    /// reports `.loading` while it transcribes, and that must not grey the key out.
-    private var isDictationBlocked: Bool {
-        !dictationAvailability.isReady && !isRecordingVoice
     }
 
     var body: some View {
@@ -192,32 +178,20 @@ struct TerminalQuickKeyBar: View {
                 toasts?.error(msg)
             }
         }
-        .speechModelPrompt(isPresented: $showingSpeechModelPrompt)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("msam.quickkeys")
     }
 
     private var voiceKey: some View {
-        let availability = dictationAvailability
-        let isBlocked = isDictationBlocked
-        return Button(action: {}) {
-            Image(systemName: isBlocked ? availability.micKeySymbol : "mic.fill")
+        Button(action: {}) {
+            Image(systemName: "mic.fill")
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(isRecordingVoice ? Color.white : (isLive && !isBlocked ? HerdrTheme.subtext : HerdrTheme.muted))
+                .foregroundStyle(isRecordingVoice ? Color.white : (isLive ? HerdrTheme.subtext : HerdrTheme.muted))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(
-                    isRecordingVoice ? Color.red.opacity(0.85) : HerdrTheme.selection.opacity(isBlocked ? 0.45 : 1.0),
+                    isRecordingVoice ? Color.red.opacity(0.85) : HerdrTheme.selection,
                     in: RoundedRectangle(cornerRadius: 6)
                 )
-                .overlay(alignment: .bottom) {
-                    if isBlocked, let fraction = availability.downloadFraction {
-                        ProgressView(value: fraction)
-                            .progressViewStyle(.linear)
-                            .tint(HerdrTheme.accent)
-                            .padding(.horizontal, 4)
-                            .padding(.bottom, 4)
-                    }
-                }
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -225,7 +199,7 @@ struct TerminalQuickKeyBar: View {
         .simultaneousGesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { _ in
-                    guard isLive, !isBlocked else { return }
+                    guard isLive else { return }
                     if !isVoicePressed {
                         isVoicePressed = true
                         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
@@ -235,15 +209,7 @@ struct TerminalQuickKeyBar: View {
                     }
                 }
                 .onEnded { value in
-                    guard isLive else { return }
-                    guard isVoicePressed else {
-                        // Nothing was recording, so this was a touch on an unavailable
-                        // key: answer it instead of leaving the press unexplained.
-                        if isBlocked, abs(value.translation.height) <= 50, abs(value.translation.width) <= 50 {
-                            availability.explainUnavailableMicKey(showingPrompt: $showingSpeechModelPrompt, toasts: toasts)
-                        }
-                        return
-                    }
+                    guard isLive, isVoicePressed else { return }
                     isVoicePressed = false
 
                     if abs(value.translation.height) > 50 || abs(value.translation.width) > 50 {
@@ -261,7 +227,6 @@ struct TerminalQuickKeyBar: View {
                 }
         )
         .accessibilityLabel("Push-to-talk voice input")
-        .accessibilityValue(isBlocked ? (availability.statusText ?? "") : "")
         .accessibilityIdentifier("msam.quickkey.voice")
     }
 

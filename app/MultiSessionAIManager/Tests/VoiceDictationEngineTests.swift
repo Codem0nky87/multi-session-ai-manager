@@ -2,6 +2,7 @@ import Foundation
 import AVFoundation
 import Speech
 import Testing
+import UIKit
 @testable import MultiSessionAIManager
 
 @Suite struct VoiceDictationEngineTests {
@@ -190,128 +191,7 @@ import Testing
         #expect(didStop == true)
     }
 
-    @MainActor
-    @Test func voiceDictationSettingsPersistenceAndDefaults() {
-        let suiteName = "com.codem0nky87.msam.tests.voice.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-
-        let settings = VoiceDictationSettings(defaults: defaults)
-        #expect(settings.languageMode == .autoAfEn)
-        #expect(settings.modelVariant == .largeV3Turbo)
-        #expect(settings.languageMode.shortBadge == "AF/EN")
-
-        settings.setLanguageMode(.afrikaans)
-        settings.setModelVariant(.small)
-
-        let reloaded = VoiceDictationSettings(defaults: defaults)
-        #expect(reloaded.languageMode == .afrikaans)
-        #expect(reloaded.modelVariant == .small)
-        #expect(reloaded.languageMode.shortBadge == "AF")
-    }
-
-    @Test func selectBilingualLanguagePrefersAfOverDutchAndComparesAfVsEn() {
-        // Even if Dutch ("nl") has 0.65 probability, .autoAfEn compares only "af" vs "en"
-        let dutchSkewedProbs: [String: Float] = ["nl": 0.65, "af": 0.22, "en": 0.08]
-        #expect(VoiceDictationSettings.selectBilingualLanguage(from: dutchSkewedProbs, mode: .autoAfEn) == "af")
-
-        let englishProbs: [String: Float] = ["en": 0.72, "af": 0.12, "nl": 0.10]
-        #expect(VoiceDictationSettings.selectBilingualLanguage(from: englishProbs, mode: .autoAfEn) == "en")
-
-        // When pinned explicitly, ignore probabilities
-        #expect(VoiceDictationSettings.selectBilingualLanguage(from: englishProbs, mode: .afrikaans) == "af")
-        #expect(VoiceDictationSettings.selectBilingualLanguage(from: dutchSkewedProbs, mode: .english) == "en")
-    }
-
-    @Test func silenceAndShortBufferGuardRejectsEmptyAndSilentClips() {
-        // Under 0.25s (< 4,000 samples at 16 kHz)
-        let shortSamples = Array(repeating: Float(0.2), count: 2_000)
-        #expect(VoiceDictationSettings.isSilentOrTooShort(samples: shortSamples, sampleRate: 16_000) == true)
-
-        // 0.5s but near-zero amplitude
-        let silentSamples = Array(repeating: Float(0.0001), count: 8_000)
-        #expect(VoiceDictationSettings.isSilentOrTooShort(samples: silentSamples, sampleRate: 16_000) == true)
-
-        // 0.5s of speech-level amplitude
-        let speechSamples = Array(repeating: Float(0.05), count: 8_000)
-        #expect(VoiceDictationSettings.isSilentOrTooShort(samples: speechSamples, sampleRate: 16_000) == false)
-    }
-
-    @Test func cleanWhisperTextStripsBlankAudioAndSpecialTokens() {
-        #expect(VoiceDictationSettings.cleanWhisperText("[BLANK_AUDIO]") == nil)
-        #expect(VoiceDictationSettings.cleanWhisperText(" <|startoftranscript|><|af|><|transcribe|><|notimestamps|> Hoe gaan dit vandag? <|endoftext|> ") == "Hoe gaan dit vandag?")
-        #expect(VoiceDictationSettings.cleanWhisperText("(music) [Stilte]") == nil)
-    }
-
-    @Test func whisperModelDirectoryCompletenessCheck() throws {
-        let tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("msam-whisper-test-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: tempDir) }
-
-        #expect(WhisperModelManager.isModelDirectoryComplete(tempDir) == false)
-
-        for folder in ["AudioEncoder.mlmodelc", "TextDecoder.mlmodelc", "MelSpectrogram.mlmodelc"] {
-            try FileManager.default.createDirectory(
-                at: tempDir.appendingPathComponent(folder, isDirectory: true),
-                withIntermediateDirectories: true
-            )
-        }
-        #expect(WhisperModelManager.isModelDirectoryComplete(tempDir) == true)
-    }
-
-    @MainActor
-    @Test func compositeSpeechServiceRoutesBetweenWhisperAndAppleFallback() async throws {
-        let suiteName = "com.codem0nky87.msam.tests.composite.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-
-        let settings = VoiceDictationSettings(defaults: defaults)
-        let whisperMock = MockSpeechRecognitionService()
-        whisperMock.transcribedResult = "Goeie môre vanaf Whisper"
-        let appleFallbackMock = MockSpeechRecognitionService()
-        appleFallbackMock.transcribedResult = "Good morning from Apple Speech"
-
-        var isWhisperReady = false
-        let composite = CompositeSpeechRecognitionService(
-            settings: settings,
-            whisperService: whisperMock,
-            fallbackService: appleFallbackMock,
-            isWhisperModelReady: { isWhisperReady }
-        )
-
-        // 1. Whisper NOT downloaded + .autoAfEn -> throws actionable Settings download error.
-        //    It must NOT quietly record in English: half of "Afrikaans + English" is missing.
-        settings.setLanguageMode(.autoAfEn)
-        do {
-            try await composite.startRecognition(onDeviceOnly: true, onPartialResult: { _ in }, onAudioLevel: { _ in })
-            Issue.record("Expected error when Whisper model is not downloaded in .autoAfEn mode")
-        } catch {
-            #expect(error.localizedDescription.contains("Voice Dictation"))
-        }
-        #expect(appleFallbackMock.isRecording == false)
-
-        // 2. Whisper NOT downloaded + .english -> falls back to Apple Speech
-        settings.setLanguageMode(.english)
-        try await composite.startRecognition(onDeviceOnly: true, onPartialResult: { _ in }, onAudioLevel: { _ in })
-        #expect(appleFallbackMock.isRecording == true)
-        let fallbackResult = await composite.stopRecognition()
-        #expect(fallbackResult == "Good morning from Apple Speech")
-
-        // 3. Whisper IS ready + .autoAfEn -> uses Whisper service
-        isWhisperReady = true
-        settings.setLanguageMode(.autoAfEn)
-        try await composite.startRecognition(onDeviceOnly: true, onPartialResult: { _ in }, onAudioLevel: { _ in })
-        #expect(whisperMock.isRecording == true)
-        let whisperResult = await composite.stopRecognition()
-        #expect(whisperResult == "Goeie môre vanaf Whisper")
-    }
-
-    @Test func hudLanguageBadgeAndQuickKeyBarOrderPlaceVoiceSecondFromLeftAndIncludeAlt() {
-        #expect(VoiceTranscriptionHUD.languageBadgeText(for: .autoAfEn) == "AF/EN")
-        #expect(VoiceTranscriptionHUD.languageBadgeText(for: .afrikaans) == "AF")
-        #expect(VoiceTranscriptionHUD.languageBadgeText(for: .english) == "EN")
-
+    @Test func quickKeyBarPlacesVoiceSecondFromLeftAndIncludesAlt() {
         // Voice key must be at index 1 (2nd from left, right after esc) so it avoids both
         // the iPadOS bottom-left corner swipe zone and the centered iPad Home Indicator,
         // and "alt" must be present in the quick-key bar.
@@ -405,7 +285,7 @@ import Testing
         #expect(capturedBytes.last == EscapeSequences.up)
         #expect(controller.isCtrlArmed == false)
 
-        // A physically held Option still works exactly as before, with no latch involved.
+        // A physically held Option needs no latch: Option+Left is word-left.
         #expect(inputView.handleHardwareKey(keyCode: .keyboardLeftArrow, characters: "UIKeyInputLeftArrow", modifierFlags: [.alternate]) == true)
         #expect(capturedBytes.last == EscapeSequences.meta + EscapeSequences.leftMeta)
 
@@ -415,33 +295,91 @@ import Testing
         #expect(inputView.altLatchArmed == true)
     }
 
-    /// The mic key is only usable when everything the chosen language needs is on the device.
-    @Test func dictationAvailabilityNeedsTheWhisperModelForAfrikaansModesOnly() {
-        let everyState: [WhisperModelManager.ModelState] = [
-            .notDownloaded, .downloading(progress: 0.4), .loading, .failed("disk full"), .ready(variant: .small),
-        ]
+    /// iPadOS delivers Option+M as "µ". A terminal wants Alt+M, so a held Option is
+    /// read from the key itself, not from the character Option turned it into.
+    @MainActor
+    @Test func physicalOptionKeyActsAsAlt() {
+        let inputView = TerminalKeyInputView(frame: .zero)
+        var capturedBytes: [[UInt8]] = []
+        inputView.onInput = { capturedBytes.append($0) }
 
-        // English runs on Apple's built-in recogniser, so nothing ever has to be downloaded.
-        for state in everyState {
-            #expect(VoiceDictationAvailability.resolve(languageMode: .english, modelState: state) == .ready)
+        func press(_ keyCode: UIKeyboardHIDUsage, _ characters: String, _ unmodified: String, _ flags: UIKeyModifierFlags) -> Bool {
+            inputView.handleHardwareKey(keyCode: keyCode,
+                                        characters: characters,
+                                        charactersIgnoringModifiers: unmodified,
+                                        modifierFlags: flags)
         }
 
-        for mode in [DictationLanguageMode.autoAfEn, .afrikaans] {
-            #expect(VoiceDictationAvailability.resolve(languageMode: mode, modelState: .notDownloaded) == .modelNotDownloaded)
-            #expect(VoiceDictationAvailability.resolve(languageMode: mode, modelState: .downloading(progress: 0.4)) == .modelDownloading(progress: 0.4))
-            #expect(VoiceDictationAvailability.resolve(languageMode: mode, modelState: .loading) == .modelLoading)
-            #expect(VoiceDictationAvailability.resolve(languageMode: mode, modelState: .failed("disk full")) == .modelFailed("disk full"))
-            #expect(VoiceDictationAvailability.resolve(languageMode: mode, modelState: .ready(variant: .largeV3Turbo)) == .ready)
-        }
+        // Option+M -> ESC m, not ESC µ.
+        #expect(press(.keyboardM, "µ", "m", [.alternate]) == true)
+        #expect(capturedBytes.last == [0x1B, UInt8(ascii: "m")])
 
-        #expect(VoiceDictationAvailability.ready.isReady == true)
-        #expect(VoiceDictationAvailability.modelNotDownloaded.isReady == false)
-        // Only a missing or failed model can be fixed by offering the download.
-        #expect(VoiceDictationAvailability.modelNotDownloaded.offersDownload == true)
-        #expect(VoiceDictationAvailability.modelFailed("disk full").offersDownload == true)
-        #expect(VoiceDictationAvailability.modelDownloading(progress: 0.4).offersDownload == false)
-        #expect(VoiceDictationAvailability.modelLoading.offersDownload == false)
-        #expect(VoiceDictationAvailability.modelDownloading(progress: 0.42).statusText == "Downloading the speech model… 42%")
+        // The unmodified key is always lowercase, so Shift has to be put back: Alt+Shift+M -> ESC M.
+        #expect(press(.keyboardM, "Â", "m", [.alternate, .shift]) == true)
+        #expect(capturedBytes.last == [0x1B, UInt8(ascii: "M")])
+
+        // Caps Lock capitalises a letter the same way.
+        #expect(press(.keyboardM, "µ", "m", [.alternate, .alphaShift]) == true)
+        #expect(capturedBytes.last == [0x1B, UInt8(ascii: "M")])
+
+        // Alt+Shift+, is Alt+< (start of buffer in readline and less).
+        #expect(press(.keyboardComma, "¯", ",", [.alternate, .shift]) == true)
+        #expect(capturedBytes.last == [0x1B, UInt8(ascii: "<")])
+
+        // Caps Lock does not shift a symbol.
+        #expect(press(.keyboardComma, "≤", ",", [.alternate, .alphaShift]) == true)
+        #expect(capturedBytes.last == [0x1B, UInt8(ascii: ",")])
+
+        // Option+E is a dead key that composes nothing yet; Alt+E must still go out.
+        #expect(press(.keyboardE, "", "e", [.alternate]) == true)
+        #expect(capturedBytes.last == [0x1B, UInt8(ascii: "e")])
+
+        // Ctrl+Option+C -> ESC then Ctrl-C.
+        #expect(press(.keyboardC, "ç", "c", [.alternate, .control]) == true)
+        #expect(capturedBytes.last == [0x1B, 0x03])
+
+        // Option going down on its own is only a modifier.
+        let sentSoFar = capturedBytes.count
+        #expect(press(.keyboardLeftAlt, "", "", [.alternate]) == false)
+        #expect(capturedBytes.count == sentSoFar)
+
+        // Without Option nothing changes: the character iPadOS composed is what is sent.
+        #expect(press(.keyboardM, "M", "m", [.shift]) == true)
+        #expect(capturedBytes.last == [UInt8(ascii: "M")])
+    }
+
+    /// Whisper dictation is gone, so nothing it stored may outlive it on the device.
+    @Test func retiredWhisperDictationLeavesNothingBehind() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("msam-retired-whisper-\(UUID().uuidString)", isDirectory: true)
+        let modelFile = root
+            .appendingPathComponent("WhisperModels/models/argmaxinc/whisperkit-coreml/openai_whisper-small", isDirectory: true)
+            .appendingPathComponent("weights.bin")
+        let unrelated = root.appendingPathComponent("KnownHosts/hosts.json")
+        for file in [modelFile, unrelated] {
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data([0x01]).write(to: file)
+        }
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let suiteName = "com.codem0nky87.msam.tests.retired-whisper.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set("af", forKey: "voiceDictation.languageMode")
+        defaults.set("openai_whisper-small", forKey: "voiceDictation.modelVariant")
+        defaults.set("kept", forKey: "terminal.themeID")
+
+        RetiredWhisperDictation.removeLeftovers(applicationSupport: root, defaults: defaults)
+
+        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("WhisperModels").path) == false)
+        #expect(FileManager.default.fileExists(atPath: unrelated.path) == true)
+        #expect(defaults.object(forKey: "voiceDictation.languageMode") == nil)
+        #expect(defaults.object(forKey: "voiceDictation.modelVariant") == nil)
+        #expect(defaults.string(forKey: "terminal.themeID") == "kept")
+
+        // Nothing to remove is the normal case and must be a no-op.
+        RetiredWhisperDictation.removeLeftovers(applicationSupport: root, defaults: defaults)
+        #expect(FileManager.default.fileExists(atPath: unrelated.path) == true)
     }
 }
 

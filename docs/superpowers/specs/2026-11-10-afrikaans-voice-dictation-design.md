@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-10  
 **Target:** `MultiSessionAIManager` (iOS / iPadOS 17.0+)  
-**Status:** Approved for Spec Review
+**Status:** Withdrawn 2026-11-10. Built and shipped in two TestFlight builds, then removed the same day at the user's request: dictation is English only, on Apple's built-in recogniser, with no model download. `WhisperKit`, `WhisperModelManager`, `VoiceDictationSettings` and the settings section no longer exist; `RetiredWhisperDictation.removeLeftovers()` clears what those builds stored. What survived from the same work: the sticky `alt` quick key, the mic key second from the left, and toasts in the terminal hierarchy. Kept as a record of the design.
 
 ---
 
@@ -90,15 +90,6 @@ A `@MainActor` `ObservableObject` responsible for downloading, caching, loading,
        - `"Ready on device"` badge + `"Delete Model"` button when `.ready`.
 2. **`VoiceTranscriptionHUD.swift`**:
    - Display a compact language capsule (`AF/EN`, `AF`, or `EN`) next to the waveform so the user always sees which dictation mode is active while holding the microphone button.
-
-### 3.6 Mic Key Availability (amended 2026-11-10, after first device test)
-The thrown error in 3.4 is only a backstop. A mic key that cannot record must not look pressable:
-- `VoiceDictationAvailability.resolve(languageMode:modelState:)` decides it. `.english` is always `.ready`; `.autoAfEn` and `.afrikaans` are `.ready` only once the Whisper model is on the device, otherwise `.modelNotDownloaded`, `.modelDownloading(progress:)`, `.modelLoading` or `.modelFailed(_)`.
-- While not ready, both Push-to-Talk keys (quick-key bar and the Intelligence drawer) are dimmed, show a different glyph (plus a progress bar while downloading) and do not start a recording.
-- Touching an unavailable key answers the touch: for a missing or failed model it raises the `speechModelPrompt` alert (**Download (size)** / **Use English Only** / **Cancel**); while downloading or loading it shows the status as a toast.
-- The model is never downloaded without that explicit yes — not on launch and not on a mic press.
-- `RootView` injects and hosts the `ToastCenter` for the terminal hierarchy, not only for the settings sheet; without it the quick-key bar's dictation errors were dropped silently.
-- The mic key sits second from the left of the quick-key bar (after `esc`), clear of both the iPadOS corner gesture and the Home Indicator.
 
 ---
 
