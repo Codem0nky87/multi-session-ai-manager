@@ -2283,12 +2283,13 @@ class MetricsHistoryDB:
         if cost_per_kwh is not None:
             cost = round(total_kwh * float(cost_per_kwh), 4)
 
-        start_iso = datetime.fromtimestamp(start_time, tz=timezone.utc).isoformat() if start_time is not None else None
+        effective_start_time = ts_rows[0][0] if (start_time == 0.0 and ts_rows) else start_time
+        start_iso = datetime.fromtimestamp(effective_start_time, tz=timezone.utc).isoformat() if effective_start_time is not None else None
         end_iso = datetime.fromtimestamp(end_time, tz=timezone.utc).isoformat() if end_time is not None else None
 
         return {
             "period": {
-                "start_time": start_time,
+                "start_time": effective_start_time,
                 "end_time": end_time,
                 "start_iso": start_iso,
                 "end_iso": end_iso,

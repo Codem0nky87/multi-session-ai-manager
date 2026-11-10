@@ -23,7 +23,7 @@ struct SSHCommandResult: Equatable, Sendable {
     var stderrString: String { String(decoding: stderr, as: UTF8.self) }
 }
 
-enum SSHCommandExecutionError: Error, Equatable, Sendable {
+enum SSHCommandExecutionError: Error, LocalizedError, Equatable, Sendable {
     case invalidRequest
     case timedOut
     case cancelled
@@ -31,6 +31,21 @@ enum SSHCommandExecutionError: Error, Equatable, Sendable {
     /// The exec channel ended before a definite remote exit status arrived.
     /// A caller must not assume a mutating command did or did not run.
     case ambiguousDisconnect
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidRequest:
+            return "Invalid SSH command request."
+        case .timedOut:
+            return "The remote command timed out."
+        case .cancelled:
+            return "The remote command was cancelled."
+        case .outputLimitExceeded(let limit):
+            return "The remote command output exceeded the limit of \(limit) bytes."
+        case .ambiguousDisconnect:
+            return "The SSH connection closed before the remote command completed."
+        }
+    }
 }
 
 /// Key material handed to a transport, NIO-agnostic. The real transport builds

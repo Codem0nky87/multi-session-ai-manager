@@ -167,6 +167,7 @@ import Testing
         let unixAll = HostServiceInstaller.metricsReportCommand(period: nil, isWindows: false)
         #expect(unixAll.contains("msam-host-agent\" report --format json"))
         #expect(!unixAll.contains("--period"))
+        #expect(unixAll.contains("--from 0"))
 
         let unix24h = HostServiceInstaller.metricsReportCommand(period: "24h", isWindows: false)
         #expect(unix24h.contains("report --format json --period '24h'"))
@@ -178,6 +179,27 @@ import Testing
         let script = try #require(String(data: data, encoding: .utf16LittleEndian))
         #expect(script.contains("msam-host-agent.cmd\" report --format json --period '7d'"))
         #expect(script.contains("exit $LASTEXITCODE"))
+    }
+
+    @Test func fetchMetricsReportSupportsLargeAllHistoryJSONPayloadsAboveDefaultOutputLimit() async throws {
+        let keyStore = KeyStore(backing: InMemoryKeychain())
+        let key = try keyStore.generateEd25519(label: "host-service")
+        let host = Host(name: "host-service", address: "198.51.100.25", username: "service-test", keyID: key, defaultWorkdir: "")
+        let transport = FakeSSHTransport()
+        let connection = HostConnection(host: host, keyStore: keyStore,
+            knownHosts: KnownHostsStore(defaults: UserDefaults(suiteName: UUID().uuidString)!), transport: transport)
+        await connection.connect()
+        let manager = HostServiceManager(connection: connection)
+
+        // Simulate a ~512 KB "All History" JSON report (well above the 128 KB default command limit).
+        let largeJSON = "{\"samples\":[\"" + String(repeating: "x", count: 512 * 1024) + "\"]}"
+        transport.defaultCommandResponse = largeJSON
+
+        let report = try await manager.fetchMetricsReport(period: nil)
+        #expect(report == largeJSON)
+        let lastRequest = try #require(transport.structuredCommandsRun.last)
+        #expect(lastRequest.outputLimit >= 16 * 1024 * 1024)
+        #expect(lastRequest.command.contains("--from 0"))
     }
 
     @Test func openMonitorSpaceRunsExpectedCommand() async throws {

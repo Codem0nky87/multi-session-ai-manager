@@ -418,39 +418,28 @@ final class NIOSSHTransport: SSHTransport, @unchecked Sendable {
         let client = try currentClient()
         return try await SSHCommandDeadline.run(timeout: request.timeout) {
             var accumulator = NIOSSHCommandAccumulator(outputLimit: request.outputLimit)
-            var streamError: (any Error)?
             var streamDrained = false
             do {
-                try await client.withExec(request.command) { inbound, _ in
-                    do {
-                        for try await chunk in inbound {
-                            switch chunk {
-                            case .stdout(let buffer):
-                                try accumulator.append(.stdout, buffer: buffer)
-                            case .stderr(let buffer):
-                                try accumulator.append(.stderr, buffer: buffer)
-                            }
-                        }
-                        streamDrained = true
-                    } catch {
-                        // Citadel's withExec closes again in its catch block.
-                        // That close can throw alreadyClosed and hide the real
-                        // command exit, output limit, or stream failure.
-                        streamError = error
-                        throw error
+                let inbound = try await client.executeCommandStream(request.command)
+                for try await chunk in inbound {
+                    switch chunk {
+                    case .stdout(let buffer):
+                        try accumulator.append(.stdout, buffer: buffer)
+                    case .stderr(let buffer):
+                        try accumulator.append(.stderr, buffer: buffer)
                     }
                 }
+                streamDrained = true
                 return accumulator.result(exitStatus: 0)
             } catch {
-                let failure = streamError ?? error
-                if let failed = failure as? SSHClient.CommandFailed {
+                if let failed = error as? SSHClient.CommandFailed {
                     return accumulator.result(exitStatus: Int32(exactly: failed.exitCode) ?? -1)
                 }
-                if streamDrained, let closed = failure as? ChannelError, closed == .alreadyClosed {
+                if streamDrained, let closed = error as? ChannelError, closed == .alreadyClosed {
                     return accumulator.result(exitStatus: 0)
                 }
-                if failure is CancellationError { throw SSHCommandExecutionError.cancelled }
-                if let executionError = failure as? SSHCommandExecutionError { throw executionError }
+                if error is CancellationError { throw SSHCommandExecutionError.cancelled }
+                if let executionError = error as? SSHCommandExecutionError { throw executionError }
                 // No remote exit status arrived, so a mutating caller cannot know
                 // whether the command ran and must not retry automatically.
                 throw SSHCommandExecutionError.ambiguousDisconnect

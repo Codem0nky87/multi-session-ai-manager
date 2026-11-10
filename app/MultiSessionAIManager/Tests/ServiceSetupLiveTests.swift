@@ -76,6 +76,13 @@ struct ServiceSetupLiveTests {
         await #expect(throws: SSHCommandExecutionError.outputLimitExceeded(limit: 16)) {
             _ = try await service.runRaw("printf 'output larger than the requested limit'", timeout: .seconds(10), outputLimit: 16)
         }
+        // Regression test: exceeding outputLimit mid-stream during a multi-hundred-KB burst
+        // must not trigger a swift-nio-ssh ChildChannelStateMachine window-adjust precondition crash.
+        await #expect(throws: SSHCommandExecutionError.outputLimitExceeded(limit: 128 * 1024)) {
+            _ = try await service.runRaw("python3 -c 'import sys; sys.stdout.write(\"x\" * 500000)'", timeout: .seconds(10), outputLimit: 128 * 1024)
+        }
+        let followUp = try await service.runRaw("printf 'still-alive'", timeout: .seconds(10), outputLimit: 1024)
+        #expect(followUp.stdoutString == "still-alive")
     }
 
     @Test func execUploadPreservesBytesAndOriginalFileOnFailure() async throws {

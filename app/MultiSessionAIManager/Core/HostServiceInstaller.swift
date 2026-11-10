@@ -76,8 +76,15 @@ enum HostServiceInstaller {
         return (["python3", "-c", script] + arguments).map(POSIXShell.quote).joined(separator: " ")
     }
 
-    static func run(_ command: String, using service: SSHService, timeout: Duration = .seconds(45)) async throws -> SSHCommandResult {
-        let result = try await service.run(command, timeout: timeout, outputLimit: 128 * 1024)
+    static let metricsReportOutputLimit = 16 * 1024 * 1024
+
+    static func run(
+        _ command: String,
+        using service: SSHService,
+        timeout: Duration = .seconds(45),
+        outputLimit: Int = 128 * 1024
+    ) async throws -> SSHCommandResult {
+        let result = try await service.run(command, timeout: timeout, outputLimit: outputLimit)
         guard result.exitStatus == 0 else {
             let detail = diagnostic(stdout: result.stdoutString, stderr: result.stderrString)
             throw MSAMMetricsInstaller.Failure.uploadFailed("Command exited with status \(result.exitStatus). \(detail)")
@@ -189,7 +196,12 @@ enum HostServiceInstaller {
     }
 
     static func metricsReportCommand(period: String?, isWindows: Bool) -> String {
-        let periodArg = (period != nil && !period!.isEmpty) ? " --period \(POSIXShell.quote(period!))" : ""
+        let periodArg: String
+        if let period, !period.isEmpty {
+            periodArg = " --period \(POSIXShell.quote(period))"
+        } else {
+            periodArg = " --from 0"
+        }
         if isWindows {
             return powershell("& \"$env:USERPROFILE/.local/bin/msam-host-agent.cmd\" report --format json\(periodArg); exit $LASTEXITCODE")
         }
@@ -198,7 +210,12 @@ enum HostServiceInstaller {
 
     static func fetchMetricsReport(period: String? = nil, using service: SSHService) async throws -> String {
         let command = metricsReportCommand(period: period, isWindows: service.isWindows)
-        let result = try await run(command, using: service, timeout: .seconds(30))
+        let result = try await run(
+            command,
+            using: service,
+            timeout: .seconds(60),
+            outputLimit: metricsReportOutputLimit
+        )
         return result.stdoutString
     }
 
