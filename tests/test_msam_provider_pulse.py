@@ -531,6 +531,124 @@ class ProviderPulseTests(unittest.TestCase):
             self.assertEqual(res["state"], "HEALTHY")
             self.assertEqual(res["plan"], "custom (qwen3.8-flash-next)")
 
+    def test_collect_hermes_quota_reports_sqlite_context_and_activity_usage_for_custom_provider(self):
+        import sqlite3, time
+        hermes_dir = self.tmp_path / ".hermes"
+        hermes_dir.mkdir(parents=True, exist_ok=True)
+        (hermes_dir / "config.yaml").write_text(
+            "model:\n  provider: custom\n  default: qwen3.8-flash-next\n  base_url: http://10.77.2.191:8001/v1\n"
+        )
+        db_path = hermes_dir / "state.db"
+        now = time.time()
+        conn = sqlite3.connect(db_path)
+        conn.execute("""
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT,
+                model TEXT,
+                model_config TEXT,
+                title TEXT,
+                started_at REAL NOT NULL,
+                ended_at REAL,
+                last_activity_at REAL,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cache_read_tokens INTEGER DEFAULT 0,
+                reasoning_tokens INTEGER DEFAULT 0,
+                api_call_count INTEGER DEFAULT 0
+            )
+        """)
+        conn.execute(
+            """INSERT INTO sessions
+               (id, source, model, model_config, title, started_at, ended_at, last_activity_at, input_tokens, output_tokens, api_call_count)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "20261027_100216_7356ba43",
+                "whatsapp",
+                "qwen3.8-flash-next",
+                json.dumps({"_usage_anchor": {"prompt_tokens": 127040, "completion_tokens": 226}}),
+                "Gateway Session",
+                now - 7200,
+                None,
+                now - 300,
+                18821901,
+                574471,
+                1227,
+            ),
+        )
+        conn.execute(
+            """INSERT INTO sessions
+               (id, source, model, model_config, title, started_at, ended_at, last_activity_at, input_tokens, output_tokens, api_call_count)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "20261027_114245_07081f",
+                "cli",
+                "qwen3.8-flash-next",
+                json.dumps({"_usage_anchor": {"prompt_tokens": 51381, "completion_tokens": 87}}),
+                "CLI Session",
+                now - 86400,
+                None,
+                now - 3600,
+                7062801,
+                949979,
+                803,
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        stderr_msg = "No account usage available for provider 'custom': the provider has no usage endpoint.\n"
+        mock_proc = MagicMock(returncode=1, stdout="", stderr=stderr_msg)
+        with patch("subprocess.run", return_value=mock_proc):
+            res = self.pulse_module.collect_hermes_quota(home_dir=self.tmp_path)
+            self.assertEqual(res["state"], "HEALTHY")
+            self.assertEqual(res["plan"], "custom (qwen3.8-flash-next)")
+            self.assertGreater(res["used_percent"], 0.0)
+            self.assertAlmostEqual(res["used_percent"], 24.3, places=1)
+            self.assertGreaterEqual(len(res["windows"]), 2)
+            for w in res["windows"]:
+                self.assertIn("group", w)
+                self.assertIn("window_minutes", w)
+                self.assertIn("used_percent", w)
+                self.assertIsInstance(w["window_minutes"], int)
+
+    def test_collect_hermes_quota_normalizes_usage_snapshot_document_windows(self):
+        snapshot_json = json.dumps({
+            "provider": "openai-codex",
+            "source": "usage_api",
+            "title": "Account limits",
+            "plan": "Pro",
+            "fetched_at": "2026-11-10T07:00:00+00:00",
+            "windows": [
+                {
+                    "label": "Session",
+                    "used_percent": 15.0,
+                    "resets_at": "2026-11-10T12:00:00+00:00",
+                    "detail": None,
+                },
+                {
+                    "label": "Weekly",
+                    "used_percent": 42.0,
+                    "resets_at": "2026-11-16T06:00:00+00:00",
+                    "detail": None,
+                },
+            ],
+            "details": [],
+            "unavailable_reason": None,
+        })
+        mock_proc = MagicMock(returncode=0, stdout=snapshot_json, stderr="")
+        with patch("subprocess.run", return_value=mock_proc):
+            res = self.pulse_module.collect_hermes_quota(home_dir=self.tmp_path)
+            self.assertEqual(res["state"], "HEALTHY")
+            self.assertEqual(res["plan"], "Pro")
+            self.assertEqual(res["used_percent"], 42.0)
+            self.assertEqual(res["resets_at"], "2026-11-10T12:00:00+00:00")
+            self.assertEqual(len(res["windows"]), 2)
+            self.assertEqual(res["windows"][0]["group"], "Session")
+            self.assertEqual(res["windows"][0]["window_minutes"], 300)
+            self.assertEqual(res["windows"][1]["group"], "Weekly")
+            self.assertEqual(res["windows"][1]["window_minutes"], 10080)
+
     def test_collect_terminal_agents_hermes_session_and_fallback(self):
         hermes_dir = self.tmp_path / ".hermes"
         hermes_dir.mkdir(parents=True, exist_ok=True)

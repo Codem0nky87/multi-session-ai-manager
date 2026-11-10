@@ -369,6 +369,50 @@ def collect_codex_quota(home_dir: Path | str | None = None, codex_bin: str = "co
     }
 
 
+def _fallback_antigravity_from_cli_usage(home: Path) -> dict | None:
+    """Read cached Antigravity quota from ~/.hermes/provider-pulse/cli-usage/usage.json if available."""
+    usage_file = home / ".hermes/provider-pulse/cli-usage/usage.json"
+    if not usage_file.exists():
+        return None
+    try:
+        data = json.loads(usage_file.read_text(encoding="utf-8"))
+        ag = data.get("antigravity")
+        if not isinstance(ag, dict):
+            return None
+        raw_windows = ag.get("windows")
+        if not isinstance(raw_windows, list) or not raw_windows:
+            return None
+        windows = []
+        used_percent = 0.0
+        for w in raw_windows:
+            if not isinstance(w, dict):
+                continue
+            util = round(max(0.0, min(100.0, float(w.get("used_percent") or 0.0))), 1)
+            used_percent = max(used_percent, util)
+            win_mins = int(w.get("window_minutes") or 300)
+            windows.append({
+                "group": str(w.get("group") or w.get("label") or "Quota"),
+                "window_minutes": win_mins,
+                "used_percent": util,
+                "resets_at": w.get("resets_at"),
+            })
+        if not windows:
+            return None
+        resets_candidates = [w["resets_at"] for w in windows if w.get("resets_at")]
+        resets_at = min(resets_candidates) if resets_candidates else None
+        state = "RATE_LIMITED" if used_percent >= 100.0 else str(ag.get("state") or "HEALTHY")
+        return {
+            "state": state,
+            "used_percent": used_percent,
+            "resets_at": resets_at,
+            "plan": str(ag.get("plan") or "standard"),
+            "windows": windows,
+            "reset_credits": None,
+        }
+    except Exception:
+        return None
+
+
 def collect_antigravity_quota(home_dir: Path | str | None = None, agy_bin: str = "agy", env: dict | None = None) -> dict:
     """Query Antigravity CLI quota using agy -p /usage."""
     home = Path(home_dir).expanduser() if home_dir else Path.home()
@@ -376,15 +420,28 @@ def collect_antigravity_quota(home_dir: Path | str | None = None, agy_bin: str =
     exe = _find_bin(home, agy_bin, proc_env) or agy_bin
 
     try:
-        res = subprocess.run([exe, "-p", "/usage"], capture_output=True, text=True, timeout=12, env=proc_env)
+        res = subprocess.run(
+            [exe, "-p", "/usage"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=4,
+            env=proc_env,
+        )
         out = res.stdout
         err = res.stderr
     except Exception:
+        cached = _fallback_antigravity_from_cli_usage(home)
+        if cached is not None:
+            return cached
         oauth_file = home / ".gemini/antigravity-cli/antigravity-oauth-token"
         state = "SIGN_IN_REQUIRED" if not oauth_file.exists() else "UNAVAILABLE"
         return {"state": state, "used_percent": 0.0, "resets_at": None, "plan": "standard", "windows": [], "reset_credits": None}
 
     if res.returncode != 0:
+        cached = _fallback_antigravity_from_cli_usage(home)
+        if cached is not None:
+            return cached
         combined = f"{out} {err}".lower()
         if "sign in" in combined or "auth" in combined or "login" in combined:
             return {"state": "SIGN_IN_REQUIRED", "used_percent": 0.0, "resets_at": None, "plan": "standard", "windows": [], "reset_credits": None}
@@ -597,8 +654,317 @@ def _query_hermes_session(home: Path, session_id: str | None = None) -> dict | N
         return None
 
 
+def _fmt_hermes_tokens(n: int) -> str:
+    """Format a token count compactly (e.g. 524288 -> '512K', 51468 -> '51.5K', 19775690 -> '19.8M')."""
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 65536 and (n & (n - 1)) == 0:
+        return f"{n // 1024}K"
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}K"
+    return str(n)
+
+
+def _read_hermes_dotenv(home: Path) -> dict[str, str]:
+    env_path = home / ".hermes" / ".env"
+    if not env_path.is_file():
+        return {}
+    result: dict[str, str] = {}
+    try:
+        for raw_line in env_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            result[k.strip()] = v.strip().strip("'\"")
+    except Exception:
+        pass
+    return result
+
+
+def _resolve_hermes_context_length(home: Path, model_conf: dict, proc_env: dict | None = None) -> int:
+    """Resolve the context window size (in tokens) for Hermes's configured model."""
+    try:
+        cfg_ctx = int(model_conf.get("context_length") or 0)
+        if cfg_ctx > 0:
+            return cfg_ctx
+    except (TypeError, ValueError):
+        pass
+
+    default_model = str(model_conf.get("default", "") or model_conf.get("model", "")).strip()
+    base_url = str(model_conf.get("base_url", "") or "").strip().rstrip("/")
+
+    # Check ~/.hermes/context_length_cache.yaml if present
+    cache_yaml = home / ".hermes" / "context_length_cache.yaml"
+    if cache_yaml.is_file():
+        try:
+            import yaml
+            doc = yaml.safe_load(cache_yaml.read_text(encoding="utf-8", errors="ignore"))
+            if isinstance(doc, dict):
+                ctx_map = doc.get("context_lengths") or {}
+                if isinstance(ctx_map, dict):
+                    for key in (f"{default_model}@{base_url}", f"{default_model}@{base_url}/", default_model):
+                        val = ctx_map.get(key)
+                        if isinstance(val, int) and val > 0:
+                            return val
+        except Exception:
+            pass
+
+    # Check 5-minute local cache or probe {base_url}/models
+    probe_cache_path = home / ".hermes" / ".msam_model_ctx_cache.json"
+    cache_key = f"{default_model}@{base_url}"
+    if probe_cache_path.is_file():
+        try:
+            cached_doc = json.loads(probe_cache_path.read_text(encoding="utf-8"))
+            entry = (cached_doc.get("entries") or {}).get(cache_key)
+            if isinstance(entry, dict) and time.time() - float(entry.get("at", 0)) < 300:
+                ctx_val = int(entry.get("context_length") or 0)
+                if ctx_val > 0:
+                    return ctx_val
+        except Exception:
+            pass
+
+    if base_url and (base_url.startswith("http://") or base_url.startswith("https://")):
+        dotenv_vars = _read_hermes_dotenv(home)
+        key_env = str(model_conf.get("key_env", "") or "").strip()
+        api_key = ""
+        if key_env:
+            api_key = str((proc_env or {}).get(key_env) or dotenv_vars.get(key_env) or "")
+        headers = {"Accept": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        status_code, body, _ = http_get_json(f"{base_url}/models", headers=headers, timeout=2.5)
+        if status_code == 200 and isinstance(body, dict):
+            models_list = body.get("data") if isinstance(body.get("data"), list) else []
+            matched = None
+            for item in models_list:
+                if isinstance(item, dict) and item.get("id") == default_model:
+                    matched = item
+                    break
+            if matched is None and len(models_list) == 1 and isinstance(models_list[0], dict):
+                matched = models_list[0]
+            if isinstance(matched, dict):
+                meta = matched.get("meta") if isinstance(matched.get("meta"), dict) else {}
+                for candidate in (
+                    meta.get("n_ctx"),
+                    matched.get("context_length"),
+                    matched.get("max_model_len"),
+                    matched.get("context_window"),
+                ):
+                    try:
+                        c_val = int(candidate or 0)
+                        if c_val > 0:
+                            try:
+                                probe_cache_path.write_text(
+                                    json.dumps({"entries": {cache_key: {"context_length": c_val, "at": time.time()}}}),
+                                    encoding="utf-8",
+                                )
+                            except Exception:
+                                pass
+                            return c_val
+                    except (TypeError, ValueError):
+                        continue
+
+    if "qwen3" in default_model.lower():
+        return 524288
+    return 262144
+
+
+def _extract_hermes_session_context_tokens(cur, session_id: str, model_config_str: str | None, in_tok: int, out_tok: int, api_calls: int) -> int:
+    """Determine current context window occupancy for a Hermes session."""
+    if model_config_str:
+        try:
+            cfg = json.loads(model_config_str)
+            if isinstance(cfg, dict):
+                anchor = cfg.get("_usage_anchor")
+                if isinstance(anchor, dict):
+                    pt = int(anchor.get("prompt_tokens") or 0)
+                    ct = int(anchor.get("completion_tokens") or 0)
+                    if pt + ct > 0:
+                        return pt + ct
+        except Exception:
+            pass
+    try:
+        cur.execute(
+            "SELECT COALESCE(SUM(token_count), 0), COALESCE(SUM(LENGTH(COALESCE(content,'')) + LENGTH(COALESCE(tool_calls,'')) + LENGTH(COALESCE(reasoning,''))), 0) FROM messages WHERE session_id = ? AND active = 1",
+            (session_id,),
+        )
+        m_row = cur.fetchone()
+        if m_row:
+            tok_sum, char_sum = int(m_row[0] or 0), int(m_row[1] or 0)
+            if tok_sum > 0:
+                return tok_sum
+            if char_sum > 0:
+                return max(1, char_sum // 4)
+    except Exception:
+        pass
+    total_io = max(0, int(in_tok or 0) + int(out_tok or 0))
+    if total_io > 0:
+        calls = max(1, int(api_calls or 1))
+        return max(1, total_io // calls) if calls > 1 else total_io
+    return 0
+
+
+def _collect_hermes_db_usage(home: Path, config: dict, proc_env: dict | None = None) -> tuple[float, list[dict]]:
+    """Compute Hermes context window utilization and 5h/7d token activity from ~/.hermes/state.db."""
+    db_path = home / ".hermes" / "state.db"
+    if not db_path.is_file():
+        return 0.0, []
+
+    model_conf = config.get("model", {}) if isinstance(config, dict) else {}
+    context_length = max(1, _resolve_hermes_context_length(home, model_conf, proc_env))
+    ctx_limit_label = _fmt_hermes_tokens(context_length)
+
+    try:
+        import sqlite3
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            cur = conn.cursor()
+            cols = {r[1] for r in cur.execute("PRAGMA table_info(sessions)").fetchall()}
+            if "id" not in cols:
+                return 0.0, []
+
+            now = time.time()
+            has_source = "source" in cols
+            has_model_config = "model_config" in cols
+            has_ended_at = "ended_at" in cols
+            has_last_activity = "last_activity_at" in cols
+            has_api_calls = "api_call_count" in cols
+            has_reasoning = "reasoning_tokens" in cols
+
+            select_exprs = [
+                "id",
+                "source" if has_source else "'cli'",
+                "model_config" if has_model_config else "NULL",
+                "COALESCE(input_tokens, 0)",
+                "COALESCE(output_tokens, 0)",
+                "COALESCE(api_call_count, 0)" if has_api_calls else "1",
+                "COALESCE(last_activity_at, started_at, 0)" if has_last_activity else "COALESCE(started_at, 0)",
+                "ended_at" if has_ended_at else "NULL",
+            ]
+            where_active = "WHERE ended_at IS NULL" if has_ended_at else ""
+            order_expr = "COALESCE(last_activity_at, started_at, 0) DESC" if has_last_activity else "started_at DESC"
+
+            cur.execute(
+                f"SELECT {', '.join(select_exprs)} FROM sessions {where_active} ORDER BY {order_expr} LIMIT 20"
+            )
+            candidate_rows = cur.fetchall()
+            if not candidate_rows:
+                cur.execute(
+                    f"SELECT {', '.join(select_exprs)} FROM sessions ORDER BY {order_expr} LIMIT 5"
+                )
+                candidate_rows = cur.fetchall()
+
+            windows: list[dict] = []
+            context_pcts: list[float] = []
+            seen_surfaces: set[str] = set()
+
+            for row in candidate_rows:
+                s_id, source, m_cfg, in_tok, out_tok, api_calls, last_ts, _ = row
+                src = str(source or "cli").strip().lower()
+                if src == "cron" and len(candidate_rows) > 1 and seen_surfaces:
+                    continue
+                surface_key = "cli" if src == "cli" else ("gateway" if src in ("whatsapp", "telegram", "discord", "slack", "gateway") else src)
+                if surface_key in seen_surfaces:
+                    continue
+                ctx_tokens = _extract_hermes_session_context_tokens(cur, str(s_id), m_cfg, int(in_tok or 0), int(out_tok or 0), int(api_calls or 0))
+                if ctx_tokens <= 0:
+                    continue
+                seen_surfaces.add(surface_key)
+                pct = min(99.0, max(1.0, round((ctx_tokens / context_length) * 100.0, 1)))
+                context_pcts.append(pct)
+                surface_title = "CLI Context" if surface_key == "cli" else ("Gateway Context" if surface_key == "gateway" else "Context Window")
+                win_mins = 60 if surface_key == "gateway" else 180
+                windows.append({
+                    "group": f"{surface_title} ({_fmt_hermes_tokens(ctx_tokens)} / {ctx_limit_label})",
+                    "window_minutes": win_mins,
+                    "used_percent": pct,
+                    "resets_at": None,
+                })
+                if len(windows) >= 2:
+                    break
+
+            ts_col = "COALESCE(last_activity_at, ended_at, started_at)" if (has_last_activity and has_ended_at) else ("COALESCE(last_activity_at, started_at)" if has_last_activity else "started_at")
+            tok_col = "COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0) + COALESCE(reasoning_tokens, 0)" if has_reasoning else "COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)"
+
+            cur.execute(
+                f"SELECT COUNT(*), COALESCE(SUM({tok_col}), 0) FROM sessions WHERE {ts_col} >= ?",
+                (now - 5 * 3600,),
+            )
+            sess_5h, tok_5h = cur.fetchone() or (0, 0)
+            sess_5h, tok_5h = int(sess_5h or 0), int(tok_5h or 0)
+
+            cur.execute(
+                f"SELECT COUNT(*), COALESCE(SUM({tok_col}), 0) FROM sessions WHERE {ts_col} >= ?",
+                (now - 7 * 86400,),
+            )
+            sess_7d, tok_7d = cur.fetchone() or (0, 0)
+            sess_7d, tok_7d = int(sess_7d or 0), int(tok_7d or 0)
+
+            primary_pct = max(context_pcts) if context_pcts else 0.0
+            if primary_pct == 0.0 and tok_7d > 0:
+                primary_pct = min(99.0, max(1.0, round((min(tok_5h or tok_7d, context_length) / context_length) * 100.0, 1)))
+
+            if tok_5h > 0:
+                pct_5h = min(99.0, max(1.0, round((tok_5h / tok_7d) * 100.0, 1))) if tok_7d > 0 else primary_pct
+                windows.append({
+                    "group": f"5-Hour Activity ({_fmt_hermes_tokens(tok_5h)} tok · {sess_5h} sess)",
+                    "window_minutes": 300,
+                    "used_percent": pct_5h,
+                    "resets_at": None,
+                })
+            if tok_7d > 0:
+                windows.append({
+                    "group": f"7-Day Activity ({_fmt_hermes_tokens(tok_7d)} tok · {sess_7d} sess)",
+                    "window_minutes": 10080,
+                    "used_percent": primary_pct,
+                    "resets_at": None,
+                })
+
+            return primary_pct, windows
+        finally:
+            conn.close()
+    except Exception:
+        return 0.0, []
+
+
+def _normalize_hermes_windows(raw_windows: list) -> list[dict]:
+    """Normalize `hermes usage --json` window objects into MSAM UsageWindow schema."""
+    normalized: list[dict] = []
+    if not isinstance(raw_windows, list):
+        return normalized
+    for idx, w in enumerate(raw_windows):
+        if not isinstance(w, dict):
+            continue
+        label = str(w.get("group") or w.get("label") or f"Window {idx + 1}").strip()
+        detail = str(w.get("detail") or "").strip()
+        group = f"{label} ({detail})" if detail and detail not in label else label
+        raw_mins = w.get("window_minutes")
+        if isinstance(raw_mins, (int, float)) and int(raw_mins) > 0:
+            win_mins = int(raw_mins)
+        else:
+            lower_label = label.lower()
+            if "week" in lower_label:
+                win_mins = 10080
+            elif any(k in lower_label for k in ("month", "sub")):
+                win_mins = 43200
+            else:
+                win_mins = 300
+        try:
+            used_pct = float(w.get("used_percent") or 0.0)
+        except (TypeError, ValueError):
+            used_pct = 0.0
+        normalized.append({
+            "group": group,
+            "window_minutes": win_mins,
+            "used_percent": used_pct,
+            "resets_at": w.get("resets_at"),
+        })
+    return normalized
+
+
 def collect_hermes_quota(home_dir: Path | str | None = None, hermes_bin: str = "hermes", env: dict | None = None) -> dict:
-    """Query Hermes usage."""
+    """Query Hermes usage from CLI account limits and ~/.hermes/state.db session telemetry."""
     home = Path(home_dir).expanduser() if home_dir else Path.home()
     proc_env = _get_process_env(home, env)
     exe = _find_bin(home, hermes_bin, proc_env) or hermes_bin
@@ -615,43 +981,59 @@ def collect_hermes_quota(home_dir: Path | str | None = None, hermes_bin: str = "
         if res.returncode == 0:
             try:
                 data = json.loads(res.stdout)
-                used = float(data.get("used_percent", 0.0))
+                windows = _normalize_hermes_windows(data.get("windows", []))
+                raw_used = data.get("used_percent")
+                if raw_used is not None:
+                    used = float(raw_used)
+                else:
+                    used = max((w["used_percent"] for w in windows), default=0.0)
+                resets_at = data.get("resets_at")
+                if not resets_at:
+                    resets_candidates = [w["resets_at"] for w in windows if w.get("resets_at")]
+                    if resets_candidates:
+                        resets_at = min(resets_candidates)
+                if used == 0.0 and not windows:
+                    db_used, db_windows = _collect_hermes_db_usage(home, config, proc_env)
+                    used = db_used
+                    windows = db_windows
                 state = "RATE_LIMITED" if used >= 100.0 else "HEALTHY"
                 return {
                     "state": state,
                     "used_percent": used,
-                    "resets_at": data.get("resets_at"),
+                    "resets_at": resets_at,
                     "plan": data.get("plan") or plan_name,
-                    "windows": data.get("windows", []),
+                    "windows": windows,
                     "reset_credits": data.get("reset_credits"),
                 }
             except Exception:
                 pass
+            db_used, db_windows = _collect_hermes_db_usage(home, config, proc_env)
             return {
                 "state": "HEALTHY",
-                "used_percent": 0.0,
+                "used_percent": db_used,
                 "resets_at": None,
                 "plan": plan_name,
-                "windows": [],
+                "windows": db_windows,
                 "reset_credits": None,
             }
 
         combined = f"{res.stdout} {res.stderr}".lower()
 
         # If Hermes is configured with a local/custom provider (like vLLM, Ollama, private server)
-        # or reports that the provider has no usage endpoint, it is fully operational and unmetered.
+        # or reports that the provider has no usage endpoint, derive context & activity usage from state.db.
         if (
             "has no usage endpoint" in combined
             or configured_provider in ("custom", "local", "ollama", "vllm", "llama", "spark")
             or "provider 'custom'" in combined
             or "provider 'local'" in combined
         ):
+            db_used, db_windows = _collect_hermes_db_usage(home, config, proc_env)
             return {
                 "state": "HEALTHY",
-                "used_percent": 0.0,
+                "used_percent": db_used,
                 "resets_at": None,
                 "plan": plan_name,
-                "windows": [],
+                "windows": db_windows,
                 "reset_credits": None,
             }
 
@@ -675,12 +1057,13 @@ def collect_hermes_quota(home_dir: Path | str | None = None, hermes_bin: str = "
         }
     except Exception:
         if configured_provider in ("custom", "local", "ollama", "vllm", "spark"):
+            db_used, db_windows = _collect_hermes_db_usage(home, config, proc_env)
             return {
                 "state": "HEALTHY",
-                "used_percent": 0.0,
+                "used_percent": db_used,
                 "resets_at": None,
                 "plan": plan_name,
-                "windows": [],
+                "windows": db_windows,
                 "reset_credits": None,
             }
         return {

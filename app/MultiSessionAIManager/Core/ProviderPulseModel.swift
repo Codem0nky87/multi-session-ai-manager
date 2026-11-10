@@ -25,6 +25,7 @@ public struct UsageWindow: Decodable, Equatable, Identifiable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case group
+        case label
         case windowMinutes = "window_minutes"
         case usedPercent = "used_percent"
         case resetsAt = "resets_at"
@@ -35,6 +36,17 @@ public struct UsageWindow: Decodable, Equatable, Identifiable, Sendable {
         self.windowMinutes = windowMinutes
         self.usedPercent = usedPercent
         self.resetsAt = resetsAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let decodedGroup = try container.decodeIfPresent(String.self, forKey: .group)
+            ?? container.decodeIfPresent(String.self, forKey: .label)
+            ?? "Quota"
+        self.group = decodedGroup
+        self.windowMinutes = try container.decodeIfPresent(Int.self, forKey: .windowMinutes) ?? 300
+        self.usedPercent = try container.decodeIfPresent(Double.self, forKey: .usedPercent) ?? 0.0
+        self.resetsAt = try container.decodeIfPresent(String.self, forKey: .resetsAt)
     }
 }
 

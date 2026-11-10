@@ -139,4 +139,39 @@ import Testing
         #expect(term.state == "idle")
         #expect(term.isLimitReached == false)
     }
+
+    @Test func decodesHermesUsageWindowsWithGroupOrLabel() throws {
+        let json = """
+        {
+            "state": "HEALTHY",
+            "used_percent": 24.3,
+            "resets_at": null,
+            "plan": "custom (qwen3.8-flash-next)",
+            "windows": [
+                {
+                    "group": "Gateway Context (127.3K / 512K)",
+                    "window_minutes": 300,
+                    "used_percent": 24.3,
+                    "resets_at": null
+                },
+                {
+                    "label": "7d rolling",
+                    "used_percent": 41.0,
+                    "resets_at": "2026-11-16T08:00:00Z"
+                }
+            ]
+        }
+        """
+        let quota = try JSONDecoder().decode(ProviderQuota.self, from: Data(json.utf8))
+        #expect(quota.state == "HEALTHY")
+        #expect(quota.usedPercent == 24.3)
+        #expect(quota.plan == "custom (qwen3.8-flash-next)")
+        #expect(quota.windows.count == 2)
+        #expect(quota.windows[0].group == "Gateway Context (127.3K / 512K)")
+        #expect(quota.windows[0].windowMinutes == 300)
+        #expect(quota.windows[0].usedPercent == 24.3)
+        #expect(quota.windows[1].group == "7d rolling")
+        #expect(quota.windows[1].windowMinutes == 300)
+        #expect(quota.windows[1].usedPercent == 41.0)
+    }
 }
