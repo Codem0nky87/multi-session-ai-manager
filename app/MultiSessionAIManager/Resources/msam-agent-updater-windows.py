@@ -173,13 +173,21 @@ def roll(target, batch):
         if not expected(agent, target) or not pid or pid != target['pid']:
             target.update(phase='failed', message='identity_changed')
             return
+        target['revision'] = agent.get('revision')
         target.update(phase='exiting', message='exit_requested')
         save(batch)
     env = dict(os.environ, HERDR_SOCKET_PATH=target['socket'])
     if target['phase'] == 'exiting':
         if agent and not expected(agent, target):
             target.update(phase='failed', message='identity_changed'); return
-        if agent and pid and pid != target['pid']:
+        restarted_in_place = (
+            target['tool'] == 'claude'
+            and target['exitAttempts'] >= 1
+            and agent is not None
+            and agent.get('agent_status', agent.get('status', agent.get('state'))) in ('idle', 'done')
+            and agent.get('revision') not in (None, target.get('revision'))
+        )
+        if agent and pid and (pid != target['pid'] or restarted_in_place):
             target.update(phase='restored', message='restored'); return
         if agent:
             if not pid:
@@ -188,7 +196,18 @@ def roll(target, batch):
                 target.update(phase='failed', message='exit_attempts_exhausted'); return
             target['exitAttempts'] += 1
             save(batch)
-            command(['herdr', 'agent', 'prompt', target['pane'], '/exit'], env=env)
+            prompt = '/restart' if target['tool'] == 'claude' and target['exitAttempts'] == 1 else '/exit'
+            command(['herdr', 'agent', 'prompt', target['pane'], prompt], env=env)
+            if prompt == '/restart':
+                fresh, new_pid = snapshot(target)
+                in_place = (
+                    fresh is not None
+                    and expected(fresh, target)
+                    and fresh.get('agent_status', fresh.get('status', fresh.get('state'))) in ('idle', 'done')
+                    and fresh.get('revision') not in (None, target.get('revision'))
+                )
+                if fresh and expected(fresh, target) and new_pid and (new_pid != target['pid'] or in_place):
+                    target.update(phase='restored', message='restored'); return
             target['message'] = 'waiting_for_exit'
             return
         if not pid or pid == target['pid']:

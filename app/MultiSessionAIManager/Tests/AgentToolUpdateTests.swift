@@ -19,6 +19,9 @@ import Testing
         #expect(claude.herdrKinds == ["claude"])
         #expect(codex.herdrKinds == ["codex"])
         #expect(antigravity.herdrKinds == ["agy", "antigravity-cli", "antigravity"])
+        #expect(claude.restartCommand == "/restart")
+        #expect(codex.restartCommand == nil)
+        #expect(antigravity.restartCommand == nil)
         #expect(AgentToolRegistry.definitions.allSatisfy { $0.exitCommand == "/exit" })
     }
 

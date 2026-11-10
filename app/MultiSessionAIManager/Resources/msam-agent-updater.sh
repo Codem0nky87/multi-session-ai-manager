@@ -685,6 +685,32 @@ snapshot_is_expected() {
   kind_matches "$tool" "$(agent_kind "$snapshot")" && [ "$(agent_conversation "$snapshot" "$sock" "$p")" = "$conversation" ]
 }
 
+agent_revision() {
+  printf '%s\n' "$1" | tr -d '\n' | sed -nE 's/.*"revision"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p' | head -n 1
+}
+
+agent_restart_fingerprint() {
+  socket=$1 pane=$2 pid=$3 snapshot=$4
+  rev=$(agent_revision "$snapshot")
+  exe=$(readlink "/proc/$pid/exe" 2>/dev/null || :)
+  info=$(run_bounded "$INSPECT_TIMEOUT_SECONDS" env HERDR_SOCKET_PATH="$socket" herdr pane process-info --pane "$pane" 2>/dev/null || :)
+  cmd=$(printf '%s\n' "$info" | tr -d '\n' | sed -nE 's/.*"cmdline"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/p' | head -n 1)
+  printf '%s|%s|%s' "$rev" "$exe" "$cmd"
+}
+
+claude_restarted_in_place() {
+  batch_dir=$1 index=$2 socket=$3 pane=$4 pid=$5 snapshot=$6
+  [ -f "$batch_dir/target.$index.fingerprint" ] || return 1
+  state=$(agent_state "$snapshot")
+  case "$state" in
+    idle|done) : ;;
+    *) return 1 ;;
+  esac
+  before=$(cat "$batch_dir/target.$index.fingerprint")
+  after=$(agent_restart_fingerprint "$socket" "$pane" "$pid" "$snapshot")
+  [ -n "$before" ] && [ -n "$after" ] && [ "$after" != "$before" ]
+}
+
 start_agent() {
   socket=$1 pane=$2 tool=$3 conversation=$4 name=$5
   case "$tool" in
@@ -745,6 +771,7 @@ process_target() {
         mark_target "$batch_dir" "$index" failed process_changed
         return 0
       fi
+      write_value "$batch_dir/target.$index.fingerprint" "$(agent_restart_fingerprint "$socket" "$pane" "$original_pid" "$snapshot")"
       mark_target "$batch_dir" "$index" exiting exit_requested
       phase=exiting
       ;;
@@ -761,7 +788,7 @@ process_target() {
       mark_target "$batch_dir" "$index" failed process_unavailable
       return 0
     fi
-    if [ -n "$snapshot" ] && [ "$current_pid" != "$original_pid" ]; then
+    if [ -n "$snapshot" ] && { [ "$current_pid" != "$original_pid" ] || { [ "$tool" = claude ] && [ "$(cat "$batch_dir/target.$index.exit-attempts")" -ge 1 ] && claude_restarted_in_place "$batch_dir" "$index" "$socket" "$pane" "$current_pid" "$snapshot"; }; }; then
       mark_target "$batch_dir" "$index" restored restored
       return 0
     fi
@@ -773,14 +800,41 @@ process_target() {
       fi
       exit_attempts=$((exit_attempts + 1))
       write_value "$batch_dir/target.$index.exit-attempts" "$exit_attempts"
-      run_bounded "$INSPECT_TIMEOUT_SECONDS" env HERDR_SOCKET_PATH="$socket" herdr agent prompt "$pane" /exit >/dev/null 2>&1 || return 0
-      snapshot=$(agent_snapshot "$socket" "$pane" 2>/dev/null || :)
-      current_pid=$(foreground_pid "$socket" "$pane")
+      if [ "$tool" = claude ] && [ "$exit_attempts" -eq 1 ]; then
+        run_bounded "$INSPECT_TIMEOUT_SECONDS" env HERDR_SOCKET_PATH="$socket" herdr agent prompt "$pane" /restart >/dev/null 2>&1 || :
+        snapshot=$(agent_snapshot "$socket" "$pane" 2>/dev/null || :)
+        current_pid=$(foreground_pid "$socket" "$pane")
+        if [ -z "${MSAM_UPDATER_TEST_DATA:-}" ]; then
+          wait_step=0
+          while [ "$wait_step" -lt 3 ]; do
+            if [ -z "$snapshot" ] || ! snapshot_is_expected "$snapshot" "$tool" "$conversation" \
+               || { [ -n "$current_pid" ] && [ "$current_pid" != "$original_pid" ]; } \
+               || claude_restarted_in_place "$batch_dir" "$index" "$socket" "$pane" "${current_pid:-$original_pid}" "$snapshot"; then
+              break
+            fi
+            sleep 1
+            wait_step=$((wait_step + 1))
+            snapshot=$(agent_snapshot "$socket" "$pane" 2>/dev/null || :)
+            current_pid=$(foreground_pid "$socket" "$pane")
+          done
+        fi
+        if [ -n "$snapshot" ] && snapshot_is_expected "$snapshot" "$tool" "$conversation" \
+           && [ "$current_pid" = "$original_pid" ] \
+           && ! claude_restarted_in_place "$batch_dir" "$index" "$socket" "$pane" "$current_pid" "$snapshot"; then
+          run_bounded "$INSPECT_TIMEOUT_SECONDS" env HERDR_SOCKET_PATH="$socket" herdr agent prompt "$pane" /exit >/dev/null 2>&1 || return 0
+          snapshot=$(agent_snapshot "$socket" "$pane" 2>/dev/null || :)
+          current_pid=$(foreground_pid "$socket" "$pane")
+        fi
+      else
+        run_bounded "$INSPECT_TIMEOUT_SECONDS" env HERDR_SOCKET_PATH="$socket" herdr agent prompt "$pane" /exit >/dev/null 2>&1 || return 0
+        snapshot=$(agent_snapshot "$socket" "$pane" 2>/dev/null || :)
+        current_pid=$(foreground_pid "$socket" "$pane")
+      fi
     fi
     if [ -n "$snapshot" ]; then
       if ! snapshot_is_expected "$snapshot" "$tool" "$conversation"; then
         mark_target "$batch_dir" "$index" failed identity_changed
-      elif [ -n "$current_pid" ] && [ "$current_pid" != "$original_pid" ]; then
+      elif [ -n "$current_pid" ] && { [ "$current_pid" != "$original_pid" ] || { [ "$tool" = claude ] && claude_restarted_in_place "$batch_dir" "$index" "$socket" "$pane" "$current_pid" "$snapshot"; }; }; then
         mark_target "$batch_dir" "$index" restored restored
       else
         mark_target "$batch_dir" "$index" exiting waiting_for_exit

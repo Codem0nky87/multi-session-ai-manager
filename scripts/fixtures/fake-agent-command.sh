@@ -125,8 +125,10 @@ case "$name" in
         [ "$status" != shell ] || exit 1
         kind=$(cat "$data/$key.kind")
         conversation=$(cat "$data/$key.conversation")
-        printf '{"result":{"agent":{"status":"%s","kind":"%s","agent_session":{"value":"%s"}}}}\n' \
-          "$status" "$kind" "$conversation"
+        revision=1
+        [ ! -f "$data/$key.revision" ] || revision=$(cat "$data/$key.revision")
+        printf '{"result":{"agent":{"status":"%s","kind":"%s","revision":%s,"agent_session":{"value":"%s"}}}}\n' \
+          "$status" "$kind" "$revision" "$conversation"
         ;;
       "pane process-info")
         shift 2
@@ -136,20 +138,50 @@ case "$name" in
         ;;
       "agent prompt")
         pane=${3:?}; key=$(agent_key "$pane")
-        [ "${4:-}" = /exit ] || exit 1
-        case "${MSAM_FAKE_EXIT_MODE:-shell}" in
-          shell)
-            printf 'shell\n' > "$data/$key.status"
-            pid=$(cat "$data/$key.pid")
-            printf '%s\n' "$((pid + 1000))" > "$data/$key.pid"
+        prompt_cmd=${4:-}
+        case "$prompt_cmd" in
+          /restart)
+            [ "$(cat "$data/$key.kind")" = claude ] || exit 1
+            if [ "$(cat "$data/restore-failures")" -gt 0 ] || [ "${MSAM_FAKE_RESTART_MODE:-execve}" = refuse ]; then
+              exit 0
+            fi
+            case "${MSAM_FAKE_EXIT_MODE:-shell}" in
+              shell)
+                printf 'idle\n' > "$data/$key.status"
+                revision=1
+                [ ! -f "$data/$key.revision" ] || revision=$(cat "$data/$key.revision")
+                printf '%s\n' "$((revision + 1))" > "$data/$key.revision"
+                ;;
+              identity-change)
+                printf 'idle\n' > "$data/$key.status"
+                printf 'different-conversation\n' > "$data/$key.conversation"
+                pid=$(cat "$data/$key.pid")
+                printf '%s\n' "$((pid + 1000))" > "$data/$key.pid"
+                ;;
+              stale) : ;;
+              *) exit 1 ;;
+            esac
             ;;
-          identity-change)
-            printf 'idle\n' > "$data/$key.status"
-            printf 'different-conversation\n' > "$data/$key.conversation"
-            pid=$(cat "$data/$key.pid")
-            printf '%s\n' "$((pid + 1000))" > "$data/$key.pid"
+          /exit)
+            case "${MSAM_FAKE_EXIT_MODE:-shell}" in
+              shell)
+                printf 'shell\n' > "$data/$key.status"
+                pid=$(cat "$data/$key.pid")
+                printf '%s\n' "$((pid + 1000))" > "$data/$key.pid"
+                ;;
+              identity-change)
+                printf 'idle\n' > "$data/$key.status"
+                printf 'different-conversation\n' > "$data/$key.conversation"
+                pid=$(cat "$data/$key.pid")
+                printf '%s\n' "$((pid + 1000))" > "$data/$key.pid"
+                ;;
+              stale) : ;;
+              *) exit 1 ;;
+            esac
             ;;
-          stale) : ;;
+          continue)
+            exit 0
+            ;;
           *) exit 1 ;;
         esac
         ;;

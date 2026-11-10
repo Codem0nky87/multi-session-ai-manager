@@ -113,7 +113,7 @@ submit_and_run() {
 }
 
 [ -f "$UPDATER" ] || fail "bundled updater script is missing"
-assert_eq "$("$UPDATER" protocol)" "1"
+assert_eq "$("$UPDATER" protocol)" "2"
 
 # Keep the operator runbook aligned with the installed helper and per-user
 # service definitions. These are intentionally literal copy/paste contracts.
@@ -123,11 +123,11 @@ ARCHITECTURE_DOC="$ROOT/docs/architecture.md"
 for document in "$HOST_SETUP_DOC" "$DEVELOPMENT_DOC" "$ARCHITECTURE_DOC"; do
   [ -f "$document" ] || fail "missing updater documentation: $document"
 done
-assert_file_contains "$HOST_SETUP_DOC" 'com.codem0nky87.msam-host-agent'
-assert_file_contains "$HOST_SETUP_DOC" 'msam-host-agent.service'
+assert_file_contains "$DEVELOPMENT_DOC" 'com.codem0nky87.msam-host-agent'
+assert_file_contains "$DEVELOPMENT_DOC" 'msam-host-agent.service'
 # These are literal copy/paste contracts in documentation, not shell expansion.
 # shellcheck disable=SC2088
-assert_file_contains "$HOST_SETUP_DOC" '~/.local/libexec/msam-agent-updater status'
+assert_file_contains "$DEVELOPMENT_DOC" '~/.local/libexec/msam-agent-updater status'
 # shellcheck disable=SC2016
 assert_file_contains "$DEVELOPMENT_DOC" 'launchctl print gui/$(id -u)/com.codem0nky87.msam-host-agent'
 assert_file_contains "$DEVELOPMENT_DOC" 'systemctl --user is-active msam-host-agent.service'
@@ -171,10 +171,11 @@ assert_contains "$log" "brew list --formula --versions codex"
 assert_contains "$log" "brew list --cask --versions codex"
 assert_contains "$log" "brew upgrade --cask --yes codex"
 assert_not_contains "$log" "npm install"
-assert_contains "$log" "agent prompt %1 /exit"
+assert_contains "$log" "agent prompt %1 /restart"
+assert_not_contains "$log" "agent prompt %1 /exit"
 assert_contains "$log" "agent prompt %2 /exit"
 assert_contains "$log" "agent prompt %3 /exit"
-assert_contains "$log" "--kind claude"
+assert_not_contains "$log" "--kind claude"
 assert_contains "$log" "--kind codex"
 assert_contains "$log" "--kind agy"
 
@@ -190,15 +191,33 @@ submit_and_run "$batch"
 log=$(cat "$MSAM_UPDATER_TEST_DATA/commands.log")
 assert_not_contains "$log" "brew upgrade"
 assert_not_contains "$log" "npm install"
-assert_contains "$log" "agent prompt %1 /exit"
+assert_contains "$log" "agent prompt %1 /restart"
+assert_not_contains "$log" "agent prompt %1 /exit"
 assert_contains "$log" "agent prompt %2 /exit"
 assert_contains "$log" "agent prompt %3 /exit"
-assert_contains "$log" "--kind claude"
+assert_not_contains "$log" "--kind claude"
 assert_contains "$log" "--kind codex"
 assert_contains "$log" "--kind agy"
 status=$("$UPDATER" status)
 assert_contains "$status" "complete"
 assert_contains "$status" "COUNTS	3	3	0	0	0	0"
+
+# When Claude refuses /restart (e.g. uncarriable restrictions), the worker
+# automatically falls back to /exit + herdr agent start --resume.
+new_host
+export MSAM_FAKE_RESTART_MODE=refuse
+seed_agent %1 idle claude claude-1 101
+seed_agent %2 "done" codex codex-2 102
+seed_agent %3 idle agy agy-3 103
+batch=10000000-0000-4000-8000-000000000014
+write_request "$batch" "-"
+submit_and_run "$batch"
+log=$(cat "$MSAM_UPDATER_TEST_DATA/commands.log")
+assert_contains "$log" "agent prompt %1 /restart"
+assert_contains "$log" "agent prompt %1 /exit"
+assert_contains "$log" "--kind claude"
+assert_contains "$log" "--resume claude-1"
+unset MSAM_FAKE_RESTART_MODE
 
 # A failed executable update must leave every agent process untouched.
 new_host
@@ -289,12 +308,11 @@ batch=10000000-0000-4000-8000-000000000003
 write_request "$batch"
 submit_and_run "$batch"
 log=$(cat "$MSAM_UPDATER_TEST_DATA/commands.log")
-assert_contains "$log" "agent prompt %1 /exit"
+assert_contains "$log" "agent prompt %1 /restart"
 assert_contains "$log" "agent prompt %2 /exit"
 assert_not_contains "$log" "agent prompt %3 /exit"
 assert_contains "$log" "agent start"
-assert_contains "$log" "--kind claude"
-assert_contains "$log" "--resume claude-1"
+assert_not_contains "$log" "--kind claude"
 assert_contains "$log" "--kind codex"
 assert_contains "$log" "resume codex-2"
 printf 'done\n' > "$MSAM_UPDATER_TEST_DATA/3.status"
@@ -356,7 +374,7 @@ batch=10000000-0000-4000-8000-00000000000b
 write_request "$batch"
 submit_and_run "$batch"
 log=$(cat "$MSAM_UPDATER_TEST_DATA/commands.log")
-assert_contains "$log" "agent prompt %1 /exit"
+assert_contains "$log" "agent prompt %1 /restart"
 assert_not_contains "$log" "agent start"
 assert_contains "$("$UPDATER" status)" "identity_changed"
 
@@ -422,7 +440,7 @@ assert_not_contains "$log" "agent prompt"
 assert_contains "$("$UPDATER" status)" "approval_required"
 printf 'no\n' > "$MSAM_UPDATER_TEST_DATA/quarantine"
 "$UPDATER" run-once >/dev/null
-assert_contains "$(cat "$MSAM_UPDATER_TEST_DATA/commands.log")" "agent prompt %1 /exit"
+assert_contains "$(cat "$MSAM_UPDATER_TEST_DATA/commands.log")" "agent prompt %1 /restart"
 
 # Verified-artifact policy clears only the exact resolved file, and only after
 # strict signing, fixed publisher identity, and Gatekeeper assessment succeed.
@@ -440,7 +458,7 @@ log=$(cat "$MSAM_UPDATER_TEST_DATA/commands.log")
 assert_contains "$log" "codesign --verify --strict"
 assert_contains "$log" "spctl --assess --type execute"
 assert_contains "$log" "xattr -d com.apple.quarantine -- $artifact"
-assert_contains "$log" "agent prompt %1 /exit"
+assert_contains "$log" "agent prompt %1 /restart"
 
 # Any failed proof or unsafe/path-raced resolution falls back to approval and
 # never exits a conversation or clears quarantine.

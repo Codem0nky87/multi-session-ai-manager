@@ -69,6 +69,7 @@ struct AgentToolDefinition: Equatable, Sendable {
     let displayName: String
     let executable: String
     let herdrKinds: Set<String>
+    let restartCommand: String?
     let exitCommand: String
     let macOSPublisher: MacOSPublisherIdentity?
     let resumeArguments: @Sendable (String) -> [String]
@@ -78,6 +79,7 @@ struct AgentToolDefinition: Equatable, Sendable {
             && lhs.displayName == rhs.displayName
             && lhs.executable == rhs.executable
             && lhs.herdrKinds == rhs.herdrKinds
+            && lhs.restartCommand == rhs.restartCommand
             && lhs.exitCommand == rhs.exitCommand
             && lhs.macOSPublisher == rhs.macOSPublisher
     }
@@ -90,6 +92,7 @@ enum AgentToolRegistry {
             displayName: "Claude Code",
             executable: "claude",
             herdrKinds: ["claude"],
+            restartCommand: "/restart",
             exitCommand: "/exit",
             macOSPublisher: .init(
                 teamIdentifier: "Q6L2SF6YDW",
@@ -102,6 +105,7 @@ enum AgentToolRegistry {
             displayName: "Codex",
             executable: "codex",
             herdrKinds: ["codex"],
+            restartCommand: nil,
             exitCommand: "/exit",
             macOSPublisher: .init(
                 teamIdentifier: "2DC432GLL2",
@@ -114,6 +118,7 @@ enum AgentToolRegistry {
             displayName: "Antigravity",
             executable: "agy",
             herdrKinds: ["agy", "antigravity-cli", "antigravity"],
+            restartCommand: nil,
             exitCommand: "/exit",
             macOSPublisher: .init(
                 teamIdentifier: "EQHXZ8M8AV",
