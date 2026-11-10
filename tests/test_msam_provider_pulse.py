@@ -62,25 +62,23 @@ class ProviderPulseTests(unittest.TestCase):
             }
         }))
 
-        mock_usage_response = {
-            "five_hour": {"utilization": 0.0, "resets_at": "2026-11-10T17:00:00Z"},
-            "seven_day": {"utilization": 5.0, "resets_at": "2026-11-11T16:59:00Z"},
-            "spend": {
-                "limit": {"amount_minor": 20000, "currency": "USD"},
-                "amount_used": {"amount_minor": 0, "currency": "USD"},
-                "cap": {"credits": {"amount_minor": 20000, "currency": "USD"}}
-            },
-            "extra_usage": {
-                "is_enabled": False,
-                "monthly_limit": 20000,
-                "used": 0,
-                "utilization": 0.0,
-                "disabled_reason": "out_of_credits"
+        # Field names as returned by /api/oauth/usage on 2026-11-10.
+        def usage(enabled, used_minor):
+            return {
+                "five_hour": {"utilization": 0.0, "resets_at": "2026-11-10T17:00:00Z"},
+                "seven_day": {"utilization": 5.0, "resets_at": "2026-11-11T16:59:00Z"},
+                "spend": {
+                    "used": {"amount_minor": used_minor, "currency": "USD", "exponent": 2},
+                    "limit": {"amount_minor": 20000, "currency": "USD", "exponent": 2},
+                    "enabled": enabled, "disabled_reason": None if enabled else "out_of_credits",
+                    "cap": {"money": None, "credits": {"amount_minor": 20000, "exponent": 2}},
+                },
+                "extra_usage": {"is_enabled": enabled, "monthly_limit": 20000, "used_credits": float(used_minor),
+                                "decimal_places": 2, "disabled_reason": None if enabled else "out_of_credits"},
             }
-        }
 
         with patch.object(self.pulse_module, "http_get_json") as mock_http:
-            mock_http.return_value = (200, mock_usage_response, {})
+            mock_http.return_value = (200, usage(True, 5000), {})
             res = self.pulse_module.collect_claude_quota(creds_file, cache_path=self.tmp_path / "c.json")
             self.assertEqual(res["state"], "HEALTHY")
             self.assertEqual(res["used_percent"], 5.0)
@@ -88,9 +86,14 @@ class ProviderPulseTests(unittest.TestCase):
             self.assertEqual(res["windows"][0]["group"], "5-Hour Pool")
             self.assertEqual(res["windows"][1]["group"], "7-Day Quota")
             self.assertEqual(res["windows"][2]["group"], "API Allowance ($200)")
-            self.assertEqual(res["windows"][2]["used_percent"], 0.0)
+            self.assertEqual(res["windows"][2]["used_percent"], 25.0)
 
-    def test_collect_claude_quota_refreshes_token_on_401(self):
+            # A disabled allowance (out of credits) cannot be spent, so it is not shown as available.
+            mock_http.return_value = (200, usage(False, 0), {})
+            res = self.pulse_module.collect_claude_quota(creds_file, cache_path=self.tmp_path / "c-disabled.json")
+            self.assertEqual([w["group"] for w in res["windows"]], ["5-Hour Pool", "7-Day Quota"])
+
+    def test_collect_claude_quota_never_refreshes_or_writes_the_login(self):
         creds_file = self.tmp_path / ".credentials.json"
         creds_file.write_text(json.dumps({
             "claudeAiOauth": {
@@ -98,45 +101,67 @@ class ProviderPulseTests(unittest.TestCase):
                 "refreshToken": "valid-refresh-token",
                 "subscriptionType": "max",
                 "expiresAt": 9999999999000,
-                "refreshTokenExpiresAt": 9999999999000
             }
         }))
+        before = creds_file.read_bytes()
+        self.assertFalse(hasattr(self.pulse_module, "refresh_claude_oauth_token"))
 
-        mock_usage_response = {
-            "five_hour": {"utilization": 0.0, "resets_at": "2026-11-10T17:00:00Z"},
-            "seven_day": {"utilization": 5.0, "resets_at": "2026-11-11T16:59:00Z"}
-        }
+        with patch.object(self.pulse_module, "http_get_json") as mock_http, \
+             patch.object(self.pulse_module.urllib.request, "urlopen") as mock_urlopen:
+            mock_http.return_value = (401, {"error": "Invalid bearer token"}, {})
+            res = self.pulse_module.collect_claude_quota(creds_file, cache_path=self.tmp_path / "c2.json")
+            self.assertEqual(res["state"], "SIGN_IN_REQUIRED")
+            self.assertEqual(mock_http.call_count, 1)
+            mock_urlopen.assert_not_called()
+            # The rejection is cached, so the next sample does not retry the same token.
+            self.pulse_module.collect_claude_quota(creds_file, cache_path=self.tmp_path / "c2.json")
+            self.assertEqual(mock_http.call_count, 1)
+        self.assertEqual(creds_file.read_bytes(), before)
 
-        with patch.object(self.pulse_module, "http_get_json") as mock_http:
-            # First call with old token -> 401, second call with new token -> 200
-            mock_http.side_effect = [
-                (401, {"error": "Invalid bearer token"}, {}),
-                (200, mock_usage_response, {})
-            ]
-            with patch.object(self.pulse_module, "refresh_claude_oauth_token", return_value="new-fresh-token") as mock_refresh:
-                res = self.pulse_module.collect_claude_quota(creds_file, cache_path=self.tmp_path / "c2.json")
-                self.assertEqual(mock_refresh.call_count, 1)
-                self.assertEqual(mock_http.call_count, 2)
-                self.assertEqual(res["state"], "HEALTHY")
-                self.assertEqual(res["used_percent"], 5.0)
-
-    def test_collect_claude_quota_reports_sign_in_required_when_refresh_token_expired(self):
+    def test_collect_claude_quota_expired_login_makes_no_request(self):
         creds_file = self.tmp_path / ".credentials.json"
-        # refreshTokenExpiresAt is in the past
         creds_file.write_text(json.dumps({
             "claudeAiOauth": {
                 "accessToken": "stale-token",
-                "refreshToken": "expired-refresh-token",
+                "refreshToken": "refresh-token",
                 "subscriptionType": "max",
-                "expiresAt": 0,
-                "refreshTokenExpiresAt": 1000
+                "expiresAt": 1000,
             }
         }))
 
         with patch.object(self.pulse_module, "http_get_json") as mock_http:
-            mock_http.return_value = (401, {"error": "Invalid bearer token"}, {})
             res = self.pulse_module.collect_claude_quota(creds_file, cache_path=self.tmp_path / "c3.json")
             self.assertEqual(res["state"], "SIGN_IN_REQUIRED")
+            mock_http.assert_not_called()
+
+    def test_collect_claude_quota_throttle_backs_off_and_keeps_last_reading(self):
+        creds_file = self.tmp_path / ".credentials.json"
+        creds_file.write_text(json.dumps({"claudeAiOauth": {"accessToken": "t", "expiresAt": 9999999999000}}))
+        cache_file = self.tmp_path / "c4.json"
+        good = {"seven_day": {"utilization": 42.0, "resets_at": "2026-11-11T16:59:00Z"}}
+
+        with patch.object(self.pulse_module, "http_get_json") as mock_http, \
+             patch.object(self.pulse_module.time, "time") as clock:
+            clock.return_value = 1_000_000.0
+            mock_http.return_value = (200, good, {})
+            self.pulse_module.collect_claude_quota(creds_file, cache_path=cache_file)
+
+            clock.return_value += 301
+            mock_http.return_value = (429, {}, {"Retry-After": "1200"})
+            res = self.pulse_module.collect_claude_quota(creds_file, cache_path=cache_file)
+            self.assertEqual(res["state"], "REFRESH_DELAYED")
+            self.assertEqual(res["used_percent"], 42.0)
+
+            clock.return_value += 900  # still inside Retry-After: no request
+            self.pulse_module.collect_claude_quota(creds_file, cache_path=cache_file)
+            self.assertEqual(mock_http.call_count, 2)
+
+            clock.return_value += 301  # past Retry-After; second failure backs off 600 s
+            mock_http.return_value = (429, {}, {})
+            self.pulse_module.collect_claude_quota(creds_file, cache_path=cache_file)
+            clock.return_value += 400
+            self.pulse_module.collect_claude_quota(creds_file, cache_path=cache_file)
+            self.assertEqual(mock_http.call_count, 3)
 
     def test_collect_codex_quota_parses_limits_and_reset_credits(self):
         limits_data = {

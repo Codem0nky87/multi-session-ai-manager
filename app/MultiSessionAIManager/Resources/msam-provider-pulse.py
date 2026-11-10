@@ -73,121 +73,74 @@ def http_get_json(url: str, headers: dict[str, str] | None = None, timeout: floa
         return 0, {"error": str(e)}, {}
 
 
-def refresh_claude_oauth_token(creds_path: Path, auth_data: dict) -> str | None:
-    """Attempt to refresh an expired Claude access token using the stored refresh token."""
-    oauth = auth_data.get("claudeAiOauth") or {}
-    refresh_token = oauth.get("refreshToken")
-    refresh_exp = oauth.get("refreshTokenExpiresAt")
-    if not refresh_token:
-        return None
-    if refresh_exp and refresh_exp <= time.time() * 1000:
-        # Refresh token itself has reached its end of life; user must re-authenticate
-        return None
+MAX_BACKOFF_SECONDS = 3600
 
-    scopes = oauth.get("scopes") or []
-    payload = {
-        "grant_type": "refresh_token",
-        "refresh_token": refresh_token,
-        "client_id": "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
-        "scope": " ".join(scopes) if isinstance(scopes, list) else str(scopes),
-    }
 
+def _read_usage_cache(cache_p: Path) -> dict:
     try:
-        req = urllib.request.Request(
-            "https://platform.claude.com/v1/oauth/token",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "User-Agent": "claude-code/2.1.319",
-            },
-            method="POST"
-        )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            if resp.status == 200:
-                body = json.loads(resp.read().decode("utf-8"))
-                new_token = body.get("access_token")
-                if new_token:
-                    oauth["accessToken"] = new_token
-                    if "refresh_token" in body:
-                        oauth["refreshToken"] = body["refresh_token"]
-                    if "expires_in" in body:
-                        oauth["expiresAt"] = int((time.time() + float(body["expires_in"])) * 1000)
-                    if "refresh_token_expires_in" in body:
-                        oauth["refreshTokenExpiresAt"] = int((time.time() + float(body["refresh_token_expires_in"])) * 1000)
-                    auth_data["claudeAiOauth"] = oauth
-                    creds_path.write_text(json.dumps(auth_data, indent=2), encoding="utf-8")
-                    return new_token
+        cached = json.loads(cache_p.read_text(encoding='utf-8'))
+        return cached if isinstance(cached, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_usage_cache(cache_p: Path, result: dict, cooldown: float, failures: int = 0,
+                       last_good: dict | None = None) -> None:
+    try:
+        cache_data = dict(result, _cached_at=time.time(), _cooldown=cooldown, _failures=failures)
+        if last_good is not None:
+            cache_data["_last_good"] = last_good
+        cache_p.parent.mkdir(parents=True, exist_ok=True)
+        temporary = cache_p.with_name(cache_p.name + ".tmp")
+        temporary.write_text(json.dumps(cache_data), encoding='utf-8')
+        os.replace(temporary, cache_p)
     except Exception:
         pass
-    return None
+
+
+def _retry_after_seconds(headers: dict) -> float:
+    value = next((v for k, v in (headers or {}).items() if k.lower() == "retry-after"), None)
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def collect_claude_quota(credentials_path: Path | str, cache_path: Path | str | None = None, now: datetime | None = None) -> dict:
-    """Read Claude subscription usage via Anthropic OAuth endpoint with a 5-minute cache cooldown."""
+    """Read Claude subscription usage via Anthropic OAuth endpoint with a 5-minute cache cooldown.
+
+    Read-only: Claude Code refreshes its own token under its refresh lock. Refreshing here
+    would rotate the refresh token behind running Claude sessions and sign them out.
+    Failures are cached too, with exponential backoff and Retry-After for throttling.
+    """
     creds_p = Path(credentials_path).expanduser()
     cache_p = Path(cache_path).expanduser() if cache_path else creds_p.parent / ".claude_usage_cache.json"
 
-    # Check cache
-    if cache_p.exists():
-        try:
-            cached = json.loads(cache_p.read_text(encoding='utf-8'))
-            cached_at = cached.get("_cached_at", 0)
-            if time.time() - cached_at < CACHE_COOLDOWN_SECONDS:
-                clean = dict(cached)
-                clean.pop("_cached_at", None)
-                return clean
-        except Exception:
-            pass
+    cached = _read_usage_cache(cache_p)
+    if time.time() - cached.get("_cached_at", 0) < cached.get("_cooldown", CACHE_COOLDOWN_SECONDS):
+        return {k: v for k, v in cached.items() if not k.startswith("_")}
+    last_good = cached.get("_last_good")
+    if cached.get("state") in ("HEALTHY", "RATE_LIMITED"):
+        last_good = {k: v for k, v in cached.items() if not k.startswith("_")}
 
-    if not creds_p.exists():
-        return {
-            "state": "SIGN_IN_REQUIRED",
-            "used_percent": 0.0,
-            "resets_at": None,
-            "plan": None,
-            "windows": [],
-            "reset_credits": None,
-        }
+    def status(state: str, plan: str | None) -> dict:
+        return {"state": state, "used_percent": 0.0, "resets_at": None, "plan": plan,
+                "windows": [], "reset_credits": None}
 
     try:
-        auth_data = json.loads(creds_p.read_text(encoding='utf-8'))
-        claude_oauth = auth_data.get("claudeAiOauth") or {}
-        token = claude_oauth.get("accessToken")
-        plan = claude_oauth.get("subscriptionType", "pro")
-        expires_at = claude_oauth.get("expiresAt")
-        if expires_at and expires_at <= time.time() * 1000:
-            token = refresh_claude_oauth_token(creds_p, auth_data)
-            if not token:
-                return {
-                    "state": "SIGN_IN_REQUIRED",
-                    "used_percent": 0.0,
-                    "resets_at": None,
-                    "plan": plan,
-                    "windows": [],
-                    "reset_credits": None,
-                }
-        if not token:
-            token = refresh_claude_oauth_token(creds_p, auth_data)
-        if not token:
-            return {
-                "state": "SIGN_IN_REQUIRED",
-                "used_percent": 0.0,
-                "resets_at": None,
-                "plan": plan,
-                "windows": [],
-                "reset_credits": None,
-            }
+        claude_oauth = json.loads(creds_p.read_text(encoding='utf-8')).get("claudeAiOauth") or {}
+    except FileNotFoundError:
+        return status("SIGN_IN_REQUIRED", None)
     except Exception:
-        return {
-            "state": "UNAVAILABLE",
-            "used_percent": 0.0,
-            "resets_at": None,
-            "plan": None,
-            "windows": [],
-            "reset_credits": None,
-        }
+        return status("UNAVAILABLE", None)
+    token = claude_oauth.get("accessToken")
+    plan = claude_oauth.get("subscriptionType", "pro")
+    expires_at = claude_oauth.get("expiresAt")
+    if not token or (expires_at and expires_at <= time.time() * 1000):
+        # Claude Code renews it the next time it runs; never make a request with it.
+        return status("SIGN_IN_REQUIRED", plan)
 
-    status_code, body, _ = http_get_json(
+    status_code, body, headers = http_get_json(
         "https://api.anthropic.com/api/oauth/usage",
         headers={
             "Authorization": f"Bearer {token}",
@@ -197,46 +150,21 @@ def collect_claude_quota(credentials_path: Path | str, cache_path: Path | str | 
     )
 
     if status_code in (401, 403):
-        # Access token might have been invalidated; attempt token refresh once
-        new_token = refresh_claude_oauth_token(creds_p, auth_data)
-        if new_token:
-            token = new_token
-            status_code, body, _ = http_get_json(
-                "https://api.anthropic.com/api/oauth/usage",
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "anthropic-beta": "oauth-2025-04-20",
-                },
-                timeout=10.0,
-            )
-
-    if status_code in (401, 403):
-        return {
-            "state": "SIGN_IN_REQUIRED",
-            "used_percent": 0.0,
-            "resets_at": None,
-            "plan": plan,
-            "windows": [],
-            "reset_credits": None,
-        }
-    if status_code == 429:
-        return {
-            "state": "REFRESH_DELAYED",
-            "used_percent": 100.0,
-            "resets_at": None,
-            "plan": plan,
-            "windows": [],
-            "reset_credits": None,
-        }
-    if status_code != 200:
-        return {
-            "state": "UNAVAILABLE",
-            "used_percent": 0.0,
-            "resets_at": None,
-            "plan": plan,
-            "windows": [],
-            "reset_credits": None,
-        }
+        result = status("SIGN_IN_REQUIRED", plan)
+        _write_usage_cache(cache_p, result, CACHE_COOLDOWN_SECONDS, last_good=last_good)
+        return result
+    if status_code == 429 or status_code == 0 or status_code >= 500:
+        failures = int(cached.get("_failures", 0)) + 1
+        cooldown = max(min(MAX_BACKOFF_SECONDS, CACHE_COOLDOWN_SECONDS * 2 ** min(failures - 1, 4)),
+                       _retry_after_seconds(headers))
+        # Throttled usage reporting does not mean the subscription limit is exhausted.
+        result = dict(last_good, state="REFRESH_DELAYED") if last_good else status("REFRESH_DELAYED", plan)
+        _write_usage_cache(cache_p, result, cooldown, failures, last_good)
+        return result
+    if status_code != 200 or not isinstance(body, dict):
+        result = status("UNAVAILABLE", plan)
+        _write_usage_cache(cache_p, result, CACHE_COOLDOWN_SECONDS, last_good=last_good)
+        return result
 
     # Parse response
     five_hour = body.get("five_hour") or {}
@@ -252,24 +180,27 @@ def collect_claude_quota(credentials_path: Path | str, cache_path: Path | str | 
         {"group": "7-Day Quota", "window_minutes": 10080, "used_percent": d7_util, "resets_at": seven_day.get("resets_at")},
     ]
 
-    # Extra usage / API allowance (e.g. $200 monthly credit / spend limit)
-    spend = body.get("spend") or {}
-    extra_usage = body.get("extra_usage") or {}
-    limit_minor = (spend.get("limit") or {}).get("amount_minor") or (spend.get("cap", {}).get("credits", {})).get("amount_minor", 0)
-    used_minor = (spend.get("amount_used") or {}).get("amount_minor", 0)
-    if not limit_minor:
-        limit_minor = extra_usage.get("monthly_limit", 0)
-        used_minor = extra_usage.get("used", 0)
-
-    if limit_minor > 0:
-        spend_util = (used_minor / limit_minor) * 100.0
-        limit_dollars = limit_minor // 100
-        windows.append({
-            "group": f"API Allowance (${limit_dollars})",
-            "window_minutes": 43200,
-            "used_percent": round(spend_util, 1),
-            "resets_at": None,
-        })
+    # Extra usage beyond the subscription (e.g. a $200 monthly cap). Shown only while
+    # enabled: a disabled allowance (e.g. out_of_credits) cannot be spent.
+    def section(source, key) -> dict:
+        value = source.get(key) if isinstance(source, dict) else None
+        return value if isinstance(value, dict) else {}
+    spend, extra_usage = section(body, "spend"), section(body, "extra_usage")
+    limit, used = section(spend, "limit"), section(spend, "used")
+    try:
+        enabled = spend.get("enabled", extra_usage.get("is_enabled"))
+        limit_minor = float(limit.get("amount_minor") or extra_usage.get("monthly_limit") or 0)
+        used_minor = float(used.get("amount_minor", extra_usage.get("used_credits")) or 0)
+        exponent = int(limit.get("exponent", extra_usage.get("decimal_places", 2)))
+        if enabled and limit_minor > 0:
+            windows.append({
+                "group": f"API Allowance (${limit_minor / 10 ** exponent:,.0f})",
+                "window_minutes": 43200,
+                "used_percent": round(used_minor / limit_minor * 100.0, 1),
+                "resets_at": None,
+            })
+    except (TypeError, ValueError, OverflowError):
+        pass
 
     result = {
         "state": state,
@@ -280,14 +211,7 @@ def collect_claude_quota(credentials_path: Path | str, cache_path: Path | str | 
         "reset_credits": None,
     }
 
-    try:
-        cache_data = dict(result)
-        cache_data["_cached_at"] = time.time()
-        cache_p.parent.mkdir(parents=True, exist_ok=True)
-        cache_p.write_text(json.dumps(cache_data), encoding='utf-8')
-    except Exception:
-        pass
-
+    _write_usage_cache(cache_p, result, CACHE_COOLDOWN_SECONDS)
     return result
 
 
@@ -1074,7 +998,7 @@ def collect_provider_telemetry(home_dir: Path | str | None = None, env: dict | N
             candidate_paths.append(Path(env["CLAUDE_CONFIG_DIR"]) / ".credentials.json")
         elif "CLAUDE_CONFIG_DIR" in os.environ:
             candidate_paths.append(Path(os.environ["CLAUDE_CONFIG_DIR"]) / ".credentials.json")
-        candidate_paths.append(Path("/run/woodhouse-machine-vault/agents/claude/.credentials.json"))
+        # Woodhouse's credential vault is deliberately not read: only its own workers may.
         candidate_paths.append(home / ".claude" / ".credentials.json")
 
         existing_creds = [p for p in candidate_paths if p.is_file()]
