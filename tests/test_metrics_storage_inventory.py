@@ -102,6 +102,59 @@ class StorageInventoryTests(unittest.TestCase):
         with patch.object(m.subprocess, 'check_output', side_effect=OSError):
             self.assertEqual(m.mac_physical_disks([]), [])
 
+    MAC_FIXTURES = {
+        ('diskutil', 'list', '-plist', 'physical'): {'AllDisksAndPartitions': [
+            {'DeviceIdentifier': 'disk0', 'Size': 200 * 1024**3,
+             'Partitions': [{'DeviceIdentifier': 'disk0s2'}]}]},
+        ('diskutil', 'info', '-plist', 'disk0'): {'MediaName': 'APPLE SSD'},
+        ('diskutil', 'apfs', 'list', '-plist'): {'Containers': [
+            {'ContainerReference': 'disk3', 'CapacityFree': 50 * 1024**3,
+             'PhysicalStores': [{'DeviceIdentifier': 'disk0s2'}]}]},
+    }
+
+    def test_mac_samples_reuse_the_disk_inventory_instead_of_asking_diskutil_every_time(self):
+        """The Mac service is a throttled launchd Background job: its three diskutil
+        calls took over a second of every 2-second sample."""
+        asked = []
+
+        def output(command, **kwargs):
+            if command[0] == 'diskutil':
+                asked.append(tuple(command))
+                return plistlib.dumps(self.MAC_FIXTURES[tuple(command)])
+            if command[0] == 'df':
+                return (b'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
+                        b'/dev/disk3s1 1000 100 500 17% /\n')
+            raise OSError(command)
+
+        inventory = m.BackgroundProbe(lambda: m.mac_disk_topology(), m.MAC_DISK_TOPOLOGY_INTERVAL,
+                                      complete=lambda topology: topology['complete'])
+        with patch.object(m, '_mac_disk_topology', inventory), \
+                patch.object(m.sys, 'platform', 'darwin'), \
+                patch.object(m.subprocess, 'check_output', side_effect=output):
+            samples = [m.get_unix_disks() for _ in range(3)]
+        self.assertEqual(sorted(asked), sorted(self.MAC_FIXTURES), 'asked once, not once per sample')
+        for sample in samples:
+            self.assertEqual([d['model'] for d in sample['physicalDisks']], ['APPLE SSD'])
+            self.assertEqual(sample['physicalDisks'][0]['availableGB'], 50)
+            self.assertEqual(sample['disks'][0]['volumes'][0]['name'], 'Macintosh HD')
+
+    def test_mac_inventory_says_when_diskutil_left_a_question_unanswered(self):
+        def answered(command, **kwargs):
+            return plistlib.dumps(self.MAC_FIXTURES[tuple(command)])
+
+        def identity_times_out(command, **kwargs):
+            if command[1] == 'info':
+                raise m.subprocess.TimeoutExpired(command, 5)
+            return answered(command)
+
+        with patch.object(m.subprocess, 'check_output', side_effect=answered):
+            self.assertTrue(m.mac_disk_topology()['complete'])
+        with patch.object(m.subprocess, 'check_output', side_effect=identity_times_out):
+            partial = m.mac_disk_topology()
+        self.assertFalse(partial['complete'])
+        # Used as it is when nothing better is known: the disk is still listed.
+        self.assertEqual([d['id'] for d in m.mac_physical_disks([], topology=partial)], ['disk0'])
+
 
 if __name__ == '__main__':
     unittest.main()

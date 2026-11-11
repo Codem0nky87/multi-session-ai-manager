@@ -5,6 +5,7 @@ import sys
 import json
 import sqlite3
 import subprocess
+import threading
 import time
 import math
 import plistlib
@@ -239,26 +240,116 @@ def linux_physical_disks(groups, temperatures, sys_root='/sys'):
     return result
 
 
-def mac_physical_disks(groups, disk_temperature_c=None):
+class BackgroundProbe:
+    """The latest result of a slow probe, without the sampler waiting for it.
+
+    The Mac host service is a launchd Background job, so macOS keeps it on the
+    efficiency cores and throttles its I/O: starting a helper costs several times
+    what it does in a login shell (`powermetrics` about 1.5 s, `diskutil apfs
+    list` about 1 s). On the sampling path those stretched a 2-second sample to
+    nearly 4, and the app's gauges for that host moved at half the speed of the
+    others.
+
+    The first read runs the probe inline, so a single-shot caller still gets a
+    value. Every later read returns the last result at once and, when that is at
+    least `interval` seconds old, starts one refresh on a daemon thread. A refresh
+    that fails, or whose result `complete` rejects, leaves the last result alone.
+    """
+
+    def __init__(self, probe, interval, clock=time.monotonic, complete=None):
+        self._probe = probe
+        self._interval = interval
+        self._clock = clock
+        self._complete = complete or (lambda value: True)
+        self._lock = threading.Lock()
+        self._value = None
+        self._stamp = None  # None until the first result is in.
+        self._refreshing = False
+
+    def read(self):
+        with self._lock:
+            idle = not self._refreshing
+            first = idle and self._stamp is None
+            due = idle and not first and self._clock() - self._stamp >= self._interval
+            if first or due:
+                self._refreshing = True
+            value = self._value
+        if first:
+            return self._refresh()
+        if due:
+            try:
+                threading.Thread(target=self._refresh, name='msam-probe', daemon=True).start()
+            except RuntimeError:
+                # No thread to be had: keep the old value and try again next read.
+                with self._lock:
+                    self._refreshing = False
+        return value
+
+    def _refresh(self):
+        try:
+            value = self._probe()
+            usable = self._stamp is None or self._complete(value)
+        except Exception:
+            value, usable = None, False
+        with self._lock:
+            if usable:
+                self._value = value
+            self._stamp = self._clock()
+            self._refreshing = False
+            return self._value
+
+
+def mac_disk_topology():
+    """What `diskutil` knows about the physical disks: the listing, the APFS
+    containers stored on them, and each disk's identity. Three slow commands whose
+    answers change when a drive is attached, not from one sample to the next.
+    `complete` is false when any of them went unanswered."""
+    unanswered = []
+
     def diskutil(*args):
         try:
-            data = subprocess.check_output(['diskutil', *args], stderr=subprocess.DEVNULL, timeout=2)
+            data = subprocess.check_output(['diskutil', *args], stderr=subprocess.DEVNULL, timeout=5)
             value = plistlib.loads(data)
             return value if isinstance(value, dict) else {}
         except (OSError, subprocess.SubprocessError, ValueError, plistlib.InvalidFileException):
+            unanswered.append(args)
             return {}
 
-    listing = diskutil('list', '-plist', 'physical').get('AllDisksAndPartitions', [])
+    topology = {'disks': diskutil('list', '-plist', 'physical').get('AllDisksAndPartitions', []),
+                'containers': [], 'identities': {}}
+    if topology['disks']:
+        topology['containers'] = diskutil('apfs', 'list', '-plist').get('Containers', [])
+        for disk in topology['disks']:
+            disk_id = disk.get('DeviceIdentifier', '')
+            if re.fullmatch(r'disk\d+', disk_id) and disk.get('Size', 0) > 0:
+                topology['identities'][disk_id] = diskutil('info', '-plist', disk_id)
+    topology['complete'] = not unanswered
+    return topology
+
+
+# Free space inside an APFS container is the only figure here that drifts, and
+# the volumes' own usage is read on every sample regardless. A busy Mac can leave
+# diskutil unanswered; the last full answer then stays in use.
+MAC_DISK_TOPOLOGY_INTERVAL = 30.0
+_mac_disk_topology = BackgroundProbe(lambda: mac_disk_topology(), MAC_DISK_TOPOLOGY_INTERVAL,
+                                     complete=lambda topology: topology['complete'])
+
+
+def mac_physical_disks(groups, disk_temperature_c=None, topology=None):
+    """Physical disks for the storage panel. `topology` is a `mac_disk_topology()`
+    result; without one it is read from diskutil on the spot."""
+    if topology is None:
+        topology = mac_disk_topology()
+    listing, containers, identities = topology['disks'], topology['containers'], topology['identities']
     if not listing:
         return []
-    containers = diskutil('apfs', 'list', '-plist').get('Containers', [])
     volumes = [v for group in groups for v in group['volumes']]
     result = []
     for disk in listing:
         disk_id, size = disk.get('DeviceIdentifier', ''), disk.get('Size', 0)
         if not re.fullmatch(r'disk\d+', disk_id) or size <= 0:
             continue
-        info = diskutil('info', '-plist', disk_id)
+        info = identities.get(disk_id, {})
         available = []
         shared = False
         for container in containers:
@@ -315,7 +406,7 @@ def get_unix_disks(sys_root='/sys', proc_root='/proc', disk_temperature_c=None):
         output = subprocess.check_output(['df', '-P', '-k', '-l'],
                                          stderr=subprocess.DEVNULL, timeout=3).decode('utf-8', 'replace')
     except (OSError, subprocess.SubprocessError):
-        metrics['physicalDisks'] = (mac_physical_disks([], disk_temperature_c) if is_mac
+        metrics['physicalDisks'] = (mac_physical_disks([], disk_temperature_c, _mac_disk_topology.read()) if is_mac
                                     else linux_physical_disks([], disk_temps, sys_root))
         return metrics
     for line in output.splitlines()[1:]:
@@ -380,7 +471,8 @@ def get_unix_disks(sys_root='/sys', proc_root='/proc', disk_temperature_c=None):
         except (ValueError, OSError):
             continue
     metrics['disks'] = list(disks.values())
-    metrics['physicalDisks'] = (mac_physical_disks(metrics['disks'], disk_temperature_c) if is_mac
+    metrics['physicalDisks'] = (mac_physical_disks(metrics['disks'], disk_temperature_c,
+                                                   _mac_disk_topology.read()) if is_mac
                                 else linux_physical_disks(metrics['disks'], disk_temps, sys_root))
     if not is_mac:
         metrics['totalGB'] = sum(v['totalGB'] for d in metrics['disks'] for v in d['volumes'])
@@ -1339,11 +1431,15 @@ def parse_macos_powermetrics(text):
 
 
 def read_macos_powermetrics():
-    """Reads Apple Silicon CPU/GPU/Combined power using powermetrics."""
+    """Reads Apple Silicon CPU/GPU/Combined power using powermetrics.
+
+    Slow to start (about 0.3 s, 1.5 s for a throttled Background job), so
+    PowerSampler reads it through a BackgroundProbe rather than on the sampling
+    path; the timeout only has to catch a hung helper."""
     try:
         out = subprocess.check_output(
             ['sudo', '-n', 'powermetrics', '-n', '1', '-i', '100', '--samplers', 'cpu_power'],
-            stderr=subprocess.DEVNULL, timeout=2
+            stderr=subprocess.DEVNULL, timeout=5
         ).decode('utf-8', 'replace')
         return parse_macos_powermetrics(out)
     except (subprocess.SubprocessError, OSError):
@@ -1861,6 +1957,8 @@ class PowerSampler:
         self.cpu_tdp = get_cpu_tdp(self.sys_root, db=self.db)
         self.gpu_tdp = get_gpu_tdp(self.sys_root, db=self.db)
         self.psu_ceiling = calculate_recommended_psu(self.cpu_tdp, self.gpu_tdp, sys_profile=self.sys_profile)
+        # Refreshed behind every sample, so a reading is one sample old at most.
+        self.mac_power = BackgroundProbe(lambda: read_macos_powermetrics(), interval=0)
 
     def prime(self):
         """Optionally capture an initial RAPL baseline for single-shot invocations."""
@@ -1878,7 +1976,7 @@ class PowerSampler:
         source = "none"
 
         if sys.platform == "darwin":
-            pm = read_macos_powermetrics()
+            pm = self.mac_power.read() or {}
             cpu_watts = pm.get('cpuWatts')
             gpu_watts = pm.get('gpuWatts')
             total_watts = pm.get('combinedWatts')

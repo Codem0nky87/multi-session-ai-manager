@@ -7,6 +7,7 @@ import plistlib
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from types import SimpleNamespace
 import unittest
@@ -1674,6 +1675,101 @@ Combined Power (CPU + GPU + ANE): 4340 mW
         # PSU calculation without OEM profile falls back to formula
         self.assertEqual(m.calculate_recommended_psu(140.0, 140.0, sys_profile=None), 550.0)
 
+
+
+class BackgroundProbeTests(unittest.TestCase):
+    """The Mac host service runs as a launchd Background job, which macOS throttles
+    hard: `sudo powermetrics` and `diskutil` took 2.8 s of every 2-second sample
+    there, so that host's gauges refreshed every 3.7 s instead of every 2."""
+
+    def wait_for(self, condition, timeout=5.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if condition():
+                return
+            time.sleep(0.01)
+        self.fail('condition not met in time')
+
+    def test_first_read_runs_the_probe_and_later_reads_never_wait_for_it(self):
+        now = [0.0]
+        started, release = threading.Event(), threading.Event()
+        calls = []
+
+        def probe():
+            calls.append(now[0])
+            if len(calls) == 1:
+                return 'first'
+            started.set()
+            release.wait(5)
+            return 'second'
+
+        value = m.BackgroundProbe(probe, interval=30, clock=lambda: now[0])
+        self.assertEqual(value.read(), 'first')
+        now[0] = 29.9
+        self.assertEqual(value.read(), 'first')
+        self.assertEqual(len(calls), 1, 'still fresh: the probe is left alone')
+        now[0] = 30.0
+        self.assertEqual(value.read(), 'first', 'due: refreshed behind the read, not by it')
+        self.assertTrue(started.wait(5))
+        self.assertEqual(value.read(), 'first')
+        self.assertEqual(len(calls), 2, 'one refresh at a time')
+        release.set()
+        self.wait_for(lambda: value.read() == 'second')
+        self.assertEqual(len(calls), 2)
+
+    def test_a_failed_or_partial_refresh_keeps_the_last_good_result(self):
+        now = [0.0]
+        answers = iter([{'complete': False, 'n': 1}, {'complete': True, 'n': 2},
+                        {'complete': False, 'n': 3}, RuntimeError('helper died'),
+                        {'complete': True, 'n': 5}])
+        finished = []
+
+        def probe():
+            try:
+                answer = next(answers)
+                if isinstance(answer, Exception):
+                    raise answer
+                return answer
+            finally:
+                finished.append(now[0])
+
+        value = m.BackgroundProbe(probe, interval=10, clock=lambda: now[0],
+                                  complete=lambda answer: answer['complete'])
+        self.assertEqual(value.read()['n'], 1, 'the first answer is used even when partial')
+        for moment, expected in ((10.0, 2), (20.0, 2), (30.0, 2), (40.0, 5)):
+            now[0] = moment
+            value.read()
+            self.wait_for(lambda: finished[-1] == moment)
+            self.wait_for(lambda: value.read()['n'] == expected)
+
+    def test_power_reading_never_holds_up_a_mac_sample(self):
+        started, release = threading.Event(), threading.Event()
+        calls = []
+
+        def powermetrics():
+            calls.append(1)
+            if len(calls) == 1:
+                return {'cpuWatts': 1.0, 'gpuWatts': 0.5, 'combinedWatts': 1.5}
+            started.set()
+            release.wait(5)
+            return {'cpuWatts': 2.0, 'gpuWatts': 1.0, 'combinedWatts': 3.0}
+
+        with tempfile.TemporaryDirectory() as root, \
+                patch.object(m.sys, 'platform', 'darwin'), \
+                patch.object(m, 'get_cpu_tdp', return_value=None), \
+                patch.object(m, 'get_gpu_tdp', return_value=None), \
+                patch.object(m, 'read_macos_powermetrics', side_effect=powermetrics):
+            sampler = m.PowerSampler(sys_root=root)
+            first = sampler.sample(now=0.0)
+            began = time.monotonic()
+            second = sampler.sample(now=2.0)
+            waited = time.monotonic() - began
+            self.assertTrue(started.wait(5), 'the helper runs behind the second sample')
+            release.set()
+            self.wait_for(lambda: sampler.sample(now=4.0)['totalWatts'] == 3.0)
+        self.assertEqual((first['totalWatts'], first['source']), (1.5, 'powermetrics'))
+        self.assertEqual(second['totalWatts'], 1.5, 'the last reading stands in meanwhile')
+        self.assertLess(waited, 1.0)
 
 
 if __name__ == '__main__':

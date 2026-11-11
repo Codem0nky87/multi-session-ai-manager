@@ -500,6 +500,18 @@ macOS `top -l 1` CPU calculation is unchanged and already represents total CPU
 capacity. The collector also reports the logical-core count for normalizing
 process CPU and load average.
 
+The macOS service is a launchd `Background` job, so macOS keeps it on the
+efficiency cores and throttles its I/O: every helper it starts costs several
+times what it does in a login shell. Its two slow probes therefore stay off
+the sampling path (`BackgroundProbe` in `msam-metrics.py`): the power reading
+(`sudo powermetrics`) is refreshed behind each sample and is at most one
+sample old, and the physical-disk inventory (`diskutil`) is refreshed every
+30 seconds. Run inline they took 2.8 of every 3.7 seconds and that host's
+gauges refreshed at half the rate of the others. To time a sample the way the
+service experiences it, run the collector under `taskpolicy -b`; a login shell
+is four to five times faster and hides the problem. A heavily loaded Mac still
+slows the service down, which is what `Background` asks for.
+
 `HostMetricsModelTests` checks decoding and model updates for both extended
 Linux payloads and older/macOS payloads. New model fields are optional so an
 older collector still decodes.
