@@ -1,6 +1,7 @@
 import CoreGraphics
 import Foundation
 import Testing
+import UIKit
 @testable import MultiSessionAIManager
 
 /// The app runs on iPhone as well as iPad. These pin things that had only ever
@@ -73,7 +74,7 @@ import Testing
         #expect(offenders.isEmpty, "\(offenders)")
     }
 
-    /// Sixteen keys on one row of a phone are ~20pt wide each: too small to hit, and
+    /// On one row of a phone the keys were ~20pt wide each: too small to hit, and
     /// their labels broke in two ("ct" over "rl"). They wrap onto two rows instead.
     @Test func quickKeysWrapOntoTwoRowsWhenOneRowCannotFitThem() {
         // iPhone upright (SE, mini, standard, Pro Max).
@@ -86,10 +87,10 @@ import Testing
         }
 
         let wrapped = TerminalQuickKeyBar.keyRows(2)
-        #expect(wrapped.map(\.count) == [8, 8])
+        #expect(wrapped.map(\.count) == [7, 7])
         // Wrapping never reorders or drops a key.
         #expect(wrapped.flatMap { $0 }.map(\.identifier) == TerminalQuickKeyBar.orderedKeyIdentifiers)
-        #expect(TerminalQuickKeyBar.keyRows(1).map(\.count) == [16])
+        #expect(TerminalQuickKeyBar.keyRows(1).map(\.count) == [14])
 
         // On the narrowest phone each wrapped key is still wider than the minimum.
         let perRow = CGFloat(wrapped[0].count)
@@ -99,6 +100,52 @@ import Testing
 
         #expect(TerminalQuickKeyBar.height(rows: 1) == HerdrChromeMetrics.minimumHitTarget)
         #expect(TerminalQuickKeyBar.height(rows: 2) == 84)
+    }
+
+    /// The bar has no key of its own for a single chord (it had `^c` and `^/`): sticky
+    /// `ctrl` and then the key sends any of them. `fn` sits next to the keyboard key.
+    @Test func quickKeysEndWithFnAndTheKeyboardKeyAndCarryNoSingleChordKeys() {
+        let keys = TerminalQuickKeyBar.orderedKeyIdentifiers
+        #expect(keys == [
+            "msam.quickkey.esc", "msam.quickkey.voice", "msam.quickkey.tab",
+            "msam.quickkey.ctrl", "msam.quickkey.alt", "msam.quickkey.shift",
+            "msam.quickkey.left", "msam.quickkey.up", "msam.quickkey.down", "msam.quickkey.right",
+            "msam.quickkey.pageup", "msam.quickkey.pagedown",
+            "msam.function-keys", "msam.quickkey.keyboard",
+        ])
+        #expect(keys[keys.count - 2] == "msam.function-keys", "fn is second from the right")
+    }
+
+    /// Sticky `ctrl` is the only way to send Ctrl-C and Ctrl-/ from the bar, so it has
+    /// to produce them from either keyboard — and Ctrl-/ used to come out as a plain "/".
+    @MainActor
+    @Test func stickyCtrlThenAKeySendsTheChordsTheBarUsedToHaveKeysFor() {
+        let controller = KeyInputController()
+        let inputView = TerminalKeyInputView(frame: .zero)
+        var sent: [[UInt8]] = []
+        inputView.onInput = { sent.append($0) }
+        controller.view = inputView
+
+        // On-screen keyboard.
+        for (typed, expected) in [("c", UInt8(0x03)), ("/", 0x1F), ("C", 0x03), ("d", 0x04)] {
+            controller.toggleCtrl()
+            inputView.insertText(typed)
+            #expect(sent.last == [expected], "ctrl then \(typed)")
+            #expect(controller.isCtrlArmed == false, "one key only")
+        }
+        inputView.insertText("/")
+        #expect(sent.last == [UInt8(ascii: "/")], "unarmed, the key is itself again")
+
+        // Hardware keyboard.
+        controller.toggleCtrl()
+        #expect(inputView.handleHardwareKey(keyCode: .keyboardSlash, characters: "/", modifierFlags: []))
+        #expect(sent.last == [0x1F])
+        controller.toggleCtrl()
+        #expect(inputView.handleHardwareKey(keyCode: .keyboardC, characters: "c", modifierFlags: []))
+        #expect(sent.last == [0x03])
+        // A held Control key needs no latch.
+        #expect(inputView.handleHardwareKey(keyCode: .keyboardSlash, characters: "/", modifierFlags: [.control]))
+        #expect(sent.last == [0x1F])
     }
 
     /// On a phone the terminal must not be shrunk for the keyboard twice: SwiftUI's own

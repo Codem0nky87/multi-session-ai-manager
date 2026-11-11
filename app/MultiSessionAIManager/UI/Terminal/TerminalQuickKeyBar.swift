@@ -42,16 +42,18 @@ struct TerminalQuickKeyBar: View {
 
     /// One key of the bar, in canonical left-to-right order. `voice` sits 2nd from the
     /// left (after `esc`) so it avoids both the iPadOS bottom-left corner gesture zone
-    /// and the centered Home Indicator bar.
+    /// and the centered Home Indicator bar; `fn` sits 2nd from the right, next to the
+    /// keyboard key.
+    ///
+    /// There is no key for a single chord such as Ctrl-C or Ctrl-/: sticky `ctrl`
+    /// followed by the key, on either keyboard, sends any of them.
     enum Key: String, CaseIterable {
         case esc, voice, tab, ctrl, alt
-        case ctrlSlash = "ctrl-slash"
-        case ctrlC = "ctrl-c"
         case shift
-        case functionKeys = "function-keys"
         case left, up, down, right
         case pageUp = "pageup"
         case pageDown = "pagedown"
+        case functionKeys = "function-keys"
         case keyboard
 
         var identifier: String {
@@ -77,10 +79,10 @@ struct TerminalQuickKeyBar: View {
         return count * minimumKeyWidth + (count - 1) * keySpacing + 2 * horizontalPadding
     }
 
-    /// Rows the keys need in `width` points. A phone held upright cannot give sixteen
-    /// keys a usable width on one row (they shrank to ~20pt and their labels broke in
-    /// two), so there they wrap onto two rows of eight. An iPad, or a phone on its
-    /// side, keeps the single row and the terminal keeps the height.
+    /// Rows the keys need in `width` points. A phone held upright cannot give every
+    /// key a usable width on one row (they shrank to ~20pt and their labels broke in
+    /// two), so there they wrap onto two equal rows. An iPad, or a phone on its side,
+    /// keeps the single row and the terminal keeps the height.
     nonisolated static func rowCount(forWidth width: CGFloat) -> Int {
         width >= singleRowMinimumWidth ? 1 : 2
     }
@@ -176,32 +178,11 @@ struct TerminalQuickKeyBar: View {
             textKey("alt", id: "alt", active: controller.isAltArmed) {
                 controller.toggleAlt()
             }
-        case .ctrlSlash:
-            textKey("^/", id: "ctrl-slash") {
-                send(EscapeSequences.ctrlSlash)
-            }
-        case .ctrlC:
-            textKey("^c", id: "ctrl-c") {
-                send(EscapeSequences.ctrlC)
-            }
         case .shift:
             symbolKey("shift", id: "shift", active: isShiftArmed) {
                 isShiftArmed.toggle()
             }
             .accessibilityLabel("shift")
-        case .functionKeys:
-            textKey("fn", id: "msam.function-keys", active: showingFunctionKeys, disabled: !isLive) {
-                showingFunctionKeys.toggle()
-            }
-            .popover(isPresented: $showingFunctionKeys) {
-                FunctionKeyPalette { number in
-                    if let bytes = TerminalFunctionKey.bytes(for: number) {
-                        send(bytes)
-                    }
-                    showingFunctionKeys = false
-                }
-                .presentationCompactAdaptation(.popover)
-            }
         case .left:
             symbolKey("arrow.left", id: "left") {
                 if controller.isAltArmed {
@@ -246,6 +227,19 @@ struct TerminalQuickKeyBar: View {
             symbolKey("chevron.compact.up", id: "pageup") { page(up: true) }
         case .pageDown:
             symbolKey("chevron.compact.down", id: "pagedown") { page(up: false) }
+        case .functionKeys:
+            textKey("fn", id: "msam.function-keys", active: showingFunctionKeys, disabled: !isLive) {
+                showingFunctionKeys.toggle()
+            }
+            .popover(isPresented: $showingFunctionKeys) {
+                FunctionKeyPalette { number in
+                    if let bytes = TerminalFunctionKey.bytes(for: number) {
+                        send(bytes)
+                    }
+                    showingFunctionKeys = false
+                }
+                .presentationCompactAdaptation(.popover)
+            }
         case .keyboard:
             symbolKey(keyboard.isVisible ? "keyboard.chevron.compact.down" : "keyboard",
                       id: "keyboard",

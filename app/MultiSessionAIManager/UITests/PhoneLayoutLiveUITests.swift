@@ -196,14 +196,13 @@ final class PhoneLayoutLiveUITests: XCTestCase {
         openHostTab(fixture)
         RunLoop.current.run(until: Date().addingTimeInterval(5))
         // Leave nothing half-typed at the host's prompt from an earlier pass.
-        let interrupt = app.buttons["msam.quickkey.ctrl-c"]
-        if interrupt.waitForExistence(timeout: 5) { interrupt.tap() }
+        interrupt()
         var report: [String] = []
         let bar = app.descendants(matching: .any).matching(identifier: "msam.quickkeys").firstMatch
         let screen = app.windows.firstMatch.frame
         report.append("window \(screen)")
         report.append("keyboard down: bar \(bar.frame)")
-        for id in ["esc", "voice", "tab", "ctrl", "alt", "ctrl-c", "shift", "left", "up", "pagedown", "keyboard"] {
+        for id in ["esc", "voice", "tab", "ctrl", "alt", "shift", "left", "up", "pagedown", "keyboard"] {
             let key = app.buttons["msam.quickkey.\(id)"]
             report.append("  key \(id): exists=\(key.exists) frame=\(key.exists ? "\(key.frame)" : "-") hittable=\(key.exists && key.isHittable)")
         }
@@ -385,8 +384,7 @@ final class PhoneLayoutLiveUITests: XCTestCase {
         }
         XCUIDevice.shared.orientation = .portrait
         RunLoop.current.run(until: Date().addingTimeInterval(3))
-        let interrupt = app.buttons["msam.quickkey.ctrl-c"]
-        if interrupt.exists { interrupt.tap() }
+        interrupt()
         RunLoop.current.run(until: Date().addingTimeInterval(1))
         shot(fixture, "72-back-to-portrait")
         report.append("portrait again: bar \(bar.frame)")
@@ -484,6 +482,25 @@ final class PhoneLayoutLiveUITests: XCTestCase {
     private func waitFor(_ element: XCUIElement, _ format: String, timeout: TimeInterval) -> Bool {
         let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: format), object: element)
         return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
+    }
+
+    /// Ctrl-C at the host's prompt, through sticky `ctrl` and the keyboard: the bar
+    /// has no key of its own for it. Leaves the keyboard as it found it.
+    private func interrupt() {
+        let ctrl = app.buttons["msam.quickkey.ctrl"]
+        let keyboardKey = app.buttons["msam.quickkey.keyboard"]
+        guard ctrl.waitForExistence(timeout: 5), keyboardKey.exists else { return }
+        let keyboardWasUp = app.keyboards.firstMatch.exists
+        if !keyboardWasUp {
+            keyboardKey.tap()
+            _ = app.keyboards.firstMatch.waitForExistence(timeout: 5)
+        }
+        ctrl.tap()
+        app.typeText("c")
+        if !keyboardWasUp, app.keyboards.firstMatch.exists {
+            keyboardKey.tap()
+            _ = app.keyboards.firstMatch.waitForNonExistence(timeout: 5)
+        }
     }
 
     private func hideKeyboardIfNeeded() {

@@ -18,18 +18,22 @@ import Foundation
 typealias UTF8Char = UInt8
 
 extension UTF8Char {
-    /// Translate an ASCII byte to its Ctrl-modified control code (Ctrl-A == 0x01, etc).
+    /// Translate an ASCII byte to its Ctrl-modified control code, as xterm does.
+    /// Letters of either case give Ctrl-A == 0x01 … Ctrl-Z == 0x1A. The punctuation
+    /// in the same columns follows (Ctrl-[ is ESC, then Ctrl-\, Ctrl-], Ctrl-^ and
+    /// Ctrl-_), Ctrl-@ and Ctrl-Space are NUL, Ctrl-/ is Ctrl-_ (undo in readline
+    /// and the agent TUIs) and Ctrl-? is DEL. A byte with no control form is
+    /// passed through unchanged.
     var controlCharacter: UTF8Char {
-        var newCharacter = self
-        // Translate capital to lowercase
-        if self >= 0x41 && self <= 0x5A { // >= 'A' <= 'Z'
-            newCharacter += 0x61 - 0x41 // 'a' - 'A'
+        switch self {
+        case 0x41...0x5A: self - 0x40   // 'A'...'Z'
+        case 0x61...0x7A: self - 0x60   // 'a'...'z'
+        case 0x5B...0x5F: self - 0x40   // '[' '\' ']' '^' '_'
+        case 0x40, 0x20: 0x00           // '@', space
+        case 0x2F: 0x1F                 // '/'
+        case 0x3F: 0x7F                 // '?'
+        default: self
         }
-        // Convert to the matching control character
-        if self >= 0x61 && self <= 0x7A { // >= 'a' <= 'z'
-            newCharacter -= 0x61 - 1 // 'a' - 1
-        }
-        return newCharacter
     }
 }
 
@@ -45,8 +49,6 @@ enum EscapeSequences {
     static let meta      = "\u{1b}".utf8Array
     static let tab       = "\t".utf8Array
     static let `return`  = "\r".utf8Array
-    static let ctrlC     = [UInt8(0x03)]
-    static let ctrlSlash = [UInt8(0x1F)]
 
     static let up        = "\u{1b}[A".utf8Array
     static let upApp     = "\u{1b}OA".utf8Array
