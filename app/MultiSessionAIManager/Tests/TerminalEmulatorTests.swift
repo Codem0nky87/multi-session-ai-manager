@@ -259,6 +259,74 @@ final class TestTerminalFrameClock: TerminalFrameClock {
         #expect(clock.stopCount == 2)
     }
 
+    /// Herdr gives a session's one layout to the client that last attached, resized,
+    /// typed or regained focus. Without focus reports a host open on two devices
+    /// stayed laid out for the other one's grid: the text size in Settings was
+    /// right and the screen was not.
+    @Test func focusIsReportedWhenTheTerminalLeavesAndReturnsToViewOnceTheRemoteAsksForIt() async {
+        let clock = TestTerminalFrameClock()
+        let e = TerminalEmulator(cols: 20, rows: 5, frameClock: clock)
+        let pty = FakePTYChannel(command: "herdr", cols: 20, rows: 5, onOutput: { _ in }, onClose: {})
+        e.pty = pty
+        let owner = TerminalVisibilityOwner()
+
+        // A remote that has not asked (a plain shell) is sent nothing.
+        e.setVisibility(false, for: owner)
+        e.setVisibility(true, for: owner)
+        #expect(pty.sent.isEmpty)
+
+        // Herdr switches focus reports on when it attaches.
+        e.feed(Data("\u{1b}[?1004h".utf8))
+        await Task.yield()
+        clock.fire()
+
+        e.setVisibility(false, for: owner)   // tab left, or the app in the background
+        #expect(pty.sent == Data("\u{1b}[O".utf8))
+        e.setVisibility(true, for: owner)    // back in view: take the layout
+        #expect(pty.sent == Data("\u{1b}[O\u{1b}[I".utf8))
+    }
+
+    /// A tap on Herdr's sidebar opens a space or a pane without claiming the
+    /// layout, so the tap claims it: focus lost then regained, which is the
+    /// transition Herdr acts on.
+    @Test func aTapTakesTheLayoutBackAtMostOncePerInterval() async {
+        let clock = TestTerminalFrameClock()
+        let e = TerminalEmulator(cols: 20, rows: 5, frameClock: clock)
+        let pty = FakePTYChannel(command: "herdr", cols: 20, rows: 5, onOutput: { _ in }, onClose: {})
+        e.pty = pty
+        var now = ContinuousClock.now
+        e.focusClock = { now }
+        e.feed(Data("\u{1b}[?1004h".utf8))
+        await Task.yield()
+        clock.fire()
+        let claim = Data("\u{1b}[O\u{1b}[I".utf8)
+
+        e.reassertFocus()
+        #expect(pty.sent == claim)
+        e.reassertFocus()
+        #expect(pty.sent == claim, "taps come in bursts; one claim covers them")
+
+        now = now.advanced(by: TerminalEmulator.focusClaimInterval)
+        e.reassertFocus()
+        #expect(pty.sent == claim + claim)
+
+        // Coming back into view is itself a claim, so a tap right after adds nothing.
+        let owner = TerminalVisibilityOwner()
+        now = now.advanced(by: .seconds(10))
+        e.setVisibility(false, for: owner)
+        e.setVisibility(true, for: owner)
+        let afterReturning = pty.sent
+        e.reassertFocus()
+        #expect(pty.sent == afterReturning)
+
+        // A terminal that is not on screen claims nothing.
+        now = now.advanced(by: .seconds(10))
+        e.setVisibility(false, for: owner)
+        let whileHidden = pty.sent
+        e.reassertFocus()
+        #expect(pty.sent == whileHidden)
+    }
+
     /// An off-screen emulator drains inbound bytes into the real terminal core,
     /// but never starts a frame or publishes SwiftUI rows.
     @Test func offscreenInputDrainsWithoutStartingAFrameOrPublishingRows() async {

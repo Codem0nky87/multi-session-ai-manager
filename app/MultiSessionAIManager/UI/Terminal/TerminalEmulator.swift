@@ -174,8 +174,46 @@ final class TerminalEmulator {
             frameClock.stop()
             drainIntoCore()
         }
+        reportFocus(isVisible)
         return true
     }
+
+    // MARK: - Focus reports
+
+    /// Tell the remote whether this terminal is the one being looked at, as any
+    /// terminal does when its window gains or loses focus (xterm mode 1004; the
+    /// core sends nothing unless the remote asked for these reports).
+    ///
+    /// Herdr keeps ONE layout for a session and gives it to the client that last
+    /// attached, changed size, typed, clicked inside a pane, or regained focus. So
+    /// when another client has been used (the same host open on an iPhone and an
+    /// iPad), this device keeps showing panes laid out for the other one's grid:
+    /// the text size in Settings is right and the screen is not. Reporting focus
+    /// when the terminal comes back into view is what hands the layout back.
+    private func reportFocus(_ focused: Bool) {
+        terminal.setTerminalFocus(focused)
+        if focused { lastFocusClaim = focusClock() }
+    }
+
+    /// Take the remote's layout back for this terminal without waiting for a
+    /// visibility change. Herdr acts on focus being regained, not on a repeated
+    /// "focused", hence the pair; when this client already has the layout the
+    /// remote redraws a few bytes and resizes nothing.
+    ///
+    /// Called on a tap: a tap inside a pane claims the layout by itself, but one
+    /// on Herdr's own sidebar, which is how a space or a pane is opened, does not.
+    func reassertFocus() {
+        guard isVisible, !stopped else { return }
+        let now = focusClock()
+        if let lastFocusClaim, now - lastFocusClaim < Self.focusClaimInterval { return }
+        terminal.setTerminalFocus(false)
+        reportFocus(true)
+    }
+
+    /// Taps come in bursts; one claim covers them.
+    static let focusClaimInterval: Duration = .seconds(1)
+    @ObservationIgnored private var lastFocusClaim: ContinuousClock.Instant?
+    @ObservationIgnored var focusClock: () -> ContinuousClock.Instant = { ContinuousClock.now }
 
     /// The core terminal's current cursor column — advances as content is fed.
     /// Exposed so tests can prove the buffer stays current while off-screen.

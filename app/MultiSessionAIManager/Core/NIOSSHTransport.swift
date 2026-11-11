@@ -560,7 +560,10 @@ final class NIOSSHTransport: SSHTransport, @unchecked Sendable {
             writer: writer,
             writerBox: writerBox,
             closeCoordinator: closeCoordinator,
-            pump: pump
+            pump: pump,
+            opened: ptyRequest.map {
+                TerminalGridSize(cols: $0.terminalCharacterWidth, rows: $0.terminalRowHeight)
+            }
         )
     }
 
@@ -821,13 +824,15 @@ final class PTYCloseCoordinator: @unchecked Sendable {
 
 /// `PTYChannel` over a Citadel interactive shell. `send`/`resize`/`close` are
 /// synchronous (the seam is sync) and dispatch the underlying async nio writes
-/// onto detached Tasks; ordering of `send`s is preserved by a serial queue Task.
+/// onto detached Tasks; ordering of `send`s is preserved by a serial queue Task,
+/// and of `resize`s by `PTYResizeSender`.
 private final class NIOPTYChannel: PTYChannel, @unchecked Sendable {
     private let writer: TTYStdinWriter
     private let writerBox: WriterBox
     private let closeCoordinator: PTYCloseCoordinator
     private let pump: Task<Void, Never>
     private let continuation: AsyncStream<Data>.Continuation
+    private let resizeSender: PTYResizeSender
 
     var isOpen: Bool { writerBox.isOpen }
 
@@ -835,12 +840,16 @@ private final class NIOPTYChannel: PTYChannel, @unchecked Sendable {
         writer: TTYStdinWriter,
         writerBox: WriterBox,
         closeCoordinator: PTYCloseCoordinator,
-        pump: Task<Void, Never>
+        pump: Task<Void, Never>,
+        opened: TerminalGridSize?
     ) {
         self.writer = writer
         self.writerBox = writerBox
         self.closeCoordinator = closeCoordinator
         self.pump = pump
+        self.resizeSender = PTYResizeSender(opened: opened) { size in
+            try await writer.changeSize(cols: size.cols, rows: size.rows, pixelWidth: 0, pixelHeight: 0)
+        }
         
         var cont: AsyncStream<Data>.Continuation!
         let stream = AsyncStream<Data> { continuation in
@@ -880,10 +889,7 @@ private final class NIOPTYChannel: PTYChannel, @unchecked Sendable {
     }
 
     func resize(cols: Int, rows: Int) {
-        let writer = self.writer
-        Task {
-            try? await writer.changeSize(cols: cols, rows: rows, pixelWidth: 0, pixelHeight: 0)
-        }
+        resizeSender.request(cols: cols, rows: rows)
     }
 
     func close() {

@@ -46,10 +46,11 @@ final class InteractiveCommandSession {
         status = .running
         let terminal = self.terminal
         do {
+            let opened = TerminalGridSize(cols: max(terminal.cols, 1), rows: max(terminal.rows, 1))
             let channel = try await service.openPTY(
                 command: remoteCommand,
-                cols: max(terminal.cols, 1),
-                rows: max(terminal.rows, 1),
+                cols: opened.cols,
+                rows: opened.rows,
                 onOutput: { data in
                     // `feed` is lock-backed and nonisolated, so PTY chunks can
                     // coalesce before the terminal requests one main-actor frame.
@@ -58,6 +59,10 @@ final class InteractiveCommandSession {
             )
             self.channel = channel
             terminal.pty = channel
+            // The sheet lays out while the PTY opens; see HerdrHostSession.
+            if TerminalGridSize(cols: terminal.cols, rows: terminal.rows) != opened {
+                channel.resize(cols: terminal.cols, rows: terminal.rows)
+            }
         } catch {
             status = .failed("\(error)")
         }

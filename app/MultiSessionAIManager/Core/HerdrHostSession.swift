@@ -200,10 +200,11 @@ final class HerdrHostSession {
             let sentinelBytes = Data(HerdrLaunchCommand.missingSentinel.utf8)
             let lastOutputAt = self.lastOutputAt
             lastOutputAt.withLockedValue { $0 = .now }
+            let opened = TerminalGridSize(cols: terminal.cols, rows: terminal.rows)
             let channel = try await connection.openHerdrPTY(
                 sessionName: sessionName,
-                cols: terminal.cols,
-                rows: terminal.rows,
+                cols: opened.cols,
+                rows: opened.rows,
                 onOutput: { [weak self] data in
                     lastOutputAt.withLockedValue { $0 = .now }
                     terminal.feed(data)
@@ -249,6 +250,12 @@ final class HerdrHostSession {
             }
             self.channel = channel
             terminal.pty = channel
+            // The view can re-derive the grid while the PTY is still opening (its
+            // first layout passes, a rotation). The terminal had no PTY to tell
+            // then, so the remote would keep the size it was opened with.
+            if TerminalGridSize(cols: terminal.cols, rows: terminal.rows) != opened {
+                channel.resize(cols: terminal.cols, rows: terminal.rows)
+            }
             // The sentinel may have already landed (synchronously, or via a main-actor
             // hop that beat us here) while this call was suspended above; honor it
             // instead of clobbering it with an unconditional .live.

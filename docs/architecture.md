@@ -298,3 +298,31 @@ The gesture rules that hold this together are load-bearing and easy to break:
 - Auto-scroll is gated on a bottom anchor, not on output arriving.
 - Pane-divider drags need a UIKit `UIPanGestureRecognizer`; a SwiftUI
   `DragGesture` over a `UIScrollView` does not fire reliably.
+
+### The grid the host draws for
+
+The text size only changes the app's cell metrics; what the host draws for is the
+grid (columns × rows) the app sends it. Two things have to hold for the size in
+Settings to be the size on screen, and both were once broken.
+
+**The PTY has the grid the app computed.** `TerminalEmulator.resize` only tells
+the PTY about a grid that differs from its own, so a size that is lost or
+overtaken is never repeated. `PTYResizeSender` therefore delivers sizes one at a
+time, in order, ending on the newest (each used to leave in its own task, and of
+two computed milliseconds apart the older could land last), and a session
+re-sends the grid if it changed while its PTY was still opening.
+
+**Herdr is laying the session out for this client.** Herdr keeps one layout for
+a whole session, every space and tab, and gives it to the client that last
+attached, changed size, typed, clicked inside a pane, or regained focus. With a
+host open on two devices the other one's use leaves this one showing panes laid
+out for a different grid, and re-sending an unchanged size does nothing. The app
+reports focus the way any terminal does (xterm mode 1004, which Herdr switches
+on): lost when a terminal leaves view, gained when its tab is shown or the app
+returns to the foreground. A tap also reports lost-then-gained, at most once a
+second, because a tap on Herdr's own sidebar, which is how a space or a pane is
+opened, does not claim the layout by itself. Herdr acts on focus being
+*regained*; when this client already has the layout it resizes nothing.
+
+To see the layout a session currently has, ask for a pane's area on the host:
+`herdr pane layout --pane <id>` (120×40 means no client is attached).

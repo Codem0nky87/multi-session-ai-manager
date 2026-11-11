@@ -511,6 +511,9 @@ struct TerminalEmulatorView: View {
         // A click is a press then release at the same terminal cell.
         routeInput(TerminalMouse.sgr(.press, col: c.col, row: c.row)
                    + TerminalMouse.sgr(.release, col: c.col, row: c.row))
+        // After the click, so a space or pane it opened is laid out for this
+        // device's grid and not for the last client that was used.
+        emulator.reassertFocus()
     }
 
     /// Forward a right-click so the remote can raise its own context menu.

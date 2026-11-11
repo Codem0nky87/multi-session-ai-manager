@@ -91,6 +91,41 @@ import Testing
         #expect(transport.openedPTYs.last?.command.contains("exec herdr") == true)
     }
 
+    /// The view goes on laying out while the channel opens. The terminal had no
+    /// PTY to tell at that moment, so the host kept the size it was opened with
+    /// and drew for a grid the app was no longer showing.
+    @Test func aGridThatChangesWhileThePTYIsOpeningStillReachesThePTY() async throws {
+        let transport = FakeSSHTransport()
+        let session = try makeSession(transport: transport)
+        let herdr = HerdrLaunchCommand.launch(sessionName: nil)
+        session.resize(cols: 100, rows: 30)
+        transport.beforeOpenPTY = { command in
+            guard command == herdr else { return }
+            await MainActor.run { session.resize(cols: 132, rows: 43) }
+        }
+
+        await session.start()
+
+        let pty = try #require(transport.openedPTYs.first { $0.command == herdr })
+        #expect(pty.openCols == 100 && pty.openRows == 30, "opened with the grid known at the time")
+        #expect(pty.lastResize?.cols == 132)
+        #expect(pty.lastResize?.rows == 43)
+    }
+
+    @Test func aGridThatDidNotChangeWhileOpeningIsNotSentTwice() async throws {
+        let transport = FakeSSHTransport()
+        let session = try makeSession(transport: transport)
+        session.resize(cols: 100, rows: 30)
+
+        await session.start()
+
+        let pty = try #require(transport.openedPTYs.first {
+            $0.command == HerdrLaunchCommand.launch(sessionName: nil)
+        })
+        #expect(pty.openCols == 100 && pty.openRows == 30)
+        #expect(pty.lastResize == nil)
+    }
+
     @Test func namedSessionReachesTheRemoteCommand() async throws {
         let transport = FakeSSHTransport()
         let session = try makeSession(transport: transport, sessionName: "build")
