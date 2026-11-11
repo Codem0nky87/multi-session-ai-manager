@@ -512,6 +512,11 @@ service experiences it, run the collector under `taskpolicy -b`; a login shell
 is four to five times faster and hides the problem. A heavily loaded Mac still
 slows the service down, which is what `Background` asks for.
 
+Install, Start, Stop, Restart and Remove take the updater's lock. The running
+service holds that lock for a few milliseconds every two seconds to look at
+its queue, so the installer waits up to ten seconds for it before reporting
+that an agent update is in progress.
+
 `HostMetricsModelTests` checks decoding and model updates for both extended
 Linux payloads and older/macOS payloads. New model fields are optional so an
 older collector still decodes.

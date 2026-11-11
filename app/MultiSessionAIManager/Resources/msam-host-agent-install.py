@@ -51,23 +51,50 @@ def maintenance():
             import fcntl
             fcntl.flock(operation, fcntl.LOCK_EX | fcntl.LOCK_NB)
             lock = updater / 'lock'
-            if lock.exists():
-                try:
-                    pid = int((lock / 'pid').read_text())
-                    os.kill(pid, 0)
-                except ProcessLookupError:
-                    (lock / 'pid').unlink(); lock.rmdir()
-                except (OSError, ValueError):
-                    raise RuntimeError('The updater lock needs attention; check AI Agent Updates before changing the service.')
-                else:
-                    raise RuntimeError('An agent update is in progress. Try again when it settles.')
-            lock.mkdir()
+            take_updater_lock(lock)
             (lock / 'pid').write_text(str(os.getpid()))
             try:
                 yield
             finally:
                 (lock / 'pid').unlink(missing_ok=True)
                 lock.rmdir()
+
+
+UPDATER_LOCK_PATIENCE = 10.0
+
+
+def take_updater_lock(lock, patience=None, clock=time.monotonic, sleep=time.sleep):
+    """Create the updater's lock directory, waiting out a holder that is only passing.
+
+    The running service looks at its update queue every two seconds and holds
+    this lock for a few milliseconds each time, and the app holds it just as
+    briefly to queue a request. Finding it held therefore says nothing about an
+    update being under way; only a holder that outlasts `patience` is one.
+    """
+    deadline = clock() + (UPDATER_LOCK_PATIENCE if patience is None else patience)
+    attention = 'The updater lock needs attention; check AI Agent Updates before changing the service.'
+    while True:
+        try:
+            lock.mkdir()
+            return
+        except FileExistsError:
+            pass
+        try:
+            os.kill(int((lock / 'pid').read_text()), 0)
+        except ProcessLookupError:
+            # Its owner died without releasing it; clear it and take it next time round.
+            (lock / 'pid').unlink(missing_ok=True)
+            with contextlib.suppress(OSError):
+                lock.rmdir()
+            problem = attention
+        except (OSError, ValueError):
+            # No readable owner: taken or released this instant, or left broken.
+            problem = attention
+        else:
+            problem = 'An agent update is in progress. Try again when it settles.'
+        if clock() >= deadline:
+            raise RuntimeError(problem)
+        sleep(0.05)
 
 
 def run(args, check=True, timeout=30, **kwargs):

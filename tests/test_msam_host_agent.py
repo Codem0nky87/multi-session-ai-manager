@@ -107,6 +107,67 @@ class HostAgentTests(unittest.TestCase):
                     self.fail('Concurrent management was allowed')
         self.assertFalse(lock.exists())
 
+    def held_updater_lock(self, pid=None):
+        lock = self.home / '.local/state/msam-agent-updater/lock'
+        lock.mkdir(parents=True)
+        if pid is not None:
+            (lock / 'pid').write_text(str(pid))
+        return lock
+
+    def test_service_change_waits_out_the_workers_passing_lock(self):
+        """The running service takes the updater lock for a few milliseconds every
+        two seconds to look at its queue. Meeting it there used to fail Install,
+        Restart, Stop and Remove with "An agent update is in progress"."""
+        lock = self.held_updater_lock(pid=os.getpid())
+        waits = []
+
+        def worker_finishes_on_the_third_look(seconds):
+            waits.append(seconds)
+            if len(waits) == 3:
+                (lock / 'pid').unlink()
+                lock.rmdir()
+
+        self.installer.take_updater_lock(lock, patience=10, sleep=worker_finishes_on_the_third_look)
+        self.assertEqual(len(waits), 3)
+        self.assertTrue(lock.is_dir(), 'the installer now holds the lock')
+        self.assertFalse((lock / 'pid').exists())
+
+    def test_service_change_through_maintenance_survives_a_passing_lock(self):
+        lock = self.held_updater_lock(pid=os.getpid())
+
+        def release():
+            (lock / 'pid').unlink()
+            lock.rmdir()
+
+        timer = threading.Timer(0.2, release)
+        timer.start()
+        self.addCleanup(timer.cancel)
+        with self.installer.maintenance():
+            self.assertEqual((lock / 'pid').read_text(), str(os.getpid()))
+        self.assertFalse(lock.exists())
+
+    def test_an_update_that_keeps_the_lock_still_refuses_the_service_change(self):
+        lock = self.held_updater_lock(pid=os.getpid())
+        ticks = iter(range(100))
+        with self.assertRaisesRegex(RuntimeError, 'An agent update is in progress'):
+            self.installer.take_updater_lock(lock, patience=5, clock=lambda: next(ticks), sleep=lambda _: None)
+        self.assertEqual((lock / 'pid').read_text(), str(os.getpid()), 'the holder keeps its lock')
+
+    def test_lock_left_by_a_dead_worker_is_cleared(self):
+        finished = subprocess.Popen([sys.executable, '-c', 'pass'])
+        finished.wait()
+        lock = self.held_updater_lock(pid=finished.pid)
+        self.installer.take_updater_lock(lock, patience=5, sleep=lambda _: None)
+        self.assertTrue(lock.is_dir())
+        self.assertFalse((lock / 'pid').exists())
+
+    def test_lock_without_an_owner_is_reported_once_it_outlasts_the_wait(self):
+        lock = self.held_updater_lock()
+        ticks = iter(range(100))
+        with self.assertRaisesRegex(RuntimeError, 'updater lock needs attention'):
+            self.installer.take_updater_lock(lock, patience=5, clock=lambda: next(ticks), sleep=lambda _: None)
+        self.assertTrue(lock.is_dir())
+
     def test_failed_first_install_leaves_no_enabled_service_or_launcher(self):
         stage = self.stage()
         result = subprocess.CompletedProcess([], 0, 'yes\n', '')
