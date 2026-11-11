@@ -188,6 +188,16 @@ Restore calls use only the registry-owned arguments and stop after three failed
 attempts. An ordinary pane can never become a target because it has no valid,
 current supported-agent identity.
 
+The app follows a batch by its id. `status` describes the batch the worker is
+on or, when it is idle, the last one it finished, and a submitted request waits
+in the queue for up to two seconds before the worker activates it. Right after
+a submit the status therefore still names the previous batch, and that batch
+being finished says nothing about the new one. The guided upgrade
+(`AgentUpgradeFlow`) queues two batches, the tool update and then the re-launch
+of that tool's sessions, and moves on only when the status carries the id it
+queued (`AgentBatchWatch`). If a different batch is running when a step starts,
+nothing is queued and the step says so.
+
 `approval_required` is also a durable boundary. On macOS, manual policy leaves
 Gatekeeper to the signed-in user. The opt-in verified policy resolves the exact
 post-update executable, requires strict signature and fixed publisher identity,

@@ -289,29 +289,26 @@ struct HostAIAgentsSheet: View {
 // MARK: - Upgrade flow popup
 
 /// The guided upgrade popup: streams the host-side tool upgrade, then offers
-/// the session re-launch roll (start, one by one, or skip).
+/// the session re-launch roll (start, one by one, or skip). `AgentUpgradeFlow`
+/// owns the steps; this view only draws them.
 @MainActor
 struct AgentUpgradeFlowSheet: View {
-    enum Stage: Equatable {
-        case confirming
-        case upgrading
-        case sessions
-        case rolling
-        case done
-        case failed(String)
-    }
-
     let tool: AgentToolID
     let connection: HostConnection
     let manager: AgentUpdateManager
     let onFinished: () -> Void
 
-    @State private var stage: Stage = .confirming
-    @State private var preview: AgentUpdatePreview?
-    @State private var sessions: [HerdrAgentSnapshot] = []
-    @State private var unrestorable: [UnrestorablePane] = []
-    @State private var closeUnrestorable = false
+    @State private var flow: AgentUpgradeFlow
     @Environment(\.dismiss) private var dismiss
+
+    init(tool: AgentToolID, connection: HostConnection, manager: AgentUpdateManager,
+         onFinished: @escaping () -> Void) {
+        self.tool = tool
+        self.connection = connection
+        self.manager = manager
+        self.onFinished = onFinished
+        _flow = State(initialValue: AgentUpgradeFlow(tool: tool, manager: manager))
+    }
 
     private var definition: AgentToolDefinition { AgentToolRegistry.definition(for: tool) }
 
@@ -328,33 +325,27 @@ struct AgentUpgradeFlowSheet: View {
             .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button(stage == .done ? "Close" : "Cancel") { finish() }
+                    Button(flow.stage == .done ? "Close" : "Cancel") { finish() }
                         .foregroundStyle(Theme.accent)
                         .accessibilityIdentifier("host.agent-upgrade.close")
                 }
             }
         }
         .preferredColorScheme(.dark)
-        .interactiveDismissDisabled(stage == .upgrading || stage == .rolling)
-        .task(id: stage) {
-            switch stage {
-            case .upgrading, .rolling:
-                // Stream the durable host status while the batch is active.
-                while !Task.isCancelled, stage == .upgrading || stage == .rolling {
-                    await manager.pollBatch()
-                    applyBatchProgress()
-                    guard stage == .upgrading || stage == .rolling else { break }
-                    try? await Task.sleep(nanoseconds: 2_000_000_000)
-                }
-            default:
-                break
+        .interactiveDismissDisabled(flow.isBusy)
+        .task(id: flow.isBusy) {
+            // Stream the durable host status while a step's batch is in flight.
+            while !Task.isCancelled, flow.isBusy {
+                await flow.poll()
+                guard flow.isBusy else { break }
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
         }
     }
 
     @ViewBuilder
     private var content: some View {
-        switch stage {
+        switch flow.stage {
         case .confirming:
             confirmView
         case .upgrading:
@@ -392,7 +383,7 @@ struct AgentUpgradeFlowSheet: View {
                 .multilineTextAlignment(.center)
                 .padding(.horizontal)
             Button {
-                startUpgrade()
+                Task { await flow.startUpgrade() }
             } label: {
                 Text("Start Upgrade")
                     .font(.system(.body, design: .rounded, weight: .semibold))
@@ -412,20 +403,29 @@ struct AgentUpgradeFlowSheet: View {
                 .font(Theme.title(17))
                 .foregroundStyle(Theme.textPrimary)
                 .multilineTextAlignment(.center)
-            Text(AgentUpdatePresentation.batchTitle(manager.batch ?? .idle))
+            Text(flow.statusLine)
                 .font(Theme.mono(13))
                 .foregroundStyle(Theme.textSecondary)
+                .accessibilityIdentifier("host.agent-upgrade.status")
             Text(detail)
                 .font(Theme.body(12))
                 .foregroundStyle(Theme.textSecondary)
                 .multilineTextAlignment(.center)
-            if let batch = manager.batch, batch.total > 0 {
-                ProgressView(value: Double(batch.restored + batch.failed), total: Double(max(batch.total, 1)))
-                    .tint(Theme.accent)
-                    .padding(.horizontal, Theme.Space.xl)
-            }
         }
         .padding(Theme.Space.lg)
+    }
+
+    private var sessionsSummary: String {
+        if let error = flow.sessionsError {
+            return "The sessions on this host could not be listed: \(error)"
+        }
+        let count = flow.sessions.count
+        if count > 0 {
+            return "\(count) \(definition.displayName) session\(count == 1 ? "" : "s") will restart onto the new version, one by one. Working sessions wait until their current work finishes."
+        }
+        return flow.unrestorable.isEmpty
+            ? "No \(definition.displayName) sessions are running — nothing to re-launch."
+            : "None of the running \(definition.displayName) sessions can be re-launched automatically."
     }
 
     private var sessionsView: some View {
@@ -434,17 +434,24 @@ struct AgentUpgradeFlowSheet: View {
                 Label("Upgrade complete", systemImage: "checkmark.seal.fill")
                     .font(Theme.title(17))
                     .foregroundStyle(Theme.success)
-                Text(sessions.isEmpty
-                     ? "No \(definition.displayName) sessions are running — nothing to re-launch."
-                     : "\(sessions.count) \(definition.displayName) session\(sessions.count == 1 ? "" : "s") will restart onto the new version, one by one. Working sessions wait until their current work finishes.")
+                Text(sessionsSummary)
                     .font(Theme.body(13))
-                    .foregroundStyle(Theme.textSecondary)
+                    .foregroundStyle(flow.sessionsError == nil ? Theme.textSecondary : Theme.warning)
                     .multilineTextAlignment(.center)
-                if !sessions.isEmpty {
+                    .accessibilityIdentifier("host.agent-upgrade.sessions-summary")
+                if flow.sessionsError != nil {
+                    Button("Check Again") {
+                        Task { await flow.loadSessions() }
+                    }
+                    .font(Theme.body(14))
+                    .frame(minHeight: 44)
+                    .accessibilityIdentifier("host.agent-upgrade.reload-sessions")
+                }
+                if !flow.sessions.isEmpty {
                     GlassCard {
                         VStack(alignment: .leading, spacing: Theme.Space.sm) {
                             SectionLabel(text: "Sessions to re-launch")
-                            ForEach(sessions, id: \.paneID) { session in
+                            ForEach(flow.sessions, id: \.paneID) { session in
                                 HStack(spacing: Theme.Space.sm) {
                                     Image(systemName: "circle")
                                         .font(.system(size: 11))
@@ -462,20 +469,25 @@ struct AgentUpgradeFlowSheet: View {
                         }
                     }
                 }
-                if !unrestorable.isEmpty {
+                if !flow.unrestorable.isEmpty {
                     VStack(alignment: .leading, spacing: Theme.Space.xs) {
-                        Text("Not restorable: \(unrestorable.map { $0.label }.joined(separator: ", "))")
+                        Text("Not restorable: \(flow.unrestorable.map { $0.label }.joined(separator: ", "))")
                             .font(Theme.mono(11))
                             .foregroundStyle(Theme.warning)
-                        Toggle("Close these panes too", isOn: $closeUnrestorable)
+                        if !flow.sessions.isEmpty {
+                            Toggle("Close these panes too", isOn: Binding(
+                                get: { flow.closeUnrestorable },
+                                set: { flow.closeUnrestorable = $0 }
+                            ))
                             .font(Theme.body(13))
                             .accessibilityIdentifier("host.agent-upgrade.close-unrestorable")
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                if !sessions.isEmpty {
+                if !flow.sessions.isEmpty {
                     Button {
-                        startRoll()
+                        Task { await flow.startRoll() }
                     } label: {
                         Text("Re-launch Sessions One by One")
                             .font(.system(.body, design: .rounded, weight: .semibold))
@@ -502,13 +514,19 @@ struct AgentUpgradeFlowSheet: View {
     private var rollView: some View {
         ScrollView {
             VStack(spacing: Theme.Space.md) {
-                ProgressView(value: Double((manager.batch?.restored ?? 0) + (manager.batch?.failed ?? 0)),
-                             total: Double(max(manager.batch?.total ?? 1, 1)))
-                    .tint(Theme.accent)
-                Text(AgentUpdatePresentation.batchTitle(manager.batch ?? .idle))
+                if let batch = flow.progress {
+                    ProgressView(value: Double(batch.restored + batch.failed),
+                                 total: Double(max(batch.total, 1)))
+                        .tint(Theme.accent)
+                } else {
+                    // Queued, not picked up yet: there is no count to show.
+                    ProgressView().tint(Theme.accent)
+                }
+                Text(flow.statusLine)
                     .font(Theme.title(17))
                     .foregroundStyle(Theme.textPrimary)
-                if let batch = manager.batch {
+                    .accessibilityIdentifier("host.agent-upgrade.status")
+                if let batch = flow.progress, !batch.targets.isEmpty {
                     GlassCard {
                         VStack(alignment: .leading, spacing: Theme.Space.sm) {
                             ForEach(batch.targets, id: \.index) { target in
@@ -546,10 +564,16 @@ struct AgentUpgradeFlowSheet: View {
             Text("Done")
                 .font(Theme.title(20))
                 .foregroundStyle(Theme.textPrimary)
-            if let batch = manager.batch, batch.failed > 0 {
-                Text("\(batch.failed) session(s) need attention.")
+            if let result = flow.rollResult {
+                Text("\(result.restored) of \(result.total) session\(result.total == 1 ? "" : "s") re-launched.")
                     .font(Theme.body(13))
-                    .foregroundStyle(Theme.warning)
+                    .foregroundStyle(Theme.textSecondary)
+                    .accessibilityIdentifier("host.agent-upgrade.result")
+                if result.failed > 0 {
+                    Text("\(result.failed) session(s) need attention.")
+                        .font(Theme.body(13))
+                        .foregroundStyle(Theme.warning)
+                }
             }
         }
         .padding(Theme.Space.lg)
@@ -564,89 +588,11 @@ struct AgentUpgradeFlowSheet: View {
                 .font(Theme.body(14))
                 .foregroundStyle(Theme.textPrimary)
                 .multilineTextAlignment(.center)
-            Button("Try Again") { stage = .confirming }
+            Button("Try Again") { flow.retry() }
                 .buttonStyle(.borderedProminent)
+                .accessibilityIdentifier("host.agent-upgrade.retry")
         }
         .padding(Theme.Space.lg)
-    }
-
-    // MARK: Steps
-
-    private func startUpgrade() {
-        stage = .upgrading
-        Task {
-            do {
-                let value = try await manager.prepareUpgradeOnly(tool)
-                preview = value
-                if let existing = value.existingBatch, existing.isActive {
-                    // Another batch is already running on the host; watch it.
-                    return
-                }
-                await manager.submit(value)
-                if case .failed(let message) = manager.state {
-                    stage = .failed(message)
-                }
-            } catch {
-                stage = .failed(AgentUpdateManager.message(for: error))
-            }
-        }
-    }
-
-    private func applyBatchProgress() {
-        guard let batch = manager.batch else { return }
-        switch stage {
-        case .upgrading:
-            if batch.phase == .approvalRequired {
-                stage = .failed("Open \(definition.displayName) once on the host to approve the new build, then retry.")
-            } else if !batch.isActive {
-                // Upgrade finished (or failed): move to the session step.
-                if batch.phase == .failedUpdate {
-                    stage = .failed("The host could not update \(definition.displayName). Check the updater service and retry.")
-                    return
-                }
-                loadSessions()
-            }
-        case .rolling:
-            if !batch.isActive {
-                stage = batch.failed > 0 ? .done : .done
-            }
-        default:
-            break
-        }
-    }
-
-    private func loadSessions() {
-        Task {
-            do {
-                let inventory = try await manager.inventory()
-                sessions = inventory.filter { $0.tool == tool && $0.isRestorable }
-                unrestorable = inventory
-                    .filter { $0.tool == tool && !$0.isRestorable }
-                    .map { UnrestorablePane(herdrSession: $0.herdrSession,
-                                            socketPath: $0.socketPath, paneID: $0.paneID) }
-                stage = .sessions
-            } catch {
-                // No sessions readable: the upgrade itself succeeded; finish.
-                sessions = []
-                stage = .sessions
-            }
-        }
-    }
-
-    private func startRoll() {
-        stage = .rolling
-        Task {
-            do {
-                var value = try await manager.prepareRelaunch(for: tool)
-                value = value.withCloseUnrestorablePanes(closeUnrestorable)
-                await manager.submit(value)
-                if case .failed(let message) = manager.state {
-                    stage = .failed(message)
-                }
-            } catch {
-                stage = .failed(AgentUpdateManager.message(for: error))
-            }
-        }
     }
 
     private func finish() {
