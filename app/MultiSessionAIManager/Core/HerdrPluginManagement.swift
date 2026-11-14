@@ -248,6 +248,7 @@ enum HerdrPluginManagement {
         source: String,
         ref: String? = nil,
         expectedPluginID: String? = nil,
+        desiredEnabled: Bool = true,
         using service: SSHService
     ) async throws -> [InstalledPlugin] {
         let trimmedSource = source.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -314,12 +315,16 @@ enum HerdrPluginManagement {
                 Self.tail(of: installOutput, fallback: "the plugin did not appear in `herdr plugin list`")
             )
         }
-        if !matching.enabled {
+        if matching.enabled != desiredEnabled {
             guard isValidPluginID(matching.pluginID) else { throw Failure.invalidSource(matching.pluginID) }
-            _ = try await service.run("herdr plugin enable \(matching.pluginID)", timeout: listTimeout, outputLimit: outputLimit)
+            let action = desiredEnabled ? "enable" : "disable"
+            _ = try await service.run("herdr plugin \(action) \(matching.pluginID)", timeout: listTimeout, outputLimit: outputLimit)
             after = try await list(using: service)
-            guard after.contains(where: { $0.pluginID == matching.pluginID && $0.enabled }) else {
-                throw Failure.installFailed("The plugin was installed but could not be activated.")
+            guard after.contains(where: {
+                $0.pluginID == matching.pluginID && $0.enabled == desiredEnabled
+                    && $0.resolvedCommit == matching.resolvedCommit && $0.originRepository == matching.originRepository
+            }) else {
+                throw Failure.installFailed("The plugin was installed but its \(desiredEnabled ? "enabled" : "disabled") state could not be verified.")
             }
         }
         return after

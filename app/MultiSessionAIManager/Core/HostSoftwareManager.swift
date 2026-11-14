@@ -23,6 +23,27 @@ struct PluginSetupStatus: Decodable, Sendable {
     let actions: [PluginSetupActionStatus]
 }
 
+struct PluginUpdateStatus: Decodable, Equatable, Sendable {
+    let pluginID: String
+    let source: String
+    let installedCommit: String?
+    let availableCommit: String?
+    let trackingRef: String?
+    let error: String?
+
+    var isAvailable: Bool {
+        guard error == nil, let installedCommit, let availableCommit,
+              Self.isCommit(installedCommit), Self.isCommit(availableCommit),
+              HerdrPluginManagement.isValidSource(source),
+              trackingRef.map(HerdrPluginManagement.isValidRef) ?? true else { return false }
+        return installedCommit.lowercased() != availableCommit.lowercased()
+    }
+
+    private static func isCommit(_ value: String) -> Bool {
+        value.count == 40 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) || (65...70).contains($0) }
+    }
+}
+
 struct PluginDependencyPlan: Decodable, Sendable {
     struct Dependency: Decodable, Sendable {
         let tool: String
@@ -101,13 +122,20 @@ enum HostSoftwareProvisioning {
         return agent
     }
 
-    static func preparePlugin(source: String, ref: String?, using service: SSHService) async throws -> PluginDependencyPlan {
-        try await execute(PluginDependencyPlan.self, ["prepare-plugin", source] + (ref.flatMap { $0.isEmpty ? nil : $0 }.map { ["--ref", $0] } ?? []),
+    static func preparePlugin(source: String, ref: String?, trackingRef: String? = nil, using service: SSHService) async throws -> PluginDependencyPlan {
+        try await execute(PluginDependencyPlan.self, ["prepare-plugin", source]
+                          + (ref.flatMap { $0.isEmpty ? nil : $0 }.map { ["--ref", $0] } ?? [])
+                          + (trackingRef.map { ["--tracking-ref", $0] } ?? []),
                           using: service, timeout: .seconds(3600))
     }
 
     static func pluginStatus(using service: SSHService) async throws -> [PluginSetupStatus] {
         try await execute(Response.self, ["plugin-status"], using: service).plugins ?? []
+    }
+
+    static func pluginUpdates(using service: SSHService) async throws -> [PluginUpdateStatus] {
+        struct Updates: Decodable { let updates: [PluginUpdateStatus] }
+        return try await execute(Updates.self, ["plugin-updates"], using: service, timeout: .seconds(180)).updates
     }
 }
 

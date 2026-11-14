@@ -101,7 +101,7 @@ struct HerdrPluginManagerSheet: View {
                         .frame(minHeight: 44)
                 }
                 .buttonStyle(.plain)
-                .disabled(model.isBusy)
+                .disabled(model.installedActionsBlocked)
                 .accessibilityIdentifier("host.plugins.install-toolchain")
 
                 // Answered before the button is pressed: "let an app install a
@@ -206,7 +206,7 @@ struct HerdrPluginManagerSheet: View {
                                 .frame(minHeight: 44)
                         }
                         .buttonStyle(.plain)
-                        .disabled(model.isBusy)
+                        .disabled(model.installedActionsBlocked)
                         .accessibilityIdentifier("host.plugins.herdrupdate")
                     }
                 }
@@ -228,8 +228,21 @@ struct HerdrPluginManagerSheet: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Refresh installed plugins")
-                    .disabled(model.isBusy)
+                    .disabled(model.installedActionsBlocked)
                     .accessibilityIdentifier("host.plugins.refresh")
+                }
+
+                if model.isCheckingUpdates {
+                    HStack(spacing: Theme.Space.sm) {
+                        ProgressView().controlSize(.small).tint(Theme.accent)
+                        Text("checking for updates...")
+                            .font(.caption)
+                            .foregroundStyle(Theme.textMuted)
+                    }
+                    .accessibilityIdentifier("host.plugins.checking-updates")
+                }
+                if let error = model.updateCheckError {
+                    noticeRow(error, icon: "exclamationmark.triangle", tint: Theme.warning)
                 }
 
                 switch model.listState {
@@ -261,7 +274,7 @@ struct HerdrPluginManagerSheet: View {
     }
 
     private func installedRow(_ plugin: InstalledPlugin) -> some View {
-        HStack(alignment: .top, spacing: Theme.Space.sm) {
+        VStack(alignment: .leading, spacing: Theme.Space.sm) {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(plugin.name)
@@ -289,8 +302,13 @@ struct HerdrPluginManagerSheet: View {
                         .font(.system(.caption, design: .rounded))
                         .foregroundStyle(Theme.textMuted)
                 }
+                if let error = model.pluginUpdates[plugin.pluginID]?.error {
+                    Text("Update check failed: \(error)")
+                        .font(.caption)
+                        .foregroundStyle(Theme.warning)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
-            Spacer(minLength: Theme.Space.sm)
             if model.busyIdentifier == plugin.pluginID {
                 ProgressView().tint(Theme.accent)
             } else {
@@ -313,7 +331,7 @@ struct HerdrPluginManagerSheet: View {
                                 .frame(minHeight: 44)
                         }
                         .buttonStyle(.plain)
-                        .disabled(model.isBusy || status?.canInstall != true)
+                        .disabled(model.installedActionsBlocked || status?.canInstall != true)
                         .accessibilityIdentifier("host.plugins.keybinding.\(plugin.pluginID).\(action.id)")
                         Text(status?.detail ?? "Setup not yet verified.")
                             .font(.caption).foregroundStyle(Theme.textSecondary)
@@ -331,24 +349,39 @@ struct HerdrPluginManagerSheet: View {
                                 .frame(minHeight: 44)
                         }
                         .buttonStyle(.plain)
-                        .disabled(model.isBusy || status?.canInstall != true)
+                        .disabled(model.installedActionsBlocked || status?.canInstall != true)
                         .accessibilityIdentifier("host.plugins.filetransfer")
                         Text(status?.detail ?? "Setup not yet verified.")
                             .font(.caption).foregroundStyle(Theme.textSecondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-                Button(role: .destructive) {
-                    Task { await model.uninstall(plugin) }
-                } label: {
-                    Text("Uninstall")
-                        .font(.system(.footnote, design: .rounded, weight: .semibold))
-                        .foregroundStyle(Theme.danger)
-                        .frame(minHeight: 44)
+                HStack(spacing: Theme.Space.lg) {
+                    if model.availableUpdate(for: plugin) != nil {
+                        Button {
+                            Task { await model.update(plugin) }
+                        } label: {
+                            Label("Update", systemImage: "arrow.down.circle")
+                                .font(.system(.footnote, design: .rounded, weight: .semibold))
+                                .frame(minHeight: 44)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(model.installedActionsBlocked)
+                        .accessibilityIdentifier("host.plugins.update.\(plugin.pluginID)")
+                    }
+                    Spacer(minLength: 0)
+                    Button(role: .destructive) {
+                        Task { await model.uninstall(plugin) }
+                    } label: {
+                        Text("Uninstall")
+                            .font(.system(.footnote, design: .rounded, weight: .semibold))
+                            .foregroundStyle(Theme.danger)
+                            .frame(minHeight: 44)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(model.installedActionsBlocked)
+                    .accessibilityIdentifier("host.plugins.uninstall.\(plugin.pluginID)")
                 }
-                .buttonStyle(.plain)
-                .disabled(model.isBusy)
-                .accessibilityIdentifier("host.plugins.uninstall.\(plugin.pluginID)")
             }
         }
         .padding(.vertical, 4)
@@ -460,7 +493,7 @@ struct HerdrPluginManagerSheet: View {
                         .frame(minHeight: 44)
                 }
                 .buttonStyle(.plain)
-                .disabled(model.isBusy)
+                .disabled(model.installedActionsBlocked)
                 .accessibilityIdentifier("host.plugins.install.\(plugin.fullName)")
             }
         }
@@ -491,7 +524,7 @@ struct HerdrPluginManagerSheet: View {
                         .frame(minHeight: 44)
                 }
                 .buttonStyle(.plain)
-                .disabled(manualSource.isEmpty || model.isBusy)
+                .disabled(manualSource.isEmpty || model.installedActionsBlocked)
                 .accessibilityIdentifier("host.plugins.manual.install")
             }
             .padding(.top, Theme.Space.xs)

@@ -22,6 +22,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 
 HOME_DIR = Path.home()
 STATE = HOME_DIR / '.local/libexec/msam-host-software'
@@ -359,13 +360,37 @@ def plugin_dependencies(manifest, files):
     return list(dict.fromkeys(required))
 
 
-def prepare_plugin(source, ref=None):
+def plugin_tracking_path(plugin_id, source, commit):
+    identity = json.dumps([plugin_id, source.lower(), commit.lower()]).encode()
+    return STATE / 'plugin-refs' / (hashlib.sha256(identity).hexdigest() + '.json')
+
+
+def remember_plugin_ref(plugin_id, source, commit, ref):
+    # Keyed to the exact prepared install: an interrupted/failed installation
+    # cannot change the ref used by the currently installed revision.
+    path = plugin_tracking_path(plugin_id, source, commit)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', dir=path.parent, delete=False) as stream:
+            temporary = stream.name
+            json.dump({'trackingRef': ref}, stream)
+        os.replace(temporary, path)
+    finally:
+        if temporary and os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def prepare_plugin(source, ref=None, tracking_ref=None):
+    valid_source(source, tracking_ref)
     manifest, files, commit = plugin_metadata(source, ref)
     dependencies = plugin_dependencies(manifest, files)
     unsupported = [x for x in dependencies if x not in TOOLS and not executable(x)]
     if unsupported:
         raise RuntimeError('Install these plugin dependencies on the host before retrying: ' + ', '.join(unsupported))
     results = ensure_tools(dependencies)
+    selected_ref = tracking_ref or (ref if ref and not re.fullmatch('[0-9a-fA-F]{40}', ref) else None)
+    remember_plugin_ref(manifest['id'], source, commit, selected_ref)
     return {'source': source, 'ref': commit, 'pluginID': manifest['id'], 'dependencies': results}
 
 
@@ -375,6 +400,68 @@ def herdr_json(args):
         raise RuntimeError('Herdr is not installed on this host')
     text = run([binary] + args).stdout
     return json.loads(text[text.index('{'):])['result']
+
+
+def remote_plugin_commit(source, ref=None):
+    """Read upstream without installing tools or running plugin code."""
+    valid_source(source, ref)
+    repository = '/'.join(source.split('/')[:2])
+    url = 'https://api.github.com/repos/' + repository + '/commits/' + urllib.parse.quote(ref or 'HEAD', safe='')
+    try:
+        commit = json.loads(download(url))['sha']
+    except urllib.error.HTTPError as error:
+        if error.code not in (401, 403, 404, 429) or not executable('git'):
+            raise
+        error.close()
+        # Reuse existing host credentials for private repos/rate limits. Unlike
+        # dependency preflight, a check must never install Git or clone/build code.
+        if not ref:
+            names = preference = ['HEAD']
+        elif ref.startswith('refs/'):
+            names = preference = [ref + '^{}', ref]
+        else:
+            names = preference = ['refs/heads/' + ref, 'refs/tags/' + ref + '^{}', 'refs/tags/' + ref, ref]
+        output = run([executable('git'), 'ls-remote', '--exit-code',
+                      'https://github.com/' + repository + '.git'] + names, timeout=45).stdout
+        refs = {parts[1]: parts[0] for line in output.splitlines() if len(parts := line.split()) == 2}
+        commit = next((refs[name] for name in preference if name in refs), '')
+    if not isinstance(commit, str) or not re.fullmatch('[0-9a-fA-F]{40}', commit):
+        raise RuntimeError('Upstream returned an invalid plugin revision')
+    return commit.lower()
+
+
+def plugin_updates():
+    plugins = herdr_json(['plugin', 'list', '--json'])['plugins']
+
+    def check(plugin):
+        origin = plugin.get('source')
+        if not isinstance(origin, dict) or origin.get('kind') != 'github':
+            return None
+        result = {'pluginID': plugin['plugin_id'], 'source': '',
+                  'installedCommit': origin.get('resolved_commit'), 'availableCommit': None,
+                  'trackingRef': None, 'error': None}
+        try:
+            source = '/'.join([origin['owner'], origin['repo']] + ([origin['subdir']] if origin.get('subdir') else []))
+            result['source'] = source
+            installed = result['installedCommit']
+            if not isinstance(installed, str) or not re.fullmatch('[0-9a-fA-F]{40}', installed):
+                raise RuntimeError('The installed plugin revision is unknown. Reinstall it to enable update checks.')
+            ref = origin.get('requested_ref')
+            # Install the exact preflight SHA, but retain any selected branch/tag
+            # separately. Older app installs with no saved ref follow default HEAD.
+            if ref and re.fullmatch('[0-9a-fA-F]{40}', ref):
+                path = plugin_tracking_path(plugin['plugin_id'], source, installed)
+                ref = json.loads(path.read_text()).get('trackingRef') if path.is_file() else None
+            result['trackingRef'] = ref
+            valid_source(source, ref)
+            result['installedCommit'] = installed.lower()
+            result['availableCommit'] = remote_plugin_commit(source, ref)
+        except Exception as error:
+            result['error'] = str(error)
+        return result
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        return {'updates': [result for result in pool.map(check, plugins) if result is not None]}
 
 
 def keybinding_state(config, plugin, action):
@@ -469,9 +556,10 @@ def plugin_setup_status():
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('operation', choices=['agents', 'install-agent', 'prepare-plugin', 'plugin-status'])
+    parser.add_argument('operation', choices=['agents', 'install-agent', 'prepare-plugin', 'plugin-status', 'plugin-updates'])
     parser.add_argument('target', nargs='?')
     parser.add_argument('--ref')
+    parser.add_argument('--tracking-ref')
     args = parser.parse_args()
     try:
         if args.operation == 'agents':
@@ -481,7 +569,9 @@ def main():
                 raise ValueError('Unknown AI agent')
             result = {'agents': [install_agent(args.target)]}
         elif args.operation == 'prepare-plugin':
-            result = prepare_plugin(args.target, args.ref)
+            result = prepare_plugin(args.target, args.ref, args.tracking_ref)
+        elif args.operation == 'plugin-updates':
+            result = plugin_updates()
         else:
             result = plugin_setup_status()
         print('MSAM_SOFTWARE=' + json.dumps(result), flush=True)

@@ -13,7 +13,130 @@ software = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(software)
 
 
+class PluginUpdateTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        state = patch.object(software, 'STATE', Path(temporary.name))
+        state.start()
+        self.addCleanup(state.stop)
+
+    def plugin(self, name='one', commit='a' * 40, ref=None, subdir=None):
+        return {'plugin_id': name, 'source': {'kind': 'github', 'owner': 'owner', 'repo': name,
+                'resolved_commit': commit, 'requested_ref': ref, 'subdir': subdir}}
+
+    def check(self, plugins, remote='b' * 40):
+        with patch.object(software, 'herdr_json', return_value={'plugins': plugins}), \
+             patch.object(software, 'download', return_value=json.dumps({'sha': remote}).encode()), \
+             patch.object(software, 'ensure_tools', side_effect=AssertionError('Checks must not install tools')):
+            return software.plugin_updates()['updates']
+
+    def test_changed_and_unchanged_revisions_are_distinguished(self):
+        updates = self.check([self.plugin('old'), self.plugin('current', commit='b' * 40)])
+        self.assertEqual(updates[0]['installedCommit'], 'a' * 40)
+        self.assertEqual(updates[0]['availableCommit'], 'b' * 40)
+        self.assertEqual(updates[1]['installedCommit'], updates[1]['availableCommit'])
+
+    def test_exact_commits_used_by_app_installs_check_upstream_head(self):
+        with patch.object(software, 'herdr_json', return_value={'plugins': [self.plugin(ref='a' * 40)]}), \
+             patch.object(software, 'download', return_value=json.dumps({'sha': 'b' * 40}).encode()) as fetch:
+            result = software.plugin_updates()['updates'][0]
+        self.assertIsNone(result['trackingRef'])
+        self.assertTrue(fetch.call_args.args[0].endswith('/commits/HEAD'))
+
+    def test_named_ref_and_subdirectory_are_retained(self):
+        with patch.object(software, 'herdr_json', return_value={'plugins': [self.plugin(ref='release/stable', subdir='viewer')]}), \
+             patch.object(software, 'download', return_value=json.dumps({'sha': 'b' * 40}).encode()) as fetch:
+            result = software.plugin_updates()['updates'][0]
+        self.assertEqual(result['source'], 'owner/one/viewer')
+        self.assertEqual(result['trackingRef'], 'release/stable')
+        self.assertTrue(fetch.call_args.args[0].endswith('/commits/release%2Fstable'))
+
+    def test_local_plugins_do_not_make_network_requests(self):
+        with patch.object(software, 'herdr_json', return_value={'plugins': [{'plugin_id': 'local', 'source': {'kind': 'local'}}]}), \
+             patch.object(software, 'download', side_effect=AssertionError('Local plugin')):
+            self.assertEqual(software.plugin_updates(), {'updates': []})
+
+    def test_one_repository_failure_does_not_hide_other_updates(self):
+        def fetch(url):
+            if '/bad/' in url:
+                raise RuntimeError('Repository unavailable')
+            return json.dumps({'sha': 'b' * 40}).encode()
+        with patch.object(software, 'herdr_json', return_value={'plugins': [self.plugin('bad'), self.plugin('good')]}), \
+             patch.object(software, 'download', side_effect=fetch):
+            results = software.plugin_updates()['updates']
+        self.assertIn('Repository unavailable', results[0]['error'])
+        self.assertIsNone(results[0]['availableCommit'])
+        self.assertEqual(results[1]['availableCommit'], 'b' * 40)
+
+    def test_untrusted_source_and_unknown_installed_commit_are_not_updateable(self):
+        invalid = self.plugin()
+        invalid['source']['repo'] = '../bad'
+        for plugin in [invalid, self.plugin(commit=None)]:
+            with patch.object(software, 'herdr_json', return_value={'plugins': [plugin]}), \
+                 patch.object(software, 'download', side_effect=AssertionError('Invalid input')):
+                result = software.plugin_updates()['updates'][0]
+            self.assertTrue(result['error'])
+            self.assertIsNone(result['availableCommit'])
+
+    def test_invalid_remote_revision_is_reported_as_an_error(self):
+        result = self.check([self.plugin()], remote='bad; command')[0]
+        self.assertTrue(result['error'])
+        self.assertIsNone(result['availableCommit'])
+
+    def test_hexadecimal_tag_names_are_not_treated_as_commit_pins(self):
+        with patch.object(software, 'herdr_json', return_value={'plugins': [self.plugin(ref='deadbeef')]}), \
+             patch.object(software, 'download', return_value=json.dumps({'sha': 'b' * 40}).encode()):
+            self.assertEqual(software.plugin_updates()['updates'][0]['trackingRef'], 'deadbeef')
+
+    def test_private_repository_and_rate_limit_fallback_reads_git_refs(self):
+        for code in [403, 404, 429]:
+            with self.subTest(code=code), \
+                 patch.object(software, 'download', side_effect=software.urllib.error.HTTPError('url', code, 'unavailable', {}, None)), \
+                 patch.object(software, 'executable', return_value='/bin/git'), \
+                 patch.object(software, 'run', return_value=subprocess.CompletedProcess([], 0, stdout='b' * 40 + '\tHEAD\n')) as git:
+                self.assertEqual(software.remote_plugin_commit('owner/repo'), 'b' * 40)
+                self.assertIn('ls-remote', git.call_args.args[0])
+
+    def test_annotated_tag_fallback_uses_the_commit_not_the_tag_object(self):
+        output = 'a' * 40 + '\trefs/tags/v1\n' + 'b' * 40 + '\trefs/tags/v1^{}\n'
+        for ref in ['v1', 'refs/tags/v1']:
+            with self.subTest(ref=ref), \
+                 patch.object(software, 'download', side_effect=software.urllib.error.HTTPError('url', 403, 'limited', {}, None)), \
+                 patch.object(software, 'executable', return_value='/bin/git'), \
+                 patch.object(software, 'run', return_value=subprocess.CompletedProcess([], 0, stdout=output)):
+                self.assertEqual(software.remote_plugin_commit('owner/repo', ref), 'b' * 40)
+
+    def test_named_ref_survives_installing_the_exact_preflight_commit(self):
+        with patch.object(software, 'plugin_metadata', return_value=({'id': 'one'}, {}, 'b' * 40)), \
+             patch.object(software, 'ensure_tools', return_value=[]):
+            plan = software.prepare_plugin('owner/one', 'b' * 40, tracking_ref='release/stable')
+        self.assertEqual(plan['ref'], 'b' * 40)
+        result = self.check([self.plugin(commit='b' * 40, ref='b' * 40)], remote='c' * 40)[0]
+        self.assertEqual(result['trackingRef'], 'release/stable')
+        self.assertEqual(result['availableCommit'], 'c' * 40)
+        # A failed install or a different revision/repository cannot inherit it.
+        self.assertIsNone(self.check([self.plugin(ref='a' * 40)])[0]['trackingRef'])
+        self.assertIsNone(self.check([self.plugin(name='other', commit='b' * 40, ref='b' * 40)])[0]['trackingRef'])
+
+    def test_manual_named_ref_install_keeps_its_selection(self):
+        with patch.object(software, 'plugin_metadata', return_value=({'id': 'one'}, {}, 'b' * 40)), \
+             patch.object(software, 'ensure_tools', return_value=[]):
+            software.prepare_plugin('owner/one', 'v1')
+            self.assertEqual(self.check([self.plugin(commit='b' * 40, ref='b' * 40)])[0]['trackingRef'], 'v1')
+            # Explicitly reinstalling the commit resets the earlier selection.
+            software.prepare_plugin('owner/one', 'b' * 40)
+            self.assertIsNone(self.check([self.plugin(commit='b' * 40, ref='b' * 40)])[0]['trackingRef'])
+
+
 class SoftwareTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        state = patch.object(software, 'STATE', Path(temporary.name))
+        state.start()
+        self.addCleanup(state.stop)
+
     def test_rust_plugin_prerequisites_are_checked_before_build(self):
         manifest = {'build': [{'command': ['cargo', 'build', '--release']}]}
         required = software.plugin_dependencies(manifest, {'Cargo.toml': '', 'Cargo.lock': 'openssl-sys'})
