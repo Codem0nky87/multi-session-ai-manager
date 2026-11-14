@@ -424,6 +424,75 @@ final class PhoneLayoutLiveUITests: XCTestCase {
         _ = status.waitForNonExistence(timeout: 45)
     }
 
+    /// Run on iPad as well as iPhone. Checking real frames catches the double
+    /// keyboard avoidance that pure overlap calculations cannot see.
+    func test5KeyboardMeetsQuickKeysAcrossRotation() throws {
+        let fixture = try requireFixture()
+        continueAfterFailure = true
+        app.launch()
+        dismissSystemAlerts()
+        openHostTab(fixture)
+        let key = app.buttons["msam.quickkey.keyboard"]
+        let keyboard = app.keyboards.firstMatch
+        let terminal = app.scrollViews["terminal.scroll"]
+        XCTAssertTrue(key.waitForExistence(timeout: 15))
+        XCTAssertTrue(terminal.waitForExistence(timeout: 15))
+        defer { XCUIDevice.shared.orientation = .portrait }
+
+        for (index, orientation) in [UIDeviceOrientation.portrait, .landscapeLeft, .portrait].enumerated() {
+            XCUIDevice.shared.orientation = orientation
+            RunLoop.current.run(until: Date().addingTimeInterval(2))
+            let windowFrame = app.windows.firstMatch.frame
+            XCTAssertEqual(windowFrame.width > windowFrame.height, orientation.isLandscape,
+                           "The app must actually rotate before its keyboard layout is checked")
+            if !keyboard.exists || keyboard.frame.height < 100 { key.tap() }
+            XCTAssertTrue(waitForSoftwareKeyboard(visible: true))
+            RunLoop.current.run(until: Date().addingTimeInterval(1))
+            shot(fixture, "80-keyboard-\(index)")
+            dumpTree(fixture, "80-keyboard-\(index)")
+            print("Keyboard layout: window=\(app.windows.firstMatch.frame) terminal=\(terminal.frame) key=\(key.frame) keyboard=\(keyboard.frame)")
+            XCTAssertEqual(key.frame.maxY, keyboard.frame.minY, accuracy: 2,
+                           "Quick keys must touch the keyboard, without a second keyboard-sized gap")
+            XCTAssertGreaterThan(terminal.frame.height, 50)
+            XCTAssertGreaterThanOrEqual(terminal.frame.minY, app.windows.firstMatch.frame.minY)
+        }
+
+        let typingHeight = terminal.frame.height
+        key.tap()
+        XCTAssertTrue(waitForSoftwareKeyboard(visible: false))
+        RunLoop.current.run(until: Date().addingTimeInterval(1))
+        XCTAssertGreaterThan(terminal.frame.height, typingHeight)
+        shot(fixture, "81-keyboard-dismissed")
+        key.tap()
+        XCTAssertTrue(waitForSoftwareKeyboard(visible: true))
+        RunLoop.current.run(until: Date().addingTimeInterval(1))
+        XCTAssertEqual(key.frame.maxY, keyboard.frame.minY, accuracy: 2)
+        if app.windows.firstMatch.frame.width > 700 {
+            // iPad's sidebar shares the root keyboard policy. Its composer must
+            // remain above a keyboard raised by either the terminal or its input.
+            app.buttons["msam.intelligence.toggle"].tap()
+            let send = app.buttons["Send Message"]
+            XCTAssertTrue(send.waitForExistence(timeout: 5))
+            XCTAssertTrue(waitForSoftwareKeyboard(visible: true))
+            XCTAssertLessThanOrEqual(send.frame.maxY, keyboard.frame.minY)
+            shot(fixture, "82-keyboard-intelligence-sidebar")
+            app.buttons["Close Intelligence"].tap()
+        }
+        key.tap()
+    }
+
+    private func waitForSoftwareKeyboard(visible: Bool) -> Bool {
+        let keyboard = app.keyboards.firstMatch
+        let deadline = Date().addingTimeInterval(5)
+        repeat {
+            // A zero-height keyboard can remain in the accessibility tree while hidden.
+            let showing = keyboard.exists && keyboard.frame.height > 100
+            if showing == visible { return true }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        } while Date() < deadline
+        return false
+    }
+
     /// Writes the accessibility tree next to the screenshots, for reading frames.
     private func dumpTree(_ fixture: Fixture, _ name: String) {
         let directory = URL(fileURLWithPath: fixture.exchangeDirectory, isDirectory: true)

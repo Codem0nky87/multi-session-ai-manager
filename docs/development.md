@@ -297,6 +297,13 @@ public half to `exchangeDirectory/pubkey`, and waits for a file named
 terminal steps type into the host's real Herdr session, so point it at a pane
 that is idle.
 
+Once the test host is configured, run just
+`PhoneLayoutLiveUITests/test5KeyboardMeetsQuickKeysAcrossRotation` on both an
+iPad and an iPhone simulator. It checks that the quick-key bar meets the actual
+software keyboard through portrait → landscape → portrait, then dismissal and
+reopening. It saves the screen and accessibility frames at each orientation.
+Keyboard overlap unit tests alone cannot detect SwiftUI applying a second inset.
+
 **Verifying terminal rendering.** Rendering fixes are verified by driving a real
 TUI in the app and comparing what is on screen against `tmux capture-pane`
 ground truth from the same session. Screenshots alone do not establish that the

@@ -2,6 +2,7 @@ import CoreGraphics
 import Foundation
 import Testing
 import UIKit
+import SwiftUI
 @testable import MultiSessionAIManager
 
 /// The app runs on iPhone as well as iPad. These pin things that had only ever
@@ -148,15 +149,11 @@ import UIKit
         #expect(sent.last == [0x1F])
     }
 
-    /// On a phone the terminal must not be shrunk for the keyboard twice: SwiftUI's own
-    /// keyboard avoidance is switched off there because the quick-key bar already lifts
-    /// itself by the keyboard's height.
-    @Test func phoneTerminalOptsOutOfAutomaticKeyboardAvoidance() throws {
-        let source = try sourceFile("UI/RootView.swift")
-        #expect(source.contains(".ignoresSafeArea(Self.keyboardRegionsIgnoredByTheScreen, edges: .bottom)"))
+    /// Both devices already reserve the keyboard's height beneath the quick keys.
+    @Test @MainActor func terminalOptsOutOfAutomaticKeyboardAvoidanceOnEveryDevice() {
         // Both regions in ONE modifier: the keyboard region alone stops 34pt short of
         // the bottom edge, which reopens a gap between the bar and the keyboard.
-        #expect(source.contains("UIDevice.current.userInterfaceIdiom == .phone ? [.container, .keyboard] : []"))
+        #expect(RootView.keyboardRegionsIgnoredByTheScreen == [.container, .keyboard])
     }
 
     /// The quick-key bar clears the keyboard while it is up and the home-indicator

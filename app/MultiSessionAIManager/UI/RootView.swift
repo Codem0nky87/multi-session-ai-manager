@@ -117,7 +117,7 @@ struct RootView: View {
     /// `InstallKeySheet` and `WorkdirPickerSheet` all read it as a non-optional
     /// `@Environment(ToastCenter.self)`, which traps at runtime if it is absent.
     @State private var toastCenter = ToastCenter()
-    /// Phone layout only: how much of the screen the software keyboard covers,
+    /// How much of the window the docked software keyboard covers,
     /// so the quick-key bar can sit above it and the grid can shrink with it.
     @State private var keyboard = KeyboardVisibilityModel()
     /// True while a pane copy is in flight, so the button cannot be double-fired.
@@ -346,6 +346,9 @@ struct RootView: View {
                             },
                             runtimeContext: { runtimeContext }
                         )
+                        // This sibling shares the screen's keyboard opt-out, so
+                        // its prompt must reserve the same docked overlap too.
+                        .padding(.bottom, max(keyboard.height, KeyboardVisibilityModel.windowBottomSafeAreaInset))
                         .frame(width: 360)
                         .transition(.move(edge: .trailing))
                     }
@@ -354,7 +357,7 @@ struct RootView: View {
                 EmptyHostState { showingPicker = true }
             }
         }
-        // Phone: this screen never resizes itself for the software keyboard.
+        // Both iPhone and iPad use one explicit keyboard inset.
         // `HostTerminalView` lifts its quick-key bar by the keyboard's height, so
         // letting SwiftUI shrink the screen as well moved the bar up TWICE -- a
         // keyboard-sized dead gap under it and five rows of terminal above. The
@@ -703,14 +706,15 @@ struct RootView: View {
         return tabStore.tabs.first(where: { $0.id == id })
     }
 
-    /// Phone: the keyboard, because the quick-key bar's own inset accounts for it --
+    /// The keyboard, because the quick-key bar's own inset accounts for it --
     /// together with the container, in ONE modifier. SwiftUI counts the keyboard
     /// region as only the part of the keyboard above the home-indicator strip, so
     /// ignoring the keyboard alone (or the two regions in separate modifiers) leaves
     /// that strip's 34pt applied on top of the bar's own inset.
-    /// iPad: nothing, so it keeps its existing, separately tuned behaviour.
+    /// The same ownership applies on iPad; allowing automatic avoidance there
+    /// leaves a keyboard-sized gap and can collapse the landscape terminal.
     static var keyboardRegionsIgnoredByTheScreen: SafeAreaRegions {
-        UIDevice.current.userInterfaceIdiom == .phone ? [.container, .keyboard] : []
+        [.container, .keyboard]
     }
 
     /// Phone layout. iPhone (portrait AND landscape) and iPad compact split-view
@@ -770,7 +774,7 @@ struct HostTerminalView: View {
     @Bindable var session: HerdrHostSession
     var selection: TerminalSelectionModel? = nil
     var theme: TerminalTheme? = nil
-    /// Phone layout: the terminal gives up rows to a quick-key bar that sits
+    /// The terminal gives up rows to a quick-key bar that sits
     /// above the software keyboard, and the keyboard itself shrinks the grid
     /// (fewer rows while typing, full height when dismissed for scrolling).
     var isCompact = false
