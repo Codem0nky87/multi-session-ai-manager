@@ -136,7 +136,8 @@ struct RootView: View {
                 // authenticated SSH connection.
                 if selectedTab != nil, !isCompact {
                     if let tab = selectedTab {
-                        HostMetricsBarView(metricsModel: tabs.session(for: tab).metrics, hostID: tab.hostID)
+                        HostMetricsBarView(metricsModel: tabs.session(for: tab).metrics, hostID: tab.hostID,
+                                           volumeUsage: tabs.session(for: tab).volumeUsage)
                             .background(HerdrTheme.panel, ignoresSafeAreaEdges: [])
                         ProviderPulseBarView(pulse: tabs.session(for: tab).metrics.pulse) { provider in
                             selectedProviderForDetail = provider
@@ -462,6 +463,7 @@ struct RootView: View {
             if let tab = selectedTab {
                 HardwareMetricsSheet(
                     metrics: tabs.session(for: tab).metrics,
+                    volumeUsage: tabs.session(for: tab).volumeUsage,
                     onOpenMonitorSpace: {
                         openMonitorSpace()
                     }

@@ -5,6 +5,9 @@ struct HostMetricsBarView: View {
     /// The host whose port-forwarding state this bar reflects. Pass nil to
     /// omit the tunnel indicator (previews, hosts without saved tunnels).
     var hostID: UUID? = nil
+    /// The host's largest-files lists, shown when a volume is expanded in the
+    /// storage detail. Nil leaves the volumes as plain rows.
+    var volumeUsage: VolumeUsageModel? = nil
 
     @Environment(\.portForwardingManager) private var portForwarding
     @State private var showingCPUDetail = false
@@ -162,7 +165,7 @@ struct HostMetricsBarView: View {
                 "\($0.mountPoint), \(CPUMetrics.formatPercent($0.freePercent ?? 0)) available"
             } ?? "Capacity unavailable")
             .popover(isPresented: $showingDiskDetail, arrowEdge: .top) {
-                DiskMetricsDetailView(metrics: metricsModel.disk)
+                DiskMetricsDetailView(metrics: metricsModel.disk, usage: volumeUsage)
                     .presentationCompactAdaptation(.popover)
             }
 

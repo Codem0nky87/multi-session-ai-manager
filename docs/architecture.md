@@ -270,6 +270,8 @@ under Swift 6 a `@MainActor` callback invoked off-main traps at runtime.
 | `Core/AgentUpdateManager.swift` | Visible-sheet refresh, preview, generation fencing, and atomic host enqueue |
 | `Core/AgentUpdaterInstaller.swift` | Per-user LaunchAgent/systemd installation and capability verification |
 | `Resources/msam-agent-updater.sh` | Host-owned durable update/rolling-restore worker |
+| `Core/HostHelperScript.swift` | On-demand host helpers uploaded by content hash (`msam-host-software.py`, `msam-disk-usage.py`) |
+| `Core/VolumeUsage*.swift` | Largest files on a volume: the scan request and the per-host result cache |
 | `Core/HostConnection.swift` | Auth, host-key policy, connection lifecycle |
 | `Core/NIOSSHTransport.swift` | SwiftNIO SSH + Citadel transport, PTY channels, forwarding |
 | `Core/SSHService.swift` | Bounded remote commands with a normalised PATH |

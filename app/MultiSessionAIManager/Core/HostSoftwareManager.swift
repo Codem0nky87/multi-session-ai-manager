@@ -1,5 +1,4 @@
 import Foundation
-import CryptoKit
 import Observation
 
 struct HostAgentInstallation: Decodable, Identifiable, Equatable, Sendable {
@@ -56,10 +55,12 @@ struct PluginDependencyPlan: Decodable, Sendable {
 }
 
 enum HostSoftwareProvisioning {
-    enum Failure: LocalizedError {
-        case failed(String)
-        var errorDescription: String? { if case .failed(let reason) = self { reason } else { nil } }
-    }
+    typealias Failure = HostHelperScript.Failure
+
+    /// Content-addressed helper: updates take effect on the next operation,
+    /// without replacing or restarting the metrics/agent daemon.
+    static let helper = HostHelperScript(resource: "msam-host-software.py", folder: "msam-host-software",
+                                         filename: "software.py", prefix: "MSAM_SOFTWARE=")
 
     private struct Response: Decodable {
         var agents: [HostAgentInstallation]?
@@ -67,47 +68,14 @@ enum HostSoftwareProvisioning {
     }
 
     static func decode<T: Decodable>(_ type: T.Type, from output: String) throws -> T {
-        let prefix = "MSAM_SOFTWARE="
-        guard let line = output.split(whereSeparator: \.isNewline).last(where: { $0.hasPrefix(prefix) }) else {
-            throw Failure.failed(HerdrPluginManagement.tail(of: output, fallback: "The host did not return a software check."))
-        }
-        let data = Data(line.dropFirst(prefix.count).utf8)
-        if let object = try JSONSerialization.jsonObject(with: data) as? [String: Any], let error = object["error"] as? String {
-            throw Failure.failed(error)
-        }
-        return try JSONDecoder().decode(type, from: data)
-    }
-
-    /// Content-addressed helper: updates take effect on the next operation,
-    /// without replacing or restarting the metrics/agent daemon.
-    private static func command(_ arguments: [String], using service: SSHService) async throws -> String {
-        let data = try HostServiceInstaller.resource("msam-host-software.py")
-        let hash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-        let prepare = """
-        from pathlib import Path
-        import hashlib,json,sys
-        p=Path.home()/'.local/libexec/msam-host-software'/sys.argv[1]/'software.py'
-        p.parent.mkdir(parents=True,exist_ok=True)
-        print('MSAM_SOFTWARE='+json.dumps(dict(path=str(p),present=p.is_file() and hashlib.sha256(p.read_bytes()).hexdigest()==sys.argv[1])))
-        """
-        struct Location: Decodable { let path: String; let present: Bool }
-        let result = try await service.run(HostServiceInstaller.python(prepare, arguments: [hash], isWindows: service.isWindows),
-                                          timeout: .seconds(30), outputLimit: 16 * 1024)
-        let location = try decode(Location.self, from: result.stdoutString + result.stderrString)
-        if !location.present {
-            try await service.writeSetupFile(data, to: location.path.replacingOccurrences(of: "\\", with: "/"), permissions: 0o700)
-        }
-        let execute = "import runpy,sys; p=sys.argv.pop(1); sys.argv[0]=p; runpy.run_path(p,run_name='__main__')"
-        return HostServiceInstaller.python(execute, arguments: [location.path] + arguments, isWindows: service.isWindows)
+        try helper.decode(type, from: output, missing: "The host did not return a software check.")
     }
 
     private static func execute<T: Decodable>(_ type: T.Type, _ args: [String], using service: SSHService,
                                              timeout: Duration = .seconds(120)) async throws -> T {
-        let command = try await command(args, using: service)
-        let result = try await service.run(command, timeout: timeout, outputLimit: 256 * 1024)
-        let value = try decode(type, from: result.stdoutString + result.stderrString)
-        guard result.exitStatus == 0 else { throw Failure.failed("The host software operation failed.") }
-        return value
+        try await helper.execute(type, args, using: service, timeout: timeout,
+                                 missing: "The host did not return a software check.",
+                                 failure: "The host software operation failed.")
     }
 
     static func agents(using service: SSHService) async throws -> [HostAgentInstallation] {

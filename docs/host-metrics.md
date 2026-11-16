@@ -98,7 +98,53 @@ inside open detail views. Unknown GPU readings render as unavailable. GPU suppor
 remains dependent on host drivers: NVIDIA telemetry on Linux, IOAccelerator on
 macOS, and Windows counters/NVIDIA tooling on Windows.
 
+## Largest files on a volume
+
+Tapping a logical volume in the storage detail expands it and lists the 20
+files that occupy the most space on it, with their folders. Holding a file
+copies its path.
+
+The list is not a metric. Nothing about it is sampled: the app runs
+`Resources/msam-disk-usage.py largest-files <mount point>` over SSH when a volume
+is first expanded, and `VolumeUsageModel` keeps the answer for as long as the
+host's session lives. Collapsing a volume or closing the popover does not cost
+another walk; only **Rescan** does. The script is delivered like
+`msam-host-software.py`, through `HostHelperScript`: uploaded under its own hash
+the first time a host needs that version, so it never touches the installed
+host service and needs no service upgrade.
+
+The walk reads every folder of the volume once, at the lowest CPU priority.
+Measured on 2026-11-16: Forge's 1.8 TB root (3.2 million files) took between 7
+and 25 s, and the MacBook Air's startup volume (2.3 million files) took 108 s
+while a build was running. After 180 s the host reports what it has found, and
+the list is marked as incomplete. A second timer force-stops a walk that is stuck inside one
+system call, such as a dead network mount.
+
+What it leaves out, and says so under the list:
+
+- **Other volumes.** A folder on another device is skipped; it belongs to its
+  own row. On a Mac's startup volume the walk also skips `/System/Volumes`,
+  because the data volume's folders already appear at `/Users`, `/Applications`
+  and so on, and a file reachable by two paths is listed once.
+- **Links.** Symlinks and Windows junctions are not followed.
+- **Unreadable folders.** The walk runs as the SSH login, without sudo. Docker's
+  storage and other users' home folders are counted as unreadable, not listed.
+- **Cloud-only files.** An iCloud or OneDrive placeholder occupies no space on
+  the disk. On macOS it must not even be listed: reading a "dataless" folder
+  makes iCloud download it and blocks until it has. The walk checks the flag on
+  every entry first and switches the process's materialisation policy off.
+
+Sizes are space on disk (`st_blocks`), so a sparse disk image ranks by what it
+has actually written. Windows has no block count and falls back to file length.
+
 ## Verification
+
+`tests/test_msam_disk_usage.py` runs the scanner against real files (ordering,
+sparse files, symlinks, hard links, the command line) and against an in-memory
+tree for what a test machine cannot stage: other devices, unreadable folders,
+cloud placeholders, the time limit and Windows links. `VolumeUsageTests.swift`
+covers the app side: the helper upload, one scan per volume, retry and wording.
+The Windows rules have fixture coverage only.
 
 Run `python3 -m unittest discover -s tests`. Collector fixtures cover weighted
 CPU windows, resets, affinity, RSS ranking and PID reuse, `/data` at 82% used,

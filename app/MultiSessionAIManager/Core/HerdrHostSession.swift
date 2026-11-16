@@ -126,6 +126,9 @@ final class HerdrHostSession {
     private var metricsTask: Task<Void, Never>?
     private var metricsGeneration: UInt64 = 0
     let metrics = HostMetricsModel()
+    /// Largest-files lists for this host's volumes, fetched when a volume is
+    /// expanded in the storage detail.
+    let volumeUsage: VolumeUsageModel
     
     /// Paths queued on the host and not yet handled. Read by the UI.
     private(set) var incomingPaths: [String] = []
@@ -147,6 +150,7 @@ final class HerdrHostSession {
         recovery: RecoveryPolicy = .init()
     ) {
         self.connection = connection
+        self.volumeUsage = VolumeUsageModel(connection: connection)
         self.sessionName = sessionName
         self.watchIdentity = watchIdentity
         self.terminal = terminal

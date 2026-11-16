@@ -2,11 +2,13 @@ import SwiftUI
 
 struct HardwareMetricsSheet: View {
     var metrics: HostMetricsModel
+    var volumeUsage: VolumeUsageModel? = nil
     var onOpenMonitorSpace: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
 
-    init(metrics: HostMetricsModel, onOpenMonitorSpace: (() -> Void)? = nil) {
+    init(metrics: HostMetricsModel, volumeUsage: VolumeUsageModel? = nil, onOpenMonitorSpace: (() -> Void)? = nil) {
         self.metrics = metrics
+        self.volumeUsage = volumeUsage
         self.onOpenMonitorSpace = onOpenMonitorSpace
     }
 
@@ -65,7 +67,7 @@ struct HardwareMetricsSheet: View {
                         Text("STORAGE")
                             .font(HerdrTheme.mono(.headline, weight: .bold))
                             .foregroundStyle(HerdrTheme.subtext)
-                        DiskMetricsDetailView(metrics: metrics.disk)
+                        DiskMetricsDetailView(metrics: metrics.disk, usage: volumeUsage)
                     }
                     .padding()
                     .background(HerdrTheme.panel)

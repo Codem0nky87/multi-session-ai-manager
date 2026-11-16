@@ -2,6 +2,12 @@ import SwiftUI
 
 struct DiskMetricsDetailView: View {
     var metrics: DiskMetrics
+    /// The host's largest-files lists. Without it (previews, a host that is not
+    /// connected through a session) volumes are plain rows that do not expand.
+    var usage: VolumeUsageModel? = nil
+    /// Volumes whose file list is showing, by volume id. Kept here so a reopened
+    /// popover starts collapsed; the lists themselves outlive it in `usage`.
+    @State private var expanded: Set<String> = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -50,34 +56,72 @@ struct DiskMetricsDetailView: View {
                 MetricsSectionTitle(title: "LOGICAL VOLUMES", detail: "\(metrics.volumes.count)")
                 if metrics.volumes.isEmpty { empty("No mounted volumes reported.") }
                 ForEach(metrics.volumes.sorted { $0.mountPoint.localizedStandardCompare($1.mountPoint) == .orderedAscending }) { volume in
-                    HStack(spacing: 12) {
-                        MetricsLiquidGauge(percent: volume.usagePercent, color: volume.pressure.color, compact: true)
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack(alignment: .firstTextBaseline) {
-                                Text(volume.mountPoint.isEmpty ? volume.name : volume.mountPoint)
-                                    .font(HerdrTheme.mono(.subheadline, weight: .semibold))
-                                    .foregroundStyle(HerdrTheme.text)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                Spacer(minLength: 4)
-                                Text(volume.pressure.label)
-                                    .font(HerdrTheme.mono(.caption2))
-                                    .foregroundStyle(volume.pressure.color)
+                    VStack(alignment: .leading, spacing: 10) {
+                        if let usage, !volume.mountPoint.isEmpty {
+                            Button {
+                                toggle(volume, in: usage)
+                            } label: {
+                                summary(of: volume, isExpanded: expanded.contains(volume.id))
+                                    .contentShape(Rectangle())
                             }
-                            HStack {
-                                column("Size", gib(volume.totalGB))
-                                Spacer(minLength: 4)
-                                column("Free", gib(volume.freeGB), color: volume.pressure.color)
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("metrics.disk.volume.\(volume.mountPoint)")
+                            .accessibilityHint(expanded.contains(volume.id)
+                                               ? "Hides the largest files"
+                                               : "Lists the files using the most space on this volume")
+                            if expanded.contains(volume.id) {
+                                VolumeLargestFilesView(mountPoint: volume.mountPoint, usage: usage)
                             }
+                        } else {
+                            summary(of: volume, isExpanded: nil)
                         }
                     }
                     .padding(12)
                     .background(HerdrTheme.panel, in: RoundedRectangle(cornerRadius: 12))
                 }
             }
-            empty("Liquid shows used space. Free space below 20% is amber; below 10% is red. — means unavailable or shared across physical disks.")
+            empty("Liquid shows used space. Free space below 20% is amber; below 10% is red. — means unavailable or shared across physical disks."
+                  + (usage == nil ? "" : " Tap a volume to list its largest files."))
         }
         .padding(20)
         .metricsPopoverBody(width: MetricsPopoverMetrics.detailWidth)
+    }
+
+    /// - Parameter isExpanded: nil for a volume that cannot be expanded, which
+    ///   shows no chevron.
+    private func summary(of volume: DiskVolume, isExpanded: Bool?) -> some View {
+        HStack(spacing: 12) {
+            MetricsLiquidGauge(percent: volume.usagePercent, color: volume.pressure.color, compact: true)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(volume.mountPoint.isEmpty ? volume.name : volume.mountPoint)
+                        .font(HerdrTheme.mono(.subheadline, weight: .semibold))
+                        .foregroundStyle(HerdrTheme.text)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 4)
+                    Text(volume.pressure.label)
+                        .font(HerdrTheme.mono(.caption2))
+                        .foregroundStyle(volume.pressure.color)
+                    if let isExpanded {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(HerdrTheme.subtext)
+                            .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    }
+                }
+                HStack {
+                    column("Size", gib(volume.totalGB))
+                    Spacer(minLength: 4)
+                    column("Free", gib(volume.freeGB), color: volume.pressure.color)
+                }
+            }
+        }
+    }
+
+    private func toggle(_ volume: DiskVolume, in usage: VolumeUsageModel) {
+        if expanded.remove(volume.id) != nil { return }
+        expanded.insert(volume.id)
+        Task { await usage.load(volume.mountPoint) }
     }
 
     private func empty(_ text: String) -> some View {
