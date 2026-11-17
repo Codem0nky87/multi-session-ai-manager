@@ -22,6 +22,143 @@ import Testing
         """.replacingOccurrences(of: "\n", with: "")
     }
 
+    /// One plugin's check result as a current host helper reports it, versions included.
+    private func check(installed: String? = "1.17.0", available: String? = "1.18.0",
+                       availableCommit: String? = nil, error: String? = nil) -> String {
+        func json(_ value: String?) -> String { value.map { "\"\($0)\"" } ?? "null" }
+        return """
+        MSAM_SOFTWARE={"updates":[{"pluginID":"viewer","source":"owner/plugins/viewer","installedCommit":"\(oldCommit)",
+        "availableCommit":\(json(error == nil ? (availableCommit ?? newCommit) : nil)),"trackingRef":null,"error":\(json(error)),
+        "installedVersion":\(json(installed)),"availableVersion":\(json(available))}]}
+        """.replacingOccurrences(of: "\n", with: "")
+    }
+
+    private func status(_ line: String) throws -> PluginUpdateStatus {
+        struct Updates: Decodable { let updates: [PluginUpdateStatus] }
+        return try #require(HostSoftwareProvisioning.decode(Updates.self, from: line).updates.first)
+    }
+
+    private let herdrStatus = """
+    {"client":{"version":"0.9.4","channel":"stable"},\
+    "server":{"status":"running","running":true,"version":"0.9.4","restart_needed":false},\
+    "update":{"restart_needed":false}}
+    """
+
+    /// A refresh on a host whose `herdr status` answers, so the release check runs too.
+    private func refreshOutputs(herdrRelease: String, update: String? = nil) -> [String] {
+        [inventory(commit: oldCommit), location, setup, herdrStatus, location, herdrRelease, location, update ?? updates()]
+    }
+
+    // MARK: - Installed version → update version
+
+    @Test func anUpdateNamesTheVersionItMovesFromAndTo() throws {
+        #expect(try status(check()).change(installedVersion: "1.17.0") == "1.17.0 → 1.18.0")
+    }
+
+    @Test func anUnchangedVersionNumberFallsBackToTheCommits() throws {
+        // Authors change code without bumping the version; "1.18.0 → 1.18.0" would say nothing.
+        #expect(try status(check(installed: "1.18.0", available: "1.18.0")).change(installedVersion: "1.18.0")
+                == "1.18.0 · aaaaaaa → bbbbbbb")
+    }
+
+    @Test func anUnreadableUpstreamVersionFallsBackToTheCommits() throws {
+        #expect(try status(check(available: nil)).change(installedVersion: "1.17.0") == "1.17.0 · aaaaaaa → bbbbbbb")
+    }
+
+    @Test func aPluginWithNoVersionAtAllShowsOnlyCommits() throws {
+        #expect(try status(check(installed: nil, available: nil)).change(installedVersion: "") == "aaaaaaa → bbbbbbb")
+    }
+
+    @Test func theVersionHerdrListsStandsInWhenTheHelperReportsNone() throws {
+        // An older host helper sends no versions; the installed one is known from the plugin list.
+        #expect(try status(updates()).change(installedVersion: "1") == "1 · aaaaaaa → bbbbbbb")
+    }
+
+    @Test func aCurrentPluginHasNoChangeToShow() throws {
+        #expect(try status(check(available: nil, availableCommit: oldCommit)).change(installedVersion: "1.17.0") == nil)
+    }
+
+    @Test func aCheckedPluginWithNothingNewerIsUpToDate() async throws {
+        let (model, transport) = await makeModel()
+        stub(transport, refreshOutputs(update: check(available: nil, availableCommit: oldCommit)))
+        let unchecked = InstalledPlugin(pluginID: "viewer", name: "Viewer", version: "1", description: "",
+                                        enabled: true, originRepository: "owner/plugins", resolvedCommit: oldCommit)
+        #expect(!model.isUpToDate(unchecked), "Nothing is known before the check")
+        await model.refresh()
+        let plugin = try #require(model.installed.first)
+        #expect(model.isUpToDate(plugin))
+        #expect(model.availableUpdate(for: plugin) == nil)
+        await model.connection.disconnect()
+    }
+
+    @Test func aPluginWithAnUpdateOrAFailedCheckIsNotCalledUpToDate() async throws {
+        let (model, transport) = await makeModel()
+        stub(transport, refreshOutputs(update: check()))
+        await model.refresh()
+        #expect(!model.isUpToDate(try #require(model.installed.first)))
+        stub(transport, refreshOutputs(update: check(error: "Repository unavailable")))
+        await model.refresh()
+        #expect(!model.isUpToDate(try #require(model.installed.first)))
+        await model.connection.disconnect()
+    }
+
+    // MARK: - Herdr's own update
+
+    @Test func openingTheManagerAsksWhetherHerdrHasANewerRelease() async {
+        let (model, transport) = await makeModel()
+        #expect(model.herdrOffer == nil)
+        stub(transport, refreshOutputs(herdrRelease: #"MSAM_SOFTWARE={"channel":"stable","latestVersion":"0.9.5"}"#))
+        await model.refresh()
+        #expect(transport.commandsRun.contains { $0.contains("'herdr-release'") })
+        #expect(model.herdrOffer == .available(installed: "0.9.4", latest: "0.9.5"))
+        #expect(model.availableUpdate(for: model.installed[0]) != nil, "The plugin check still runs afterwards")
+        await model.connection.disconnect()
+    }
+
+    @Test(arguments: [#"MSAM_SOFTWARE={"error":"Network unavailable"}"#,
+                      #"MSAM_SOFTWARE={"channel":"preview","latestVersion":null}"#])
+    func whenTheReleaseCannotBeComparedHerdrCanStillBeUpdated(release: String) async {
+        let (model, transport) = await makeModel()
+        stub(transport, refreshOutputs(herdrRelease: release))
+        await model.refresh()
+        #expect(model.herdrOffer == .unknown("0.9.4"))
+        #expect(model.listState == .loaded)
+        #expect(model.availableUpdate(for: model.installed[0]) != nil)
+        await model.connection.disconnect()
+    }
+
+    @Test func anUpToDateHerdrIsNotUpdatedAgain() async {
+        let (model, transport) = await makeModel()
+        stub(transport, refreshOutputs(herdrRelease: #"MSAM_SOFTWARE={"channel":"stable","latestVersion":"0.9.4"}"#))
+        await model.refresh()
+        #expect(model.herdrOffer == .current("0.9.4"))
+        let count = transport.commandsRun.count
+        await model.updateHerdr()
+        #expect(transport.commandsRun.count == count)
+        await model.connection.disconnect()
+    }
+
+    @Test func afterUpdatingHerdrTheRowShowsItAsCurrent() async {
+        let (model, transport) = await makeModel()
+        stub(transport, refreshOutputs(herdrRelease: #"MSAM_SOFTWARE={"channel":"stable","latestVersion":"0.9.5"}"#))
+        await model.refresh()
+        stub(transport, ["downloaded 0.9.5\nhandoff complete\n",
+                         herdrStatus.replacingOccurrences(of: "0.9.4", with: "0.9.5")])
+        await model.updateHerdr()
+        #expect(transport.commandsRun.contains { $0.contains("herdr update --handoff") })
+        #expect(model.herdrOffer == .current("0.9.5"))
+        await model.connection.disconnect()
+    }
+
+    @Test func aHostWhoseHerdrDoesNotAnswerIsNotAskedForARelease() async {
+        let (model, transport) = await makeModel()
+        stub(transport, refreshOutputs())
+        await model.refresh()
+        #expect(model.herdrOffer == nil)
+        #expect(!transport.commandsRun.contains { $0.contains("'herdr-release'") })
+        await model.connection.disconnect()
+    }
+
     private func makeModel() async -> (HerdrPluginManagerModel, FakeSSHTransport) {
         let transport = FakeSSHTransport()
         let keys = KeyStore(backing: InMemoryKeychain())

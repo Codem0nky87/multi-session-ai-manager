@@ -430,6 +430,53 @@ def remote_plugin_commit(source, ref=None):
     return commit.lower()
 
 
+def plain_version(value):
+    """A version fit to show as it is: short, and nothing but version characters."""
+    if isinstance(value, str) and re.fullmatch(r'[0-9A-Za-z][0-9A-Za-z.+_-]{0,39}', value):
+        return value
+    return None
+
+
+def remote_plugin_version(source, commit):
+    """The version the plugin's manifest declares at `commit`, or None.
+
+    Only for display: an update is offered by commit whether or not this works,
+    so a private repository or a manifest that will not parse costs nothing.
+    """
+    try:
+        parts = source.split('/')
+        base = ('https://raw.githubusercontent.com/' + '/'.join(parts[:2]) + '/' + commit + '/'
+                + (parts[2] + '/' if len(parts) == 3 else ''))
+        manifest = toml_module().loads(download(base + 'herdr-plugin.toml').decode('utf-8'))
+        return plain_version(manifest.get('version'))
+    except Exception:
+        return None
+
+
+HERDR_STABLE_RELEASE = 'https://herdr.dev/latest.json'
+
+
+def herdr_release():
+    """The newest Herdr release for this host's update channel.
+
+    Herdr reports what is installed and running, not whether something newer
+    exists. `herdr update` reads the same list. A preview build is named by a
+    build id rather than a version, so there is nothing to compare it with.
+    """
+    binary = executable('herdr')
+    if not binary:
+        raise RuntimeError('Herdr is not installed on this host')
+    text = run([binary, 'status', '--json']).stdout
+    status = json.JSONDecoder().raw_decode(text[text.index('{'):])[0]
+    channel = (status.get('client') or {}).get('channel') or 'stable'
+    if channel != 'stable':
+        return {'channel': str(channel)[:40], 'latestVersion': None}
+    version = json.loads(download(HERDR_STABLE_RELEASE)).get('version')
+    if not isinstance(version, str) or not re.fullmatch(r'\d+(\.\d+){1,3}', version):
+        raise RuntimeError("Herdr's release list did not name a version")
+    return {'channel': 'stable', 'latestVersion': version}
+
+
 def plugin_updates():
     plugins = herdr_json(['plugin', 'list', '--json'])['plugins']
 
@@ -439,7 +486,8 @@ def plugin_updates():
             return None
         result = {'pluginID': plugin['plugin_id'], 'source': '',
                   'installedCommit': origin.get('resolved_commit'), 'availableCommit': None,
-                  'trackingRef': None, 'error': None}
+                  'trackingRef': None, 'error': None,
+                  'installedVersion': plain_version(plugin.get('version')), 'availableVersion': None}
         try:
             source = '/'.join([origin['owner'], origin['repo']] + ([origin['subdir']] if origin.get('subdir') else []))
             result['source'] = source
@@ -456,6 +504,8 @@ def plugin_updates():
             valid_source(source, ref)
             result['installedCommit'] = installed.lower()
             result['availableCommit'] = remote_plugin_commit(source, ref)
+            if result['availableCommit'] != result['installedCommit']:
+                result['availableVersion'] = remote_plugin_version(source, result['availableCommit'])
         except Exception as error:
             result['error'] = str(error)
         return result
@@ -556,7 +606,8 @@ def plugin_setup_status():
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('operation', choices=['agents', 'install-agent', 'prepare-plugin', 'plugin-status', 'plugin-updates'])
+    parser.add_argument('operation', choices=['agents', 'install-agent', 'prepare-plugin', 'plugin-status',
+                                              'plugin-updates', 'herdr-release'])
     parser.add_argument('target', nargs='?')
     parser.add_argument('--ref')
     parser.add_argument('--tracking-ref')
@@ -572,6 +623,8 @@ def main():
             result = prepare_plugin(args.target, args.ref, args.tracking_ref)
         elif args.operation == 'plugin-updates':
             result = plugin_updates()
+        elif args.operation == 'herdr-release':
+            result = herdr_release()
         else:
             result = plugin_setup_status()
         print('MSAM_SOFTWARE=' + json.dumps(result), flush=True)

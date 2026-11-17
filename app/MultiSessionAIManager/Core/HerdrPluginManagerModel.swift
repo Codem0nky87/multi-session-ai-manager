@@ -32,6 +32,9 @@ final class HerdrPluginManagerModel {
     private(set) var isCheckingUpdates = false
     private(set) var pluginUpdates: [String: PluginUpdateStatus] = [:]
     private(set) var updateCheckError: String?
+    /// Herdr's newest release for this host, once asked. The outer nil means not
+    /// asked yet; the inner one that the question had no usable answer.
+    private var herdrLatestVersion: String??
 
     private(set) var results: [CataloguePlugin] = []
     private(set) var catalogueState: CatalogueState = .idle
@@ -80,6 +83,22 @@ final class HerdrPluginManagerModel {
     var isBusy: Bool { busyIdentifier != nil }
     var installedActionsBlocked: Bool { isBusy || isCheckingUpdates }
 
+    /// Nil until both Herdr's status and its release list have been asked for, so
+    /// the row never claims "up to date" or "could not check" before it knows.
+    var herdrOffer: HerdrUpdateOffer? {
+        guard let status = updateStatus, let latest = herdrLatestVersion else { return nil }
+        return HerdrUpdateOffer(status: status, latestVersion: latest)
+    }
+
+    /// True once the check has found this exact installed revision to be the
+    /// newest upstream. False while unchecked, failed, or when an update exists.
+    func isUpToDate(_ plugin: InstalledPlugin) -> Bool {
+        guard let status = pluginUpdates[plugin.pluginID], status.error == nil,
+              let installed = status.installedCommit?.lowercased(), installed == status.availableCommit?.lowercased(),
+              installed == plugin.resolvedCommit?.lowercased() else { return false }
+        return true
+    }
+
     func availableUpdate(for plugin: InstalledPlugin) -> PluginUpdateStatus? {
         guard let status = pluginUpdates[plugin.pluginID], status.isAvailable,
               status.installedCommit?.lowercased() == plugin.resolvedCommit?.lowercased(),
@@ -103,6 +122,7 @@ final class HerdrPluginManagerModel {
         isCheckingUpdates = true
         pluginUpdates = [:]
         updateCheckError = nil
+        herdrLatestVersion = nil
         defer { isCheckingUpdates = false }
         listState = .loading
         do {
@@ -118,6 +138,13 @@ final class HerdrPluginManagerModel {
         // Best-effort: the sheet still works with no update row, so a failed
         // probe stays silent rather than burying the plugin list in an error.
         updateStatus = try? await HerdrUpdate.probe(using: service)
+        if updateStatus != nil {
+            // `herdr status` knows what is installed, not whether a newer release
+            // exists. Best-effort like the probe: no answer leaves the update possible.
+            let release = try? await HostSoftwareProvisioning.herdrRelease(using: service)
+            guard !Task.isCancelled else { return }
+            herdrLatestVersion = .some(release?.latestVersion)
+        }
         guard !Task.isCancelled, !installed.isEmpty else { return }
         do {
             let statuses = try await HostSoftwareProvisioning.pluginUpdates(using: service)
@@ -390,7 +417,7 @@ final class HerdrPluginManagerModel {
     /// card: installing plugins belongs to one place, and this is the step that
     /// only makes sense once THIS plugin is present.
     func updateHerdr() async {
-        guard !installedActionsBlocked else { return }
+        guard !installedActionsBlocked, herdrOffer?.canUpdate ?? true else { return }
         guard let service = connection.provisioningCommandRunner else {
             errorMessage = "Not connected to this host."
             return

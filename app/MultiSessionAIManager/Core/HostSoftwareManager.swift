@@ -29,6 +29,27 @@ struct PluginUpdateStatus: Decodable, Equatable, Sendable {
     let availableCommit: String?
     let trackingRef: String?
     let error: String?
+    /// The version each manifest declares. Nil from a host helper that predates
+    /// them, and `availableVersion` also when the upstream manifest could not be read.
+    var installedVersion: String? = nil
+    var availableVersion: String? = nil
+
+    /// What the update changes, for the plugin's row: "1.17.0 → 1.18.0".
+    ///
+    /// Authors often change a plugin without touching its version number, and then
+    /// "1.18.0 → 1.18.0" would say nothing, so the commits stand in:
+    /// "1.18.0 · 11de5a1 → d17a068". Nil when there is no update.
+    /// - Parameter installedVersion: the version Herdr lists for the plugin, used
+    ///   when the helper reported none.
+    func change(installedVersion listed: String) -> String? {
+        guard isAvailable, let installedCommit, let availableCommit else { return nil }
+        let from = [installedVersion, listed].compactMap { $0 }.first { !$0.isEmpty }
+        if let from, let to = availableVersion, !to.isEmpty, to != from {
+            return "\(from) → \(to)"
+        }
+        let commits = "\(installedCommit.prefix(7).lowercased()) → \(availableCommit.prefix(7).lowercased())"
+        return from.map { "\($0) · \(commits)" } ?? commits
+    }
 
     var isAvailable: Bool {
         guard error == nil, let installedCommit, let availableCommit,
@@ -41,6 +62,13 @@ struct PluginUpdateStatus: Decodable, Equatable, Sendable {
     private static func isCommit(_ value: String) -> Bool {
         value.count == 40 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) || (65...70).contains($0) }
     }
+}
+
+/// The newest Herdr release for a host's update channel, as `herdr update` would see it.
+struct HerdrRelease: Decodable, Equatable, Sendable {
+    let channel: String?
+    /// Nil on the preview channel, whose builds have no version to compare.
+    let latestVersion: String?
 }
 
 struct PluginDependencyPlan: Decodable, Sendable {
@@ -99,6 +127,10 @@ enum HostSoftwareProvisioning {
 
     static func pluginStatus(using service: SSHService) async throws -> [PluginSetupStatus] {
         try await execute(Response.self, ["plugin-status"], using: service).plugins ?? []
+    }
+
+    static func herdrRelease(using service: SSHService) async throws -> HerdrRelease {
+        try await execute(HerdrRelease.self, ["herdr-release"], using: service, timeout: .seconds(90))
     }
 
     static func pluginUpdates(using service: SSHService) async throws -> [PluginUpdateStatus] {

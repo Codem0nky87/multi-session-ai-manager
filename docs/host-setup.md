@@ -86,6 +86,28 @@ machine over the same authenticated connection.
 A listing is not an endorsement: installing a plugin runs its code on the host.
 The catalogue tag alone does not prove that a repository contains a plugin.
 
+### Updates
+
+Opening **Manage plugins** asks the host what is newer, and the sheet says so on
+every row, so a missing button is never the only sign that nothing is pending.
+
+- **Plugins.** For each plugin installed from GitHub the host compares the
+  installed commit with the upstream one. A plugin with nothing newer reads
+  *Up to date*. One with an update shows **Update** and what it changes,
+  `1.17.0 → 1.18.0`, read from the upstream manifest. Authors often change a
+  plugin without touching its version number; the row then names the commits
+  instead: `1.18.0 · 11de5a1 → d17a068`.
+- **Herdr.** `herdr status` reports what is installed and running, not whether a
+  newer release exists, so the host also reads Herdr's release list
+  (`https://herdr.dev/latest.json`, the file `herdr update` itself uses). The
+  row shows `0.9.4 → 0.9.5` with **Update Herdr**; `0.9.4 running → 0.9.5
+  installed` with **Apply update** when a newer binary is waiting for the
+  server; or *Up to date* with the button greyed out. When the list cannot be
+  read or compared (no route to herdr.dev, or the preview channel, whose builds
+  have no version number) the row says so and the button stays usable.
+
+Plugin actions are blocked while the check runs.
+
 ### Dependency checks and activation
 
 Before installing, MSAM resolves the requested revision to a commit, checks its

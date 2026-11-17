@@ -118,3 +118,80 @@ import Testing
         #expect(result.refreshed == nil)
     }
 }
+
+/// What the Herdr row in Manage Plugins says and whether its button does anything.
+@Suite struct HerdrUpdateOfferTests {
+    private func status(installed: String, running: String? = nil, ready: Bool = false) -> HerdrUpdateStatus {
+        HerdrUpdateStatus(clientVersion: installed, serverVersion: running ?? installed,
+                          serverRunning: true, updateReady: ready)
+    }
+
+    @Test func aNewerReleaseIsOfferedWithBothVersions() {
+        let offer = HerdrUpdateOffer(status: status(installed: "0.9.4"), latestVersion: "0.9.5")
+        #expect(offer == .available(installed: "0.9.4", latest: "0.9.5"))
+        #expect(offer.versionText == "0.9.4 → 0.9.5")
+        #expect(offer.statusText == "Update available")
+        #expect(offer.buttonTitle == "Update Herdr")
+        #expect(offer.canUpdate)
+    }
+
+    @Test func theLatestReleaseLeavesNothingToDo() {
+        let offer = HerdrUpdateOffer(status: status(installed: "0.9.5"), latestVersion: "0.9.5")
+        #expect(offer == .current("0.9.5"))
+        #expect(offer.versionText == "0.9.5")
+        #expect(offer.statusText == "Up to date")
+        #expect(!offer.canUpdate)
+    }
+
+    @Test func aHostAheadOfTheReleaseListIsNotOfferedADowngrade() {
+        #expect(HerdrUpdateOffer(status: status(installed: "0.10.0"), latestVersion: "0.9.5") == .current("0.10.0"))
+    }
+
+    @Test func aNewerBinaryThanTheRunningServerIsReadyToApply() {
+        let offer = HerdrUpdateOffer(status: status(installed: "0.9.5", running: "0.9.4", ready: true),
+                                     latestVersion: "0.9.5")
+        #expect(offer == .restartNeeded(running: "0.9.4", installed: "0.9.5"))
+        #expect(offer.versionText == "0.9.4 running → 0.9.5 installed")
+        #expect(offer.statusText == "Update ready")
+        #expect(offer.buttonTitle == "Apply update")
+        #expect(offer.canUpdate)
+    }
+
+    @Test func aReleaseNewerThanTheWaitingBinaryComesFirst() {
+        let offer = HerdrUpdateOffer(status: status(installed: "0.9.4", running: "0.9.3", ready: true),
+                                     latestVersion: "0.9.5")
+        #expect(offer == .available(installed: "0.9.4", latest: "0.9.5"))
+    }
+
+    @Test func aWaitingBinaryStillAppliesWhenTheReleaseListIsUnreachable() {
+        let offer = HerdrUpdateOffer(status: status(installed: "0.9.5", running: "0.9.4", ready: true),
+                                     latestVersion: nil)
+        #expect(offer == .restartNeeded(running: "0.9.4", installed: "0.9.5"))
+    }
+
+    @Test func aWaitingBinaryWithNoServerRunningNamesOnlyWhatIsInstalled() {
+        let stopped = HerdrUpdateStatus(clientVersion: "0.9.5", serverVersion: nil, serverRunning: false, updateReady: true)
+        #expect(HerdrUpdateOffer(status: stopped, latestVersion: "0.9.5").versionText == "0.9.5 installed")
+    }
+
+    @Test(arguments: [nil, "nightly", ""] as [String?])
+    func withoutAComparableReleaseTheUpdateStaysPossible(latest: String?) {
+        let offer = HerdrUpdateOffer(status: status(installed: "0.9.5"), latestVersion: latest)
+        #expect(offer == .unknown("0.9.5"))
+        #expect(offer.versionText == "0.9.5")
+        #expect(offer.statusText == "Could not check for a newer version")
+        #expect(offer.buttonTitle == "Update Herdr")
+        #expect(offer.canUpdate)
+    }
+
+    @Test func versionsCompareByNumberNotByText() {
+        #expect(HerdrVersion.compare("0.9.10", "0.9.9") == .orderedDescending)
+        #expect(HerdrVersion.compare("0.10", "0.9.5") == .orderedDescending)
+        #expect(HerdrVersion.compare("0.9.4", "0.9.5") == .orderedAscending)
+        #expect(HerdrVersion.compare("1.0", "1.0.0") == .orderedSame)
+        #expect(HerdrVersion.compare("v0.9.5", "0.9.5") == .orderedSame)
+        #expect(HerdrVersion.compare("0.9.5-preview.3", "0.9.5") == .orderedSame)
+        #expect(HerdrVersion.compare("abc", "0.9.5") == nil)
+        #expect(HerdrVersion.compare("0.9.5", "") == nil)
+    }
+}

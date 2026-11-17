@@ -164,29 +164,33 @@ struct HerdrPluginManagerSheet: View {
 
     // MARK: - Installed
 
-    /// Herdr's own version and update state, mirroring the "update ready"
-    /// entry in its session menu. Hidden until a status probe answers — the
-    /// sheet is about plugins first.
+    /// Herdr's own version and whether it needs updating: a newer release, or a
+    /// newer binary than the server is running (the "update ready" entry in
+    /// Herdr's session menu). Hidden until a status probe answers — the sheet is
+    /// about plugins first.
     @ViewBuilder private var herdrCard: some View {
         if let status = model.updateStatus {
+            // Nil while the release list is still being asked: the row then shows
+            // the version alone rather than guess at "up to date".
+            let offer = model.herdrOffer
+            let canUpdate = offer?.canUpdate ?? true
             GlassCard {
                 HStack(spacing: Theme.Space.sm) {
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: 4) {
                         HStack(spacing: Theme.Space.sm) {
                             SectionLabel(text: "Herdr")
-                            Text(status.serverVersion ?? status.clientVersion)
+                            Text(offer?.versionText ?? status.clientVersion)
                                 .font(.system(.footnote, design: .monospaced))
                                 .foregroundStyle(Theme.textSecondary)
-                            if status.updateReady {
-                                Text("Update ready")
-                                    .font(.system(.caption2, design: .rounded, weight: .semibold))
-                                    .foregroundStyle(Theme.warning)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(Capsule().fill(Theme.warning.opacity(0.15)))
-                            }
+                                .fixedSize(horizontal: false, vertical: true)
+                                .accessibilityLabel((offer?.versionText ?? status.clientVersion)
+                                    .replacingOccurrences(of: "→", with: "to"))
+                                .accessibilityIdentifier("host.plugins.herdr.version")
                         }
-                        if status.updateReady {
+                        if let offer {
+                            herdrStatusLabel(offer)
+                        }
+                        if case .restartNeeded = offer {
                             Text("A newer Herdr is installed than the server is running.")
                                 .font(.system(.caption, design: .rounded))
                                 .foregroundStyle(Theme.textMuted)
@@ -200,17 +204,50 @@ struct HerdrPluginManagerSheet: View {
                         Button {
                             Task { await model.updateHerdr() }
                         } label: {
-                            Text(status.updateReady ? "Apply update" : "Update Herdr")
+                            Text(offer?.buttonTitle ?? "Update Herdr")
                                 .font(.system(.footnote, design: .rounded, weight: .semibold))
-                                .foregroundStyle(status.updateReady ? Theme.warning : Theme.accent)
+                                .foregroundStyle(canUpdate ? herdrTint(offer) : Theme.textMuted)
                                 .frame(minHeight: 44)
                         }
                         .buttonStyle(.plain)
-                        .disabled(model.installedActionsBlocked)
+                        // Nothing to do when Herdr is current, so the button says so by
+                        // not responding; "could not check" leaves it usable.
+                        .disabled(model.installedActionsBlocked || !canUpdate)
                         .accessibilityIdentifier("host.plugins.herdrupdate")
                     }
                 }
             }
+        }
+    }
+
+    private func herdrTint(_ offer: HerdrUpdateOffer?) -> Color {
+        switch offer {
+        case .available, .restartNeeded: Theme.warning
+        default: Theme.accent
+        }
+    }
+
+    @ViewBuilder private func herdrStatusLabel(_ offer: HerdrUpdateOffer) -> some View {
+        switch offer {
+        case .available, .restartNeeded:
+            Text(offer.statusText)
+                .font(.system(.caption2, design: .rounded, weight: .semibold))
+                .foregroundStyle(Theme.warning)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Capsule().fill(Theme.warning.opacity(0.15)))
+                .accessibilityIdentifier("host.plugins.herdr.status")
+        case .current:
+            Label(offer.statusText, systemImage: "checkmark.circle")
+                .font(.system(.caption, design: .rounded))
+                .foregroundStyle(Theme.success)
+                .accessibilityIdentifier("host.plugins.herdr.status")
+        case .unknown:
+            Text(offer.statusText)
+                .font(.system(.caption, design: .rounded))
+                .foregroundStyle(Theme.textMuted)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("host.plugins.herdr.status")
         }
     }
 
@@ -357,7 +394,7 @@ struct HerdrPluginManagerSheet: View {
                     }
                 }
                 HStack(spacing: Theme.Space.lg) {
-                    if model.availableUpdate(for: plugin) != nil {
+                    if let update = model.availableUpdate(for: plugin) {
                         Button {
                             Task { await model.update(plugin) }
                         } label: {
@@ -368,6 +405,23 @@ struct HerdrPluginManagerSheet: View {
                         .buttonStyle(.plain)
                         .disabled(model.installedActionsBlocked)
                         .accessibilityIdentifier("host.plugins.update.\(plugin.pluginID)")
+                        // Installed version → update version, so the button is not
+                        // the only sign that something newer exists.
+                        if let change = update.change(installedVersion: plugin.version) {
+                            // No-break spaces round the arrow: on a narrow sheet the
+                            // commits form wraps after "·", never between the two commits.
+                            Text(change.replacingOccurrences(of: " → ", with: "\u{00A0}→\u{00A0}"))
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundStyle(Theme.warning)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .accessibilityLabel(change.replacingOccurrences(of: "→", with: "to"))
+                                .accessibilityIdentifier("host.plugins.update.change.\(plugin.pluginID)")
+                        }
+                    } else if model.isUpToDate(plugin) {
+                        Label("Up to date", systemImage: "checkmark.circle")
+                            .font(.system(.caption, design: .rounded))
+                            .foregroundStyle(Theme.success)
+                            .accessibilityIdentifier("host.plugins.uptodate.\(plugin.pluginID)")
                     }
                     Spacer(minLength: 0)
                     Button(role: .destructive) {

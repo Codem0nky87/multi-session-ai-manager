@@ -42,7 +42,7 @@ class PluginUpdateTests(unittest.TestCase):
              patch.object(software, 'download', return_value=json.dumps({'sha': 'b' * 40}).encode()) as fetch:
             result = software.plugin_updates()['updates'][0]
         self.assertIsNone(result['trackingRef'])
-        self.assertTrue(fetch.call_args.args[0].endswith('/commits/HEAD'))
+        self.assertTrue(fetch.call_args_list[0].args[0].endswith('/commits/HEAD'))
 
     def test_named_ref_and_subdirectory_are_retained(self):
         with patch.object(software, 'herdr_json', return_value={'plugins': [self.plugin(ref='release/stable', subdir='viewer')]}), \
@@ -50,7 +50,7 @@ class PluginUpdateTests(unittest.TestCase):
             result = software.plugin_updates()['updates'][0]
         self.assertEqual(result['source'], 'owner/one/viewer')
         self.assertEqual(result['trackingRef'], 'release/stable')
-        self.assertTrue(fetch.call_args.args[0].endswith('/commits/release%2Fstable'))
+        self.assertTrue(fetch.call_args_list[0].args[0].endswith('/commits/release%2Fstable'))
 
     def test_local_plugins_do_not_make_network_requests(self):
         with patch.object(software, 'herdr_json', return_value={'plugins': [{'plugin_id': 'local', 'source': {'kind': 'local'}}]}), \
@@ -127,6 +127,127 @@ class PluginUpdateTests(unittest.TestCase):
             # Explicitly reinstalling the commit resets the earlier selection.
             software.prepare_plugin('owner/one', 'b' * 40)
             self.assertIsNone(self.check([self.plugin(commit='b' * 40, ref='b' * 40)])[0]['trackingRef'])
+
+
+class PluginVersionTests(unittest.TestCase):
+    """What the app shows next to Update: the installed version and the one upstream."""
+
+    def plugin(self, version='1.17.0', commit='a' * 40, subdir=None):
+        return {'plugin_id': 'viewer', 'version': version,
+                'source': {'kind': 'github', 'owner': 'owner', 'repo': 'viewer', 'resolved_commit': commit,
+                           'requested_ref': commit, 'subdir': subdir}}
+
+    def check(self, plugin, manifest='version = "1.18.0"\n', remote='b' * 40):
+        requested = []
+
+        def fetch(url, *args, **kwargs):
+            requested.append(url)
+            if url.startswith('https://api.github.com/'):
+                return json.dumps({'sha': remote}).encode()
+            if isinstance(manifest, Exception):
+                raise manifest
+            return manifest.encode()
+
+        with patch.object(software, 'herdr_json', return_value={'plugins': [plugin]}), \
+             patch.object(software, 'download', side_effect=fetch), \
+             patch.object(software, 'STATE', Path(tempfile.mkdtemp())):
+            return software.plugin_updates()['updates'][0], requested
+
+    def test_an_update_names_the_installed_and_the_upstream_version(self):
+        result, requested = self.check(self.plugin())
+        self.assertEqual(result['installedVersion'], '1.17.0')
+        self.assertEqual(result['availableVersion'], '1.18.0')
+        self.assertEqual(requested[-1],
+                         'https://raw.githubusercontent.com/owner/viewer/' + 'b' * 40 + '/herdr-plugin.toml')
+
+    def test_a_plugin_in_a_subfolder_reads_its_own_manifest(self):
+        _, requested = self.check(self.plugin(subdir='viewer-plugin'))
+        self.assertTrue(requested[-1].endswith('/' + 'b' * 40 + '/viewer-plugin/herdr-plugin.toml'))
+
+    def test_a_current_plugin_costs_no_manifest_request(self):
+        result, requested = self.check(self.plugin(commit='b' * 40))
+        self.assertEqual(len(requested), 1)
+        self.assertEqual(result['installedVersion'], '1.17.0')
+        self.assertIsNone(result['availableVersion'])
+
+    def test_an_unreadable_upstream_manifest_still_offers_the_update(self):
+        for manifest in [software.urllib.error.HTTPError('url', 404, 'missing', {}, None),
+                         RuntimeError('network unreachable'), 'this is not = = toml', 'name = "no version"\n']:
+            with self.subTest(manifest=str(manifest)[:30]):
+                result, _ = self.check(self.plugin(), manifest=manifest)
+                self.assertIsNone(result['availableVersion'])
+                self.assertIsNone(result['error'])
+                self.assertEqual(result['availableCommit'], 'b' * 40)
+
+    def test_only_a_plain_version_string_is_passed_on(self):
+        for manifest in ['version = 5\n', 'version = ""\n', 'version = "1.0 <b>bold</b>"\n',
+                         'version = "' + '9' * 60 + '"\n']:
+            with self.subTest(manifest=manifest[:30]):
+                self.assertIsNone(self.check(self.plugin(), manifest=manifest)[0]['availableVersion'])
+        self.assertEqual(self.check(self.plugin(), manifest='version = "2.0.0-rc.1+build5"\n')[0]['availableVersion'],
+                         '2.0.0-rc.1+build5')
+
+    def test_a_plugin_without_a_version_reports_none(self):
+        plugin = self.plugin()
+        del plugin['version']
+        self.assertIsNone(self.check(plugin)[0]['installedVersion'])
+
+
+class HerdrReleaseTests(unittest.TestCase):
+    """Whether Herdr itself has a newer release than the one installed on the host."""
+
+    def release(self, status, manifest='{"version": "0.9.5", "notes": "…"}'):
+        requested = []
+
+        def fetch(url, *args, **kwargs):
+            requested.append(url)
+            return manifest.encode()
+
+        with patch.object(software, 'executable', return_value='/usr/bin/herdr'), \
+             patch.object(software, 'run', return_value=subprocess.CompletedProcess([], 0, stdout=status)) as herdr, \
+             patch.object(software, 'download', side_effect=fetch):
+            result = software.herdr_release()
+        self.assertEqual(herdr.call_args.args[0], ['/usr/bin/herdr', 'status', '--json'])
+        return result, requested
+
+    def test_the_stable_channel_reports_the_latest_release(self):
+        result, requested = self.release('{"client": {"version": "0.9.4", "channel": "stable"}}')
+        self.assertEqual(result, {'channel': 'stable', 'latestVersion': '0.9.5'})
+        self.assertEqual(requested, ['https://herdr.dev/latest.json'])
+
+    def test_text_around_the_status_does_not_hide_it(self):
+        result, _ = self.release('warning: slow start\n{"client": {"channel": "stable"}}\ntrailing note\n')
+        self.assertEqual(result['latestVersion'], '0.9.5')
+
+    def test_an_older_herdr_that_names_no_channel_is_on_stable(self):
+        result, requested = self.release('{"client": {"version": "0.8.2"}}')
+        self.assertEqual(result, {'channel': 'stable', 'latestVersion': '0.9.5'})
+
+    def test_a_preview_build_has_no_release_to_compare_with(self):
+        result, requested = self.release('{"client": {"version": "0.9.4", "channel": "preview"}}')
+        self.assertEqual(result, {'channel': 'preview', 'latestVersion': None})
+        self.assertEqual(requested, [])
+
+    def test_a_release_list_without_a_plain_version_is_an_error(self):
+        for manifest in ['{}', '{"version": 9}', '{"version": "0.9.5; rm -rf ~"}', '{"version": "latest"}', 'not json']:
+            with self.subTest(manifest=manifest), self.assertRaises(Exception):
+                self.release('{"client": {"channel": "stable"}}', manifest=manifest)
+
+    def test_a_host_without_herdr_says_so(self):
+        with patch.object(software, 'executable', return_value=None), \
+             patch.object(software, 'download', side_effect=AssertionError('nothing to compare with')):
+            with self.assertRaisesRegex(RuntimeError, 'not installed'):
+                software.herdr_release()
+
+    def test_the_command_line_offers_the_check(self):
+        import contextlib
+        import io
+        output = io.StringIO()
+        with patch.object(software, 'herdr_release', return_value={'channel': 'stable', 'latestVersion': '0.9.5'}), \
+             patch.object(software.sys, 'argv', ['software.py', 'herdr-release']), \
+             contextlib.redirect_stdout(output):
+            software.main()
+        self.assertEqual(output.getvalue().strip(), 'MSAM_SOFTWARE={"channel": "stable", "latestVersion": "0.9.5"}')
 
 
 class SoftwareTests(unittest.TestCase):
