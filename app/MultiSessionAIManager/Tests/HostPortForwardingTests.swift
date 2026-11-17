@@ -1,4 +1,6 @@
 import Foundation
+import SwiftUI
+import UIKit
 import Testing
 @testable import MultiSessionAIManager
 
@@ -80,6 +82,59 @@ struct HostPortForwardingTests {
         // comment there, so the assertion could not fail.
         let forwarding = try sourceFile("UI/Settings/HostPortForwarding.swift")
         #expect(forwarding.contains("SessionWebTunnelSheet("))
+    }
+
+    // MARK: - The app's manager must actually reach the views that use it
+
+    /// The regression this guards: the app put the manager in the environment by
+    /// type while the host editor and the metrics bar looked it up by key, so both
+    /// got nil. The editor then made a throwaway session per sheet, and closing the
+    /// sheet killed the forwards and left their ports bound.
+    @Test @MainActor func theManagerHandedOverAtTheAppRootIsTheOneViewsRead() async throws {
+        let manager = makeManager()
+        let sighting = ManagerSighting()
+        let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = UIHostingController(
+            rootView: ManagerProbe(sighting: sighting).portForwarding(manager))
+        window.isHidden = false
+        window.layoutIfNeeded()
+        for _ in 0..<50 where !sighting.looked {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        window.isHidden = true
+        #expect(sighting.looked)
+        #expect(sighting.manager === manager)
+    }
+
+    @Test func theAppHandsItsManagerOverByKey() throws {
+        let app = try sourceFile("App/MultiSessionAIManagerApp.swift")
+        #expect(app.contains(".portForwarding(portForwarding)"))
+        // Placed by type, the manager is invisible to the readers' key lookup.
+        #expect(!app.contains(".environment(portForwarding)"))
+    }
+
+    @Test @MainActor func reopeningPortForwardingForAHostFindsItsRunningSession() throws {
+        let manager = makeManager()
+        let keys = KeyStore(backing: InMemoryKeychain())
+        let host = Host(name: "Forge", address: "10.0.0.1", username: "alice",
+                        keyID: try keys.generateEd25519(label: "forwards"), defaultWorkdir: "/home/alice")
+        let first = manager.session(for: host)
+        #expect(manager.session(for: host) === first, "The second visit must see what the first one started")
+        #expect(manager.sessions[host.id] === first)
+    }
+
+    @Test func theSheetCannotMakeASessionOfItsOwn() throws {
+        // A session created by the sheet dies with the sheet; it has to be given one.
+        let forwarding = try sourceFile("UI/Settings/HostPortForwarding.swift")
+        #expect(forwarding.contains("init(session: PortForwardingSession)"))
+        #expect(!forwarding.contains("PortForwardingSession("))
+    }
+
+    @MainActor private func makeManager() -> PortForwardingManager {
+        PortForwardingManager(
+            keyStore: KeyStore(backing: InMemoryKeychain()),
+            knownHosts: KnownHostsStore(defaults: UserDefaults(suiteName: "msam.pfmanager.\(UUID())")!))
     }
 
     @Test func tunnelSurvivesClosingTheManagerSheet() throws {
@@ -199,5 +254,23 @@ private actor PortForwardingLifecycleProbe {
 
     @Test func aHostThatFailsValidationCannotForward() {
         #expect(!HostPortForwardingAvailability.isOfferable(host: host(address: "  "), isSaved: true))
+    }
+}
+
+@MainActor private final class ManagerSighting {
+    var looked = false
+    var manager: PortForwardingManager?
+}
+
+/// Reads the manager the way the host editor and the metrics bar do.
+private struct ManagerProbe: View {
+    @Environment(\.portForwardingManager) private var manager
+    let sighting: ManagerSighting
+
+    var body: some View {
+        Color.clear.onAppear {
+            sighting.manager = manager
+            sighting.looked = true
+        }
     }
 }

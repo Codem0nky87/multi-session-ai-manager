@@ -411,6 +411,20 @@ private final class NIOSessionWebTunnelListener: SessionWebTunnelListener, @unch
             _ = try? await service.runCommand(remoteForwardStopCommand)
         }
     }
+
+    /// The event loop keeps a bound server channel alive on its own, so a listener
+    /// that is dropped without `stop()` would hold its port until the app quits and
+    /// every later start on that port would fail with "already in use". Whoever
+    /// loses track of a listener therefore still gets the port back.
+    deinit {
+        guard !stopped.withLockedValue({ $0 }) else { return }
+        tracker.closeAll()
+        serverChannel.close(promise: nil)
+        if let remoteForwardStopCommand {
+            let service = self.service
+            Task { _ = try? await service.runCommand(remoteForwardStopCommand) }
+        }
+    }
 }
 
 private struct TunnelDestination {

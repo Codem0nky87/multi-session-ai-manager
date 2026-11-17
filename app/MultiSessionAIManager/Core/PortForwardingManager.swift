@@ -172,8 +172,22 @@ final class HerdrSSHConnectionLifecycle {
 
 private struct PortForwardingManagerKey: EnvironmentKey {
     // Optional so the nonisolated EnvironmentKey default needs no MainActor
-    // hop; the app root always injects the real manager.
+    // hop; the app root injects the real manager with `portForwarding(_:)`.
     static let defaultValue: PortForwardingManager? = nil
+}
+
+extension View {
+    /// Hands the app's port-forwarding manager to everything below this view.
+    ///
+    /// This, and not `.environment(manager)`, is what the readers see: they look
+    /// the manager up by key (`@Environment(\.portForwardingManager)`), and an
+    /// object placed in the environment by type is invisible to a key lookup. The
+    /// app once used the by-type form. Every reader then got nil, the host editor
+    /// built a throwaway session each time its sheet opened, and closing the sheet
+    /// took the SSH connection with it while the listeners kept their ports.
+    func portForwarding(_ manager: PortForwardingManager) -> some View {
+        environment(\.portForwardingManager, manager)
+    }
 }
 
 extension EnvironmentValues {

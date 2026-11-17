@@ -238,14 +238,11 @@ struct HostEditView: View {
         )
         .background(
             Color.clear.sheet(isPresented: $showPortForwarding) {
-                if let host = portForwardingHost {
-                    HerdrPortForwardingSheet(
-                        host: host,
-                        keyStore: keyStore,
-                        knownHosts: knownHosts,
-                        session: portForwarding?.session(for: host)
-                    )
-                    .preferredColorScheme(.dark)
+                // The session belongs to the app's manager, so forwards started
+                // here outlive this sheet and the host editor.
+                if let host = portForwardingHost, let session = portForwarding?.session(for: host) {
+                    HerdrPortForwardingSheet(session: session)
+                        .preferredColorScheme(.dark)
                 }
             }
         )

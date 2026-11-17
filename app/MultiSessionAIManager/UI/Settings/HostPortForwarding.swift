@@ -14,13 +14,12 @@ struct HerdrPortForwardingSheet: View {
     @State private var showingChangedKeyConfirmation = false
     @Environment(\.dismiss) private var dismiss
 
-    init(host: Host, keyStore: KeyStore, knownHosts: KnownHostsStore,
-         session: PortForwardingSession? = nil) {
-        let resolved = session
-            ?? PortForwardingSession(host: host, keyStore: keyStore, knownHosts: knownHosts,
-                                     tunnels: PortForwardingManager.loadTunnels(hostID: host.id))
-        resolved.isManaged = true
-        _session = State(initialValue: resolved)
+    /// - Parameter session: the host's session from `PortForwardingManager`. It is
+    ///   required: a session made here would die with this sheet, and its forwards
+    ///   with it.
+    init(session: PortForwardingSession) {
+        session.isManaged = true
+        _session = State(initialValue: session)
     }
 
     var body: some View {

@@ -334,6 +334,30 @@ struct NIOSessionWebTunnelServerTests {
         await firstListener.stop()
     }
 
+    @Test func aListenerDroppedWithoutBeingStoppedGivesItsPortBack() async throws {
+        // What an abandoned session does: it lets go of the listener and never
+        // calls stop(). The port must come back, or the next Start fails with
+        // "already in use" until the app is quit.
+        let (service, _) = try await connectedSSHService()
+        let server = NIOSessionWebTunnelServer(service: service)
+        var forgotten: (any SessionWebTunnelListener)? = try await server.start(
+            tunnel: SessionWebTunnel(label: "Forgotten", targetHost: "10.0.0.8", targetPort: 8080)
+        ) { _ in }
+        let port = try #require(forgotten?.localPort)
+        forgotten = nil
+
+        let again = SessionWebTunnel(label: "Same port", targetHost: "10.0.0.8", targetPort: 8080, localPort: port)
+        var restarted: (any SessionWebTunnelListener)?
+        for _ in 0..<50 {
+            // The close is handed to the event loop, so it lands a moment later.
+            restarted = try? await server.start(tunnel: again) { _ in }
+            if restarted != nil { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        #expect(restarted?.localPort == port)
+        await restarted?.stop()
+    }
+
     @Test func remoteForwardCommandsShellQuoteGeneratedValues() {
         let commands = SessionWebTunnelRemoteForwardCommands(
             hop: .init(username: "ro'ot", host: "jump';echo unsafe", port: 2222),

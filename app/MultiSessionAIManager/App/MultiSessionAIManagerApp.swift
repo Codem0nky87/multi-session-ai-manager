@@ -41,7 +41,7 @@ struct MultiSessionAIManagerApp: App {
                 tabs: tabs,
                 terminalSettings: terminalSettings
             )
-            .environment(portForwarding)
+            .portForwarding(portForwarding)
         }
     }
 }
