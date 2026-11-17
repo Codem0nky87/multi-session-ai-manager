@@ -142,7 +142,7 @@ action — never a plain Retry.
 | [docs/host-setup.md](docs/host-setup.md) | Keys, host-key pinning, Herdr install, plugins, session-restore integrations |
 | [docs/terminal.md](docs/terminal.md) | Select mode, copy, pointer vs touch, and terminal geometry |
 | [docs/file-transfer.md](docs/file-transfer.md) | The two-way file bridge and the `herdr-file-viewer` seam |
-| [docs/port-forwarding.md](docs/port-forwarding.md) | SSH web tunnels, second hops, and the in-app browser |
+| [docs/port-forwarding.md](docs/port-forwarding.md) | Port forwards (up to five at once), second hops, and the in-app browser |
 | [docs/development.md](docs/development.md) | Project generation, tests, and TestFlight delivery |
 | [docs/security.md](docs/security.md) | Trust boundaries, secret storage, and what leaves the device |
 

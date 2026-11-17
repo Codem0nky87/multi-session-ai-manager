@@ -421,20 +421,20 @@ struct HostEditView: View {
                 .disabled(portForwardingHost == nil)
                 .accessibilityIdentifier("host.port-forwarding.manage")
 
-                // Live state for this host's tunnel, if the user left one running.
-                if let host = portForwardingHost, portForwarding?.activeTunnelCount(for: host.id) ?? 0 > 0 {
+                // Live state for this host's forwards, if the user left any running.
+                if let host = portForwardingHost, let running = portForwarding?.activeTunnelCount(for: host.id), running > 0 {
                     HStack(spacing: 8) {
                         Circle()
                             .fill(Theme.success)
                             .frame(width: 8, height: 8)
-                        Text("1 tunnel running on this host")
+                        Text(running == 1 ? "1 forward running on this host" : "\(running) forwards running on this host")
                             .font(Theme.body(13))
                             .foregroundStyle(Theme.textSecondary)
                         Spacer()
                         Button(role: .destructive) {
                             Task { await portForwarding?.remove(hostID: host.id) }
                         } label: {
-                            Label("Stop", systemImage: "stop.circle")
+                            Label(running == 1 ? "Stop" : "Stop all", systemImage: "stop.circle")
                         }
                         .buttonStyle(.borderless)
                         .accessibilityIdentifier("host.port-forwarding.stop")

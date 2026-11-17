@@ -169,11 +169,9 @@ final class AppStoreScreenshotsLiveUITests: XCTestCase {
         }
         if pf.waitForExistence(timeout: 5) && pf.isHittable {
             pf.tap()
-            let status = app.descendants(matching: .any)
-                .matching(identifier: "tunnel.status").firstMatch
-            XCTAssertTrue(status.waitForExistence(timeout: 20), app.debugDescription)
+            XCTAssertTrue(app.buttons["tunnel.add"].waitForExistence(timeout: 20), app.debugDescription)
             screenshot("shot-tunnels")
-            app.navigationBars["SSH Web Tunnels"].buttons["Done"].tap()
+            app.navigationBars["Port Forwarding"].buttons["Done"].tap()
         }
 
         // 4 · The terminal: close the editor and the hosts sheet, then open a

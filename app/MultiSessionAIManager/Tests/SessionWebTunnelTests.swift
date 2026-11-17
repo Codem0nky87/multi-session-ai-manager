@@ -9,79 +9,64 @@ import Testing
         let tunnel = SessionWebTunnel.internalConsole
 
         #expect(tunnel.label == "Internal Console")
-        #expect(tunnel.scheme == .https)
         #expect(tunnel.targetHost == "10.44.0.25")
         #expect(tunnel.targetPort == 9443)
         #expect(tunnel.validationError == nil)
     }
 
-    @Test func loopbackURLUsesSchemeAndEphemeralListenerPort() {
-        let tunnel = SessionWebTunnel(
-            label: "Internal dashboard",
-            scheme: .http,
-            targetHost: "10.0.0.8",
-            targetPort: 8080
-        )
-
-        #expect(tunnel.loopbackURL(localPort: 49152)?.absoluteString == "http://127.0.0.1:49152")
+    @Test func aTargetIsWrittenAsHostAndPortWithoutDigitGrouping() {
+        let tunnel = SessionWebTunnel(label: "Grafana", targetHost: "10.0.0.8", targetPort: 13000)
+        #expect(tunnel.targetAddress == "10.0.0.8:13000")
     }
 
-    @Test func fixedLocalPortCreatesStableLoopbackAndSafariURLs() {
-        let tunnel = SessionWebTunnel(
-            label: "Security dashboard",
-            scheme: .https,
-            targetHost: "10.200.108.30",
-            targetPort: 5602,
-            localPort: 5602
-        )
+    @Test func aPlainWebServiceOpensOverHTTPOnTheListenersPort() {
+        let address = TunnelWebAddress(localPort: 49152, secure: false)
+        #expect(address?.loopbackURL.absoluteString == "http://127.0.0.1:49152")
+        #expect(address?.localhostURL.absoluteString == "http://localhost:49152")
+    }
 
-        #expect(tunnel.loopbackURL(localPort: 5602)?.absoluteString
-                == "https://127.0.0.1:5602")
-        #expect(tunnel.localhostURL(localPort: 5602)?.absoluteString
-                == "https://localhost:5602")
+    @Test func aTLSServiceOpensOverHTTPSOnTheListenersPort() {
+        let address = TunnelWebAddress(localPort: 5602, secure: true)
+        #expect(address?.loopbackURL.absoluteString == "https://127.0.0.1:5602")
+        #expect(address?.localhostURL.absoluteString == "https://localhost:5602")
+    }
+
+    @Test func thereIsNoWebAddressForAnImpossiblePort() {
+        #expect(TunnelWebAddress(localPort: 0, secure: false) == nil)
+        #expect(TunnelWebAddress(localPort: 70_000, secure: true) == nil)
     }
 
     @Test func validationRejectsMissingFieldsAndInvalidPorts() {
-        #expect(SessionWebTunnel(label: "", scheme: .https,
-                                targetHost: "10.0.0.8", targetPort: 443).validationError
+        #expect(SessionWebTunnel(label: "", targetHost: "10.0.0.8", targetPort: 443).validationError
                 == "Enter a label.")
-        #expect(SessionWebTunnel(label: "Dashboard", scheme: .https,
-                                targetHost: " ", targetPort: 443).validationError
+        #expect(SessionWebTunnel(label: "Dashboard", targetHost: " ", targetPort: 443).validationError
                 == "Enter a target host.")
-        #expect(SessionWebTunnel(label: "Dashboard", scheme: .https,
-                                targetHost: "10.0.0.8", targetPort: 0).validationError
+        #expect(SessionWebTunnel(label: "Dashboard", targetHost: "10.0.0.8", targetPort: 0).validationError
                 == "Target port must be between 1 and 65535.")
-        #expect(SessionWebTunnel(label: "Dashboard", scheme: .https,
-                                targetHost: "10.0.0.8", targetPort: 65_536).validationError
+        #expect(SessionWebTunnel(label: "Dashboard", targetHost: "10.0.0.8", targetPort: 65_536).validationError
                 == "Target port must be between 1 and 65535.")
     }
 
     @Test func validationRejectsInvalidFixedLocalPort() {
-        #expect(SessionWebTunnel(label: "Dashboard", scheme: .https,
-                                targetHost: "10.0.0.8", targetPort: 443,
+        #expect(SessionWebTunnel(label: "Dashboard", targetHost: "10.0.0.8", targetPort: 443,
                                 localPort: 0).validationError
                 == "Fixed local port must be between 1 and 65535.")
-        #expect(SessionWebTunnel(label: "Dashboard", scheme: .https,
-                                targetHost: "10.0.0.8", targetPort: 443,
+        #expect(SessionWebTunnel(label: "Dashboard", targetHost: "10.0.0.8", targetPort: 443,
                                 localPort: 65_536).validationError
                 == "Fixed local port must be between 1 and 65535.")
     }
 
     @Test func hopRequiresUsernameHostAndValidPort() {
-        #expect(SessionWebTunnel(label: "Dashboard", scheme: .https,
-                                targetHost: "10.0.0.8", targetPort: 443,
+        #expect(SessionWebTunnel(label: "Dashboard", targetHost: "10.0.0.8", targetPort: 443,
                                 hop: .init(username: "", host: "jump", port: 22))
             .validationError == "Enter an SSH hop username.")
-        #expect(SessionWebTunnel(label: "Dashboard", scheme: .https,
-                                targetHost: "10.0.0.8", targetPort: 443,
+        #expect(SessionWebTunnel(label: "Dashboard", targetHost: "10.0.0.8", targetPort: 443,
                                 hop: .init(username: "root", host: " ", port: 22))
             .validationError == "Enter an SSH hop host.")
-        #expect(SessionWebTunnel(label: "Dashboard", scheme: .https,
-                                targetHost: "10.0.0.8", targetPort: 443,
+        #expect(SessionWebTunnel(label: "Dashboard", targetHost: "10.0.0.8", targetPort: 443,
                                 hop: .init(username: "root", host: "jump", port: 0))
             .validationError == "SSH hop port must be between 1 and 65535.")
-        #expect(SessionWebTunnel(label: "Dashboard", scheme: .https,
-                                targetHost: "10.0.0.8", targetPort: 443,
+        #expect(SessionWebTunnel(label: "Dashboard", targetHost: "10.0.0.8", targetPort: 443,
                                 hop: nil).validationError == nil)
     }
 
@@ -89,7 +74,6 @@ import Testing
         let runtimeHopPassword = "secret-hop-pw"
         let tunnel = SessionWebTunnel(
             label: "Security dashboard",
-            scheme: .https,
             targetHost: "10.200.108.30",
             targetPort: 5602,
             localPort: 5602,
@@ -146,54 +130,25 @@ import Testing
         #expect(tunnel.validationError == nil)
     }
 
-    @Test func vncSchemeBuildsVNCURLsAndSkipsWebViewOpening() {
-        let tunnel = SessionWebTunnel(
-            label: "Studio desktop",
-            scheme: .vnc,
-            targetHost: "192.168.50.10",
-            targetPort: 5900
-        )
-
-        #expect(tunnel.validationError == nil)
-        #expect(tunnel.scheme.isWeb == false)
-        #expect(tunnel.loopbackURL(localPort: 5901)?.absoluteString == "vnc://127.0.0.1:5901")
-        #expect(tunnel.localhostURL(localPort: 5901)?.absoluteString == "vnc://localhost:5901")
-        #expect(SessionWebTunnelScheme.vnc.defaultPort == 5900)
+    @Test(arguments: ["https", "http", "vnc"])
+    func aTunnelSavedWithASchemeByAnOlderBuildStillLoads(scheme: String) throws {
+        let json = """
+        [{"id": "\(UUID().uuidString)", "label": "Studio desktop", "scheme": "\(scheme)",
+          "targetHost": "192.168.50.10", "targetPort": 5901, "localPort": 5901}]
+        """
+        let tunnels = try JSONDecoder().decode([SessionWebTunnel].self, from: Data(json.utf8))
+        #expect(tunnels.map(\.label) == ["Studio desktop"])
+        #expect(tunnels[0].targetPort == 5901)
+        #expect(tunnels[0].localPort == 5901)
+        #expect(tunnels[0].validationError == nil)
     }
 
-    @Test func vncTunnelRoundTripsThroughCodable() throws {
-        let tunnel = SessionWebTunnel(
-            label: "Studio desktop",
-            scheme: .vnc,
-            targetHost: "192.168.50.10",
-            targetPort: 5901,
-            localPort: 5901
-        )
-
-        let decoded = try JSONDecoder().decode(
-            SessionWebTunnel.self,
-            from: try JSONEncoder().encode(tunnel)
-        )
-        #expect(decoded == tunnel)
-    }
-
-    @Test func preparingNewTunnelStartImmediatelyForgetsPreviousPassword() {
-        let previousID = UUID()
-        let nextID = UUID()
-        var passwords = [
-            previousID: "previous-secret",
-            nextID: "next-secret"
-        ]
-
-        let nextPassword = prepareHopPasswordForTunnelStart(
-            passwords: &passwords,
-            previousTunnelID: previousID,
-            nextTunnelID: nextID
-        )
-
-        #expect(nextPassword == "next-secret")
-        #expect(passwords[previousID] == nil)
-        #expect(passwords[nextID] == "next-secret")
+    @Test func aTunnelIsSavedWithoutAScheme() throws {
+        let tunnel = SessionWebTunnel(label: "RDP", targetHost: "127.0.0.1", targetPort: 3391, localPort: 13389)
+        let data = try JSONEncoder().encode(tunnel)
+        #expect(try JSONDecoder().decode(SessionWebTunnel.self, from: data) == tunnel)
+        let keys = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any]).keys
+        #expect(!keys.contains("scheme"))
     }
 }
 
@@ -235,7 +190,6 @@ struct NIOSessionWebTunnelServerTests {
         let server = NIOSessionWebTunnelServer(service: service)
         let tunnel = SessionWebTunnel(
             label: "Direct dashboard",
-            scheme: .http,
             targetHost: "10.44.0.25",
             targetPort: 9443
         )
@@ -265,7 +219,6 @@ struct NIOSessionWebTunnelServerTests {
         )
         let tunnel = SessionWebTunnel(
             label: "Chained dashboard",
-            scheme: .https,
             targetHost: "10.200.108.30",
             targetPort: 5602,
             hop: .init(
@@ -313,7 +266,6 @@ struct NIOSessionWebTunnelServerTests {
         )
         let tunnel = SessionWebTunnel(
             label: "Password dashboard",
-            scheme: .https,
             targetHost: "10.200.108.30",
             targetPort: 5602,
             hop: .init(username: "root", host: "10.200.107.247")
@@ -359,14 +311,12 @@ struct NIOSessionWebTunnelServerTests {
         let server = NIOSessionWebTunnelServer(service: service)
         let automatic = SessionWebTunnel(
             label: "First listener",
-            scheme: .http,
             targetHost: "10.0.0.8",
             targetPort: 8080
         )
         let firstListener = try await server.start(tunnel: automatic) { _ in }
         let fixed = SessionWebTunnel(
             label: "Second listener",
-            scheme: .http,
             targetHost: "10.0.0.8",
             targetPort: 8080,
             localPort: firstListener.localPort
@@ -462,7 +412,6 @@ struct NIOSessionWebTunnelServerTests {
         )
         let tunnel = SessionWebTunnel(
             label: "Password dashboard",
-            scheme: .https,
             targetHost: "target",
             targetPort: 8443,
             hop: .init(username: "root", host: "jump")
@@ -502,8 +451,7 @@ struct NIOSessionWebTunnelServerTests {
         )
         let server = NIOSessionWebTunnelServer(service: service)
         let tunnel = SessionWebTunnel(
-            label: "Dead connection", scheme: .https,
-            targetHost: "target", targetPort: 8443,
+            label: "Dead connection", targetHost: "target", targetPort: 8443,
             hop: .init(username: "root", host: "jump")
         )
 
@@ -535,7 +483,6 @@ struct NIOSessionWebTunnelServerTests {
         )
         let tunnel = SessionWebTunnel(
             label: "Password dashboard",
-            scheme: .https,
             targetHost: "target",
             targetPort: 8443,
             hop: .init(username: "root", host: "jump")
@@ -585,7 +532,6 @@ struct NIOSessionWebTunnelServerTests {
         let model = SessionWebTunnelModel(server: server)
         let tunnel = SessionWebTunnel(
             label: "Password dashboard",
-            scheme: .https,
             targetHost: "target",
             targetPort: 8443,
             hop: .init(username: "root", host: "jump")
@@ -595,7 +541,7 @@ struct NIOSessionWebTunnelServerTests {
         }
 
         await transport.waitUntilStartCommandEntered()
-        await model.stop()
+        await model.stop(tunnel.id)
 
         for _ in 0..<25 {
             if transport.commandsRun.count >= connectedCommandCount + 2 { break }
@@ -609,71 +555,150 @@ struct NIOSessionWebTunnelServerTests {
             #expect(cleanupCommand.contains("\(controlPath).cancel"))
             #expect(cleanupCommand.contains("rm"))
         }
-        #expect(model.status == .idle)
+        #expect(model.status(for: tunnel.id) == .idle)
 
         await transport.allowStartCommandToReturn()
         await startTask.value
-        #expect(model.status == .idle)
+        #expect(model.status(for: tunnel.id) == .idle)
         #expect(transport.commandsRun.count == connectedCommandCount + 2)
     }
 }
 
 @MainActor
 @Suite struct SessionWebTunnelModelTests {
+    private func tunnel(_ label: String, port: Int = 8080) -> SessionWebTunnel {
+        SessionWebTunnel(label: label, targetHost: "10.0.0.8", targetPort: port)
+    }
 
-    @Test func startThenWebLoadReportsConnectingListeningAndOpen() async {
+    private func openServer(localPort: Int = 49152) async -> FakeSessionWebTunnelServer {
+        let server = FakeSessionWebTunnelServer(localPort: localPort)
+        await server.allowStart()
+        return server
+    }
+
+    @Test func startingReportsConnectingThenTheListeningPort() async {
         let server = FakeSessionWebTunnelServer(localPort: 49152)
         let model = SessionWebTunnelModel(server: server)
-        let startTask = Task { await model.start(.internalConsole) }
+        let console = SessionWebTunnel.internalConsole
+        #expect(model.status(for: console.id) == .idle)
+        let startTask = Task { await model.start(console) }
 
         await server.waitUntilStartEntered()
-        #expect(model.status == .connecting)
+        #expect(model.status(for: console.id) == .connecting)
+        #expect(model.runningCount == 1, "A tunnel mid-start already counts as running")
         await server.allowStart()
         await startTask.value
 
-        #expect(model.status == .listening(localPort: 49152))
-        #expect(model.loopbackURL?.absoluteString == "https://127.0.0.1:49152")
-        #expect(model.localhostURL?.absoluteString == "https://localhost:49152")
+        #expect(model.status(for: console.id) == .listening(localPort: 49152))
+        #expect(model.running == [console])
 
-        model.webViewDidFinish()
-        #expect(model.status == .open(localPort: 49152))
-
-        await model.stop()
-        #expect(model.status == .idle)
-        #expect(server.listener.stopCallCount == 1)
+        await model.stop(console.id)
+        #expect(model.status(for: console.id) == .idle)
+        #expect(model.running.isEmpty)
+        #expect(server.listener(for: console.id)?.stopCallCount == 1)
     }
 
-    @Test func listenerStartupFailureIsUserReadable() async {
-        let server = FakeSessionWebTunnelServer(
-            localPort: 49152,
-            startError: SessionWebTunnelError.couldNotStart("Loopback port unavailable.")
-        )
-        await server.allowStart()
+    @Test func severalTunnelsRunAtOnceEachOnItsOwnPort() async {
+        let server = await openServer()
         let model = SessionWebTunnelModel(server: server)
+        let rdp = tunnel("RDP", port: 3391), other = tunnel("Other", port: 2229)
 
-        await model.start(.internalConsole)
+        await model.start(rdp)
+        await model.start(other)
 
-        #expect(model.status == .failed(message: "Loopback port unavailable."))
-        #expect(model.loopbackURL == nil)
+        #expect(model.status(for: rdp.id) == .listening(localPort: 49152))
+        #expect(model.status(for: other.id) == .listening(localPort: 49153))
+        #expect(model.running == [rdp, other])
+        #expect(model.runningCount == 2)
+        #expect(server.listener(for: rdp.id)?.stopCallCount == 0, "Starting a second tunnel must not stop the first")
     }
 
-    @Test func sshTargetOpenFailureReplacesListeningStatus() async {
-        let server = FakeSessionWebTunnelServer(localPort: 49152)
-        await server.allowStart()
+    @Test func stoppingOneTunnelLeavesTheOthersRunning() async {
+        let server = await openServer()
         let model = SessionWebTunnelModel(server: server)
-        await model.start(.internalConsole)
+        let rdp = tunnel("RDP"), other = tunnel("Other")
+        await model.start(rdp)
+        await model.start(other)
 
-        server.emitConnectionError("SSH host could not reach 10.44.0.25:9443.")
+        await model.stop(rdp.id)
+
+        #expect(model.status(for: rdp.id) == .idle)
+        #expect(model.status(for: other.id) == .listening(localPort: 49153))
+        #expect(model.running == [other])
+        #expect(server.listener(for: rdp.id)?.stopCallCount == 1)
+        #expect(server.listener(for: other.id)?.stopCallCount == 0)
+    }
+
+    @Test func aSixthTunnelIsRefusedUntilOneIsStopped() async {
+        let server = await openServer()
+        let model = SessionWebTunnelModel(server: server)
+        let five = (1...5).map { tunnel("Forward \($0)") }
+        for forward in five { await model.start(forward) }
+        #expect(model.runningCount == 5)
+        #expect(!model.canStartAnother)
+
+        let sixth = tunnel("Forward 6")
+        await model.start(sixth)
+
+        #expect(model.status(for: sixth.id) == .failed(
+            message: "5 forwards are already running. Stop one to start another."))
+        #expect(model.runningCount == 5)
+        #expect(!server.startedTunnelIDs.contains(sixth.id), "A refused tunnel never reaches the host")
+
+        await model.stop(five[0].id)
+        #expect(model.canStartAnother)
+        await model.start(sixth)
+        #expect(model.status(for: sixth.id) == .listening(localPort: 49157))
+    }
+
+    @Test func aTunnelThatFailsToStartDoesNotDisturbARunningOne() async {
+        let server = await openServer()
+        let model = SessionWebTunnelModel(server: server)
+        let good = tunnel("Good"), bad = tunnel("Bad")
+        server.failStart(of: bad.id, with: SessionWebTunnelError.couldNotStart("Loopback port unavailable."))
+        await model.start(good)
+
+        await model.start(bad)
+
+        #expect(model.status(for: bad.id) == .failed(message: "Loopback port unavailable."))
+        #expect(model.status(for: good.id) == .listening(localPort: 49152))
+        #expect(model.running == [good], "A failed start holds no port and takes no slot")
+    }
+
+    @Test func aDefinitionThatIsNotValidFailsWithoutAskingTheHost() async {
+        let server = await openServer()
+        let model = SessionWebTunnelModel(server: server)
+        let broken = SessionWebTunnel(label: "Broken", targetHost: "10.0.0.8", targetPort: 0)
+
+        await model.start(broken)
+
+        #expect(model.status(for: broken.id) == .failed(message: "Target port must be between 1 and 65535."))
+        #expect(server.startedTunnelIDs.isEmpty)
+    }
+
+    @Test func aTargetThatCannotBeReachedKeepsTheListenerUpAndSaysWhy() async {
+        // The listener still holds its port, and the service may come up later: the
+        // tunnel stays in the running list with the reason beside it.
+        let server = await openServer()
+        let model = SessionWebTunnelModel(server: server)
+        let console = SessionWebTunnel.internalConsole, other = tunnel("Other")
+        await model.start(console)
+        await model.start(other)
+        #expect(model.connectionProblem(for: console.id) == nil)
+
+        server.emitConnectionError("SSH host could not reach 10.44.0.25:9443.", for: console.id)
         await Task.yield()
 
-        #expect(model.status == .failed(
-            message: "SSH host could not reach 10.44.0.25:9443."
-        ))
+        #expect(model.status(for: console.id) == .listening(localPort: 49152))
+        #expect(model.connectionProblem(for: console.id) == "SSH host could not reach 10.44.0.25:9443.")
+        #expect(model.connectionProblem(for: other.id) == nil)
+
+        await model.start(console)
+        #expect(model.connectionProblem(for: console.id) == nil, "A restart begins with a clean slate")
     }
 
     @Test func startPassesHopPasswordAsRuntimeOnlyServerInput() async {
-        let server = FakeSessionWebTunnelServer(localPort: 49152)
-        await server.allowStart()
+        let server = await openServer()
         let model = SessionWebTunnelModel(server: server)
 
         await model.start(.internalConsole, hopPassword: "secret-hop-pw")
@@ -684,27 +709,109 @@ struct NIOSessionWebTunnelServerTests {
     @Test func stopWhileStartupIsPendingStopsLateListenerAndRemainsIdle() async {
         let server = FakeSessionWebTunnelServer(localPort: 49152)
         let model = SessionWebTunnelModel(server: server)
-        let startTask = Task {
-            await model.start(
-                .internalConsole,
-                hopPassword: "secret-hop-pw"
-            )
-        }
+        let console = SessionWebTunnel.internalConsole
+        let startTask = Task { await model.start(console, hopPassword: "secret-hop-pw") }
 
         await server.waitUntilStartEntered()
-        #expect(model.status == .connecting)
+        #expect(model.status(for: console.id) == .connecting)
 
-        await model.stop()
-        #expect(model.status == .idle)
+        await model.stop(console.id)
+        #expect(model.status(for: console.id) == .idle)
 
         await server.allowStart()
         await startTask.value
 
-        #expect(model.status == .idle)
-        #expect(model.activeTunnel == nil)
-        #expect(model.loopbackURL == nil)
-        #expect(model.localhostURL == nil)
-        #expect(server.listener.stopCallCount == 1)
+        #expect(model.status(for: console.id) == .idle)
+        #expect(model.running.isEmpty)
+        #expect(server.listener(for: console.id)?.stopCallCount == 1)
+    }
+
+    @Test func startingARunningTunnelAgainReplacesItsListener() async {
+        let server = await openServer()
+        let model = SessionWebTunnelModel(server: server)
+        let console = SessionWebTunnel.internalConsole
+        await model.start(console)
+
+        await model.start(console)
+
+        #expect(server.listeners(for: console.id).map(\.stopCallCount) == [1, 0])
+        #expect(model.status(for: console.id) == .listening(localPort: 49153))
+        #expect(model.runningCount == 1)
+    }
+
+    @Test func stoppingEverythingStopsEveryListener() async {
+        let server = await openServer()
+        let model = SessionWebTunnelModel(server: server)
+        let forwards = (1...3).map { tunnel("Forward \($0)") }
+        for forward in forwards { await model.start(forward) }
+
+        await model.stopAll()
+
+        #expect(model.running.isEmpty)
+        #expect(forwards.allSatisfy { server.listener(for: $0.id)?.stopCallCount == 1 })
+        #expect(forwards.allSatisfy { model.status(for: $0.id) == .idle })
+    }
+
+    @Test func theBrowserUsesHTTPSOnlyWhenThePortSpeaksTLS() async {
+        let server = await openServer()
+        let probe = FakeTLSProbe(tlsPorts: [49153])
+        let model = SessionWebTunnelModel(server: server, probe: probe)
+        let plain = tunnel("Plain"), secure = tunnel("Secure")
+        await model.start(plain)
+        await model.start(secure)
+
+        #expect(await model.webAddress(for: plain.id)?.localhostURL.absoluteString == "http://localhost:49152")
+        #expect(await model.webAddress(for: secure.id)?.loopbackURL.absoluteString == "https://127.0.0.1:49153")
+    }
+
+    @Test func thePortIsAskedOncePerRun() async {
+        let server = await openServer()
+        let probe = FakeTLSProbe(tlsPorts: [49152])
+        let model = SessionWebTunnelModel(server: server, probe: probe)
+        let console = SessionWebTunnel.internalConsole
+        await model.start(console)
+
+        _ = await model.webAddress(for: console.id)
+        _ = await model.webAddress(for: console.id)
+        #expect(probe.asked == [49152])
+
+        // A restart is a new listener, and the service behind it may have changed.
+        await model.start(console)
+        #expect(await model.webAddress(for: console.id)?.loopbackURL.absoluteString == "http://127.0.0.1:49153")
+        #expect(probe.asked == [49152, 49153])
+    }
+
+    @Test func theMonitorCountsEveryRunningForwardOfAHost() async throws {
+        let server = await openServer()
+        let model = SessionWebTunnelModel(server: server)
+        let keys = KeyStore(backing: InMemoryKeychain())
+        let keyID = try keys.generateEd25519(label: "forwards")
+        let session = PortForwardingSession(
+            host: Host(name: "h", address: "10.0.0.1", username: "alice", keyID: keyID, defaultWorkdir: "/home/alice"),
+            keyStore: keys,
+            knownHosts: KnownHostsStore(defaults: UserDefaults(suiteName: "msam.forwards.\(UUID())")!),
+            tunnels: [], model: model)
+        #expect(session.activeTunnelCount == 0)
+
+        let rdp = tunnel("RDP"), other = tunnel("Other"), bad = tunnel("Bad")
+        server.failStart(of: bad.id, with: SessionWebTunnelError.couldNotStart("no route"))
+        await model.start(rdp)
+        await model.start(other)
+        await model.start(bad)
+        #expect(session.activeTunnelCount == 2, "A forward that failed to start is not running")
+
+        await session.shutdown()
+        #expect(session.activeTunnelCount == 0)
+        #expect(server.listener(for: rdp.id)?.stopCallCount == 1)
+        #expect(server.listener(for: other.id)?.stopCallCount == 1)
+    }
+
+    @Test func aTunnelThatIsNotListeningHasNoWebAddress() async {
+        let server = FakeSessionWebTunnelServer(localPort: 49152)
+        let probe = FakeTLSProbe(tlsPorts: [])
+        let model = SessionWebTunnelModel(server: server, probe: probe)
+        #expect(await model.webAddress(for: UUID()) == nil)
+        #expect(probe.asked.isEmpty)
     }
 }
 
@@ -838,7 +945,6 @@ private func waitUntil(
 private extension SessionWebTunnel {
     static let internalConsole = SessionWebTunnel(
         label: "Internal Console",
-        scheme: .https,
         targetHost: "10.44.0.25",
         targetPort: 9443
     )
@@ -864,16 +970,20 @@ private final class FakeSessionWebTunnelListener: SessionWebTunnelListener, @unc
     }
 }
 
+/// Hands out a new listener, on the next port up, for every start.
 private final class FakeSessionWebTunnelServer: SessionWebTunnelServing, @unchecked Sendable {
-    let listener: FakeSessionWebTunnelListener
     private let startError: Error?
     private let startGate = StartGate()
     private let lock = NSLock()
-    private var onConnectionError: (@Sendable (String) -> Void)?
+    private var nextPort: Int
+    private var listenersByTunnel: [UUID: [FakeSessionWebTunnelListener]] = [:]
+    private var callbacks: [UUID: @Sendable (String) -> Void] = [:]
+    private var failures: [UUID: Error] = [:]
+    private var _startedTunnelIDs: [UUID] = []
     private var _lastHopPassword: String?
 
     init(localPort: Int, startError: Error? = nil) {
-        listener = FakeSessionWebTunnelListener(localPort: localPort)
+        nextPort = localPort
         self.startError = startError
     }
 
@@ -883,13 +993,20 @@ private final class FakeSessionWebTunnelServer: SessionWebTunnelServing, @unchec
         onConnectionError: @escaping @Sendable (String) -> Void
     ) async throws -> any SessionWebTunnelListener {
         lock.withLock {
-            self.onConnectionError = onConnectionError
+            callbacks[tunnel.id] = onConnectionError
             _lastHopPassword = hopPassword
+            _startedTunnelIDs.append(tunnel.id)
         }
         await startGate.enterAndWait()
 
         if let startError { throw startError }
-        return listener
+        return try lock.withLock {
+            if let failure = failures[tunnel.id] { throw failure }
+            let listener = FakeSessionWebTunnelListener(localPort: nextPort)
+            nextPort += 1
+            listenersByTunnel[tunnel.id, default: []].append(listener)
+            return listener
+        }
     }
 
     func waitUntilStartEntered() async {
@@ -900,13 +1017,49 @@ private final class FakeSessionWebTunnelServer: SessionWebTunnelServing, @unchec
         await startGate.allow()
     }
 
-    func emitConnectionError(_ message: String) {
-        let callback = lock.withLock { onConnectionError }
+    func failStart(of id: UUID, with error: Error) {
+        lock.withLock { failures[id] = error }
+    }
+
+    func emitConnectionError(_ message: String, for id: UUID) {
+        let callback = lock.withLock { callbacks[id] }
         callback?(message)
+    }
+
+    /// Every listener this tunnel was given, oldest first.
+    func listeners(for id: UUID) -> [FakeSessionWebTunnelListener] {
+        lock.withLock { listenersByTunnel[id] ?? [] }
+    }
+
+    func listener(for id: UUID) -> FakeSessionWebTunnelListener? {
+        listeners(for: id).last
+    }
+
+    var startedTunnelIDs: [UUID] {
+        lock.withLock { _startedTunnelIDs }
     }
 
     var lastHopPassword: String? {
         lock.withLock { _lastHopPassword }
+    }
+}
+
+private final class FakeTLSProbe: TunnelTLSProbing, @unchecked Sendable {
+    private let tlsPorts: Set<Int>
+    private let lock = NSLock()
+    private var _asked: [Int] = []
+
+    init(tlsPorts: Set<Int>) {
+        self.tlsPorts = tlsPorts
+    }
+
+    func speaksTLS(localPort: Int) async -> Bool {
+        lock.withLock { _asked.append(localPort) }
+        return tlsPorts.contains(localPort)
+    }
+
+    var asked: [Int] {
+        lock.withLock { _asked }
     }
 }
 

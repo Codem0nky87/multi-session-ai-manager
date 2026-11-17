@@ -42,7 +42,9 @@ struct HostMetricsBarView: View {
                     .foregroundStyle(HerdrTheme.text)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("1 port forward running. Tap to manage.")
+                .accessibilityLabel(portForwarding?.activeTunnelCount(for: hostID) == 1
+                                    ? "1 port forward running. Tap to manage."
+                                    : "\(portForwarding?.activeTunnelCount(for: hostID) ?? 0) port forwards running. Tap to manage.")
                 .accessibilityIdentifier("metrics.port-forwards")
                 .popover(isPresented: $showingTunnels, arrowEdge: .bottom) {
                     // The sheet is full-screen-ish; a compact popover body
@@ -52,34 +54,54 @@ struct HostMetricsBarView: View {
                             .font(HerdrTheme.mono(.caption, weight: .bold))
                             .foregroundStyle(HerdrTheme.subtext)
                         if let session = portForwarding?.sessions[hostID] {
-                            switch session.model.status {
-                            case .connecting:
-                                Label("Connecting…", systemImage: "arrow.triangle.2.circlepath")
-                                    .font(HerdrTheme.mono(.subheadline))
-                                    .foregroundStyle(HerdrTheme.subtext)
-                            case .listening(let port), .open(let port):
-                                Label("127.0.0.1:\(port) live", systemImage: "checkmark.circle.fill")
-                                    .font(HerdrTheme.mono(.subheadline))
-                                    .foregroundStyle(HerdrTheme.green)
-                            case .failed(let message):
-                                Label(message, systemImage: "xmark.circle.fill")
-                                    .font(HerdrTheme.mono(.subheadline))
+                            // One line per running forward, each with its own stop.
+                            ForEach(session.model.running) { tunnel in
+                                HStack(spacing: 8) {
+                                    switch session.model.status(for: tunnel.id) {
+                                    case .listening(let port):
+                                        Label {
+                                            // Verbatim: a port is a name, not a quantity to group digits in.
+                                            Text(verbatim: "\(tunnel.label) · 127.0.0.1:\(port)")
+                                        } icon: {
+                                            Image(systemName: "checkmark.circle.fill")
+                                        }
+                                        .foregroundStyle(HerdrTheme.green)
+                                    default:
+                                        Label {
+                                            Text(verbatim: "\(tunnel.label) · starting…")
+                                        } icon: {
+                                            Image(systemName: "arrow.triangle.2.circlepath")
+                                        }
+                                        .foregroundStyle(HerdrTheme.subtext)
+                                    }
+                                    Spacer(minLength: 4)
+                                    Button {
+                                        Task { await session.model.stop(tunnel.id) }
+                                    } label: {
+                                        Image(systemName: "stop.circle")
+                                            .frame(minWidth: 32, minHeight: 32)
+                                            .contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.plain)
                                     .foregroundStyle(HerdrTheme.red)
-                            case .idle:
-                                EmptyView()
+                                    .accessibilityLabel("Stop \(tunnel.label)")
+                                }
+                                .font(HerdrTheme.mono(.caption))
+                                .lineLimit(1)
                             }
                             Button(role: .destructive) {
                                 Task { await portForwarding?.remove(hostID: hostID) }
                             } label: {
-                                Label("Stop tunnel", systemImage: "stop.circle")
+                                Label("Stop all", systemImage: "stop.circle")
                                     .font(HerdrTheme.mono(.subheadline))
                             }
                             .buttonStyle(.plain)
                             .foregroundStyle(HerdrTheme.red)
+                            .accessibilityIdentifier("metrics.port-forwards.stop-all")
                         }
                     }
                     .padding()
-                    .frame(width: 260)
+                    .frame(width: 300)
                     .background(HerdrTheme.background)
                     .presentationCompactAdaptation(.popover)
                 }

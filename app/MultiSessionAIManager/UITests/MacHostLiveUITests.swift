@@ -97,7 +97,7 @@ final class MacHostLiveUITests: XCTestCase {
         revealEditor(pf)
         XCTAssertTrue(pf.isEnabled, app.debugDescription)
         pf.tap()
-        XCTAssertTrue(app.navigationBars["SSH Web Tunnels"].waitForExistence(timeout: 60),
+        XCTAssertTrue(app.navigationBars["Port Forwarding"].waitForExistence(timeout: 60),
                       app.debugDescription)
 
         // Add a hop tunnel: first host = Mac, hop = Forge, target = something
@@ -112,7 +112,7 @@ final class MacHostLiveUITests: XCTestCase {
         let targetPort = app.textFields["tunnel.field.targetPort"]
         targetPort.tap()
         targetPort.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 8)
-                            + String(fixture.targetPort) + "\n")   // clear the prefilled scheme port
+                            + String(fixture.targetPort) + "\n")   // clear whatever the field holds
         let hopToggle = app.switches["tunnel.field.hopEnabled"].firstMatch
         XCTAssertTrue(hopToggle.waitForExistence(timeout: 5), app.debugDescription)
         // The row-level switch sometimes swallows the first tap, and reading
@@ -148,31 +148,32 @@ final class MacHostLiveUITests: XCTestCase {
                        "typed hop password did not land in the field")
         revealField(app.buttons["tunnel.save"]).tap()
 
-        // Start it: the row's external-open button drives model.start. Wait
-        // for the editor sheet to finish dismissing before touching the row.
+        // Start it with the connection's own Start button. Wait for the editor
+        // sheet to finish dismissing before touching the row.
         let status = app.descendants(matching: .any).matching(identifier: "tunnel.status").firstMatch
         XCTAssertTrue(app.buttons["tunnel.add"].waitForExistence(timeout: 30),
                       "editor never dismissed: \(app.debugDescription)")
         sleep(2)
-        revealField(app.buttons["tunnel.open.external"].firstMatch).tap()
+        revealField(app.buttons["tunnel.start"].firstMatch).tap()
         screenshot("mac-it-starting")
         let listening = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "label CONTAINS 'Listening' OR label CONTAINS 'Open on'"),
+            predicate: NSPredicate(format: "label CONTAINS 'Listening'"),
             object: status)
         XCTAssertEqual(XCTWaiter.wait(for: [listening], timeout: 120), .completed,
                        "tunnel never reached Listening: \(status.debugDescription)\n\(app.debugDescription)")
         screenshot("mac-it-listening")
 
         // Stop, then restart: the restart must authenticate without re-prompt
-        // (the password survives in the app-owned session).
+        // (the password survives in the app-owned session). A stopped forward
+        // leaves the Running section, so its status row goes away.
         revealField(app.buttons["tunnel.stop"].firstMatch).tap()
-        let idle = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "label CONTAINS 'Not running'"),
+        let stopped = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == false"),
             object: status)
-        XCTAssertEqual(XCTWaiter.wait(for: [idle], timeout: 30), .completed, app.debugDescription)
-        revealField(app.buttons["tunnel.open.external"].firstMatch).tap()
+        XCTAssertEqual(XCTWaiter.wait(for: [stopped], timeout: 30), .completed, app.debugDescription)
+        revealField(app.buttons["tunnel.start"].firstMatch).tap()
         let relistening = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "label CONTAINS 'Listening' OR label CONTAINS 'Open on'"),
+            predicate: NSPredicate(format: "label CONTAINS 'Listening'"),
             object: status)
         XCTAssertEqual(XCTWaiter.wait(for: [relistening], timeout: 120), .completed,
                        "restart after stop failed: \(status.debugDescription)\n\(app.debugDescription)")
@@ -180,7 +181,7 @@ final class MacHostLiveUITests: XCTestCase {
 
         // Clean up: stop the tunnel and leave the host provisioned.
         revealField(app.buttons["tunnel.stop"].firstMatch).tap()
-        app.navigationBars["SSH Web Tunnels"].buttons["Done"].tap()
+        app.navigationBars["Port Forwarding"].buttons["Done"].tap()
         if app.navigationBars["Edit Host"].buttons["Cancel"].waitForExistence(timeout: 4) {
             app.navigationBars["Edit Host"].buttons["Cancel"].tap()
         }

@@ -1,26 +1,6 @@
 import Foundation
 import Observation
 
-enum SessionWebTunnelScheme: String, Codable, CaseIterable, Identifiable {
-    case https
-    case http
-    case vnc
-
-    var id: String { rawValue }
-
-    /// VNC is a binary protocol: the loopback listener still carries the bytes,
-    /// but no WebView can render it, so opening hands `vnc://` off to a client.
-    var isWeb: Bool { self != .vnc }
-
-    var defaultPort: Int {
-        switch self {
-        case .https: return 443
-        case .http: return 80
-        case .vnc: return 5900
-        }
-    }
-}
-
 enum SessionWebTunnelLocalPortMode: String, CaseIterable, Identifiable {
     case automatic
     case fixed
@@ -40,7 +20,13 @@ struct SessionWebTunnelHop: Codable, Equatable {
     }
 }
 
-/// Persisted definition for a web service reached from the SSH host.
+/// Persisted definition of one port forward: a TCP service reached from the SSH host
+/// (or from a second hop) and served on a loopback port of this device.
+///
+/// It carries no scheme. The forward moves bytes for any protocol — a web page,
+/// RDP, VNC, a database — and only the two browser shortcuts need to know whether
+/// to say `http` or `https`; they ask the port (`TunnelTLSProbing`). Definitions
+/// saved by builds that stored a scheme still decode: the extra key is ignored.
 struct SessionWebTunnel: Identifiable, Codable, Equatable {
     static let hopCredentialExplanation =
         "The SSH hop uses the key, SSH config, or agent available on the connected "
@@ -51,7 +37,6 @@ struct SessionWebTunnel: Identifiable, Codable, Equatable {
 
     var id: UUID
     var label: String
-    var scheme: SessionWebTunnelScheme
     var targetHost: String
     var targetPort: Int
     /// `nil` requests an ephemeral loopback port for each listener.
@@ -62,7 +47,6 @@ struct SessionWebTunnel: Identifiable, Codable, Equatable {
     init(
         id: UUID = UUID(),
         label: String,
-        scheme: SessionWebTunnelScheme,
         targetHost: String,
         targetPort: Int,
         localPort: Int? = nil,
@@ -70,12 +54,15 @@ struct SessionWebTunnel: Identifiable, Codable, Equatable {
     ) {
         self.id = id
         self.label = label
-        self.scheme = scheme
         self.targetHost = targetHost
         self.targetPort = targetPort
         self.localPort = localPort
         self.hop = hop
     }
+
+    /// "10.0.0.8:3000", as plain text. A port interpolated straight into a SwiftUI
+    /// `Text` is formatted as a quantity and comes out as "3 000" or "3,000".
+    var targetAddress: String { "\(targetHost):\(targetPort)" }
 
     var validationError: String? {
         if label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -103,23 +90,27 @@ struct SessionWebTunnel: Identifiable, Codable, Equatable {
         }
         return nil
     }
+}
 
-    func loopbackURL(localPort: Int) -> URL? {
+/// Where a browser finds a running forward that carries a web page.
+struct TunnelWebAddress: Equatable, Sendable {
+    /// The origin the in-app browser loads, and the only one it will stay on.
+    let loopbackURL: URL
+    /// The same listener by name, for Safari.
+    let localhostURL: URL
+
+    /// - Parameter secure: whether the service answered a TLS greeting.
+    init?(localPort: Int, secure: Bool) {
         guard (1...65_535).contains(localPort) else { return nil }
         var components = URLComponents()
-        components.scheme = scheme.rawValue
+        components.scheme = secure ? "https" : "http"
+        components.port = localPort
         components.host = "127.0.0.1"
-        components.port = localPort
-        return components.url
-    }
-
-    func localhostURL(localPort: Int) -> URL? {
-        guard (1...65_535).contains(localPort) else { return nil }
-        var components = URLComponents()
-        components.scheme = scheme.rawValue
+        guard let loopbackURL = components.url else { return nil }
         components.host = "localhost"
-        components.port = localPort
-        return components.url
+        guard let localhostURL = components.url else { return nil }
+        self.loopbackURL = loopbackURL
+        self.localhostURL = localhostURL
     }
 }
 
@@ -160,7 +151,7 @@ enum SessionWebTunnelStatus: Equatable {
     case idle
     case connecting
     case listening(localPort: Int)
-    case open(localPort: Int)
+    /// The tunnel could not be started. It holds no port and takes no slot.
     case failed(message: String)
 }
 
@@ -201,109 +192,151 @@ extension SessionWebTunnelServing {
     }
 }
 
+/// The port forwards running on one host's SSH connection.
+///
+/// Each forward is its own loopback listener and is started, stopped and reported on
+/// by its tunnel's id; they share nothing but the connection. Up to `runningLimit`
+/// run at once.
 @MainActor
 @Observable
 final class SessionWebTunnelModel {
-    private let server: any SessionWebTunnelServing
-    private var listener: (any SessionWebTunnelListener)?
-    private var startupTask: Task<any SessionWebTunnelListener, Error>?
-    private var operationGeneration: UInt = 0
+    static let runningLimit = 5
 
-    private(set) var status: SessionWebTunnelStatus = .idle
-    private(set) var loopbackURL: URL?
-    private(set) var localhostURL: URL?
-    private(set) var activeTunnel: SessionWebTunnel?
-
-    init(server: any SessionWebTunnelServing) {
-        self.server = server
+    private struct Run {
+        var tunnel: SessionWebTunnel
+        var status: SessionWebTunnelStatus
+        var listener: (any SessionWebTunnelListener)?
+        var startupTask: Task<any SessionWebTunnelListener, Error>?
+        /// What the last connection through the listener ran into, if anything.
+        var connectionProblem: String?
+        /// Asked once per run, the first time a browser shortcut needs it.
+        var speaksTLS: Bool?
     }
 
+    private let server: any SessionWebTunnelServing
+    private let probe: any TunnelTLSProbing
+    private var runs: [UUID: Run] = [:]
+    /// Ids of connecting and listening tunnels, oldest first.
+    private var order: [UUID] = []
+    /// Bumped by every start and stop of a tunnel, so the late result of a start that
+    /// was since stopped or restarted cannot overwrite what replaced it.
+    private var generations: [UUID: UInt] = [:]
+
+    init(server: any SessionWebTunnelServing, probe: any TunnelTLSProbing = NIOTunnelTLSProbe()) {
+        self.server = server
+        self.probe = probe
+    }
+
+    func status(for id: UUID) -> SessionWebTunnelStatus {
+        runs[id]?.status ?? .idle
+    }
+
+    /// Why the last connection through a listening tunnel failed, for example a
+    /// target that refused it. The tunnel keeps listening: the service may yet start.
+    func connectionProblem(for id: UUID) -> String? {
+        runs[id]?.connectionProblem
+    }
+
+    /// Tunnels that are connecting or listening, in the order they were started.
+    var running: [SessionWebTunnel] {
+        order.compactMap { runs[$0]?.tunnel }
+    }
+
+    var runningCount: Int { order.count }
+
+    var canStartAnother: Bool { runningCount < Self.runningLimit }
+
+    /// Starts `tunnel`, or restarts it if it is already running. Other tunnels are
+    /// left alone.
     func start(_ tunnel: SessionWebTunnel, hopPassword: String? = nil) async {
-        operationGeneration &+= 1
-        let generation = operationGeneration
-        cancelPendingStartup()
+        let id = tunnel.id
+        let generation = advanceGeneration(of: id)
+        await retire(id)
+        guard generation == generations[id] else { return }
 
-        guard let validationError = tunnel.validationError else {
-            await stopListener()
-            guard generation == operationGeneration else { return }
-
-            activeTunnel = tunnel
-            loopbackURL = nil
-            localhostURL = nil
-            status = .connecting
-
-            let connectionErrorHandler: @Sendable (String) -> Void = {
-                [weak self] message in
-                Task { @MainActor [weak self] in
-                    guard self?.operationGeneration == generation else {
-                        return
-                    }
-                    self?.status = .failed(message: message)
-                }
-            }
-            let startupTask = Task {
-                try await server.start(
-                    tunnel: tunnel,
-                    hopPassword: hopPassword,
-                    onConnectionError: connectionErrorHandler
-                )
-            }
-            self.startupTask = startupTask
-
-            do {
-                let listener = try await startupTask.value
-                guard generation == operationGeneration else {
-                    await listener.stop()
-                    return
-                }
-                self.startupTask = nil
-                self.listener = listener
-                loopbackURL = tunnel.loopbackURL(localPort: listener.localPort)
-                localhostURL = tunnel.localhostURL(localPort: listener.localPort)
-                status = .listening(localPort: listener.localPort)
-            } catch {
-                guard generation == operationGeneration else { return }
-                self.startupTask = nil
-                activeTunnel = nil
-                loopbackURL = nil
-                localhostURL = nil
-                status = .failed(message: Self.userMessage(for: error))
-            }
+        if let validationError = tunnel.validationError {
+            runs[id] = Run(tunnel: tunnel, status: .failed(message: validationError))
+            return
+        }
+        guard canStartAnother else {
+            runs[id] = Run(tunnel: tunnel, status: .failed(
+                message: "\(Self.runningLimit) forwards are already running. Stop one to start another."))
             return
         }
 
-        status = .failed(message: validationError)
+        let connectionErrorHandler: @Sendable (String) -> Void = { [weak self] message in
+            Task { @MainActor [weak self] in
+                guard let self, self.generations[id] == generation, self.runs[id]?.listener != nil else { return }
+                self.runs[id]?.connectionProblem = message
+            }
+        }
+        let server = self.server
+        let startupTask = Task {
+            try await server.start(
+                tunnel: tunnel,
+                hopPassword: hopPassword,
+                onConnectionError: connectionErrorHandler
+            )
+        }
+        runs[id] = Run(tunnel: tunnel, status: .connecting, startupTask: startupTask)
+        order.append(id)
+
+        do {
+            let listener = try await startupTask.value
+            guard generation == generations[id] else {
+                await listener.stop()
+                return
+            }
+            runs[id]?.startupTask = nil
+            runs[id]?.listener = listener
+            runs[id]?.status = .listening(localPort: listener.localPort)
+        } catch {
+            guard generation == generations[id] else { return }
+            order.removeAll { $0 == id }
+            runs[id] = Run(tunnel: tunnel, status: .failed(message: Self.userMessage(for: error)))
+        }
     }
 
-    func webViewDidFinish() {
-        guard case .listening(let port) = status else { return }
-        status = .open(localPort: port)
+    /// Stops one tunnel, or clears its failure. The rest keep running.
+    func stop(_ id: UUID) async {
+        advanceGeneration(of: id)
+        await retire(id)
     }
 
-    func webViewDidFail(_ message: String) {
-        status = .failed(message: message)
+    func stopAll() async {
+        for id in Array(runs.keys) {
+            await stop(id)
+        }
     }
 
-    func stop() async {
-        operationGeneration &+= 1
-        cancelPendingStartup()
-        await stopListener()
-        activeTunnel = nil
-        loopbackURL = nil
-        localhostURL = nil
-        status = .idle
+    /// The `http://` or `https://` address of a listening tunnel, for the browser
+    /// shortcuts. Nil for a tunnel that is not listening.
+    func webAddress(for id: UUID) async -> TunnelWebAddress? {
+        guard case .listening(let port) = status(for: id) else { return nil }
+        if let known = runs[id]?.speaksTLS {
+            return TunnelWebAddress(localPort: port, secure: known)
+        }
+        let generation = generations[id]
+        let secure = await probe.speaksTLS(localPort: port)
+        if generation == generations[id] {
+            runs[id]?.speaksTLS = secure
+        }
+        return TunnelWebAddress(localPort: port, secure: secure)
     }
 
-    private func stopListener() async {
-        let existing = listener
-        listener = nil
-        await existing?.stop()
+    @discardableResult
+    private func advanceGeneration(of id: UUID) -> UInt {
+        let next = (generations[id] ?? 0) &+ 1
+        generations[id] = next
+        return next
     }
 
-    private func cancelPendingStartup() {
-        let pending = startupTask
-        startupTask = nil
-        pending?.cancel()
+    /// Forgets a tunnel's run: cancels a start in flight and closes its listener.
+    private func retire(_ id: UUID) async {
+        guard let run = runs.removeValue(forKey: id) else { return }
+        order.removeAll { $0 == id }
+        run.startupTask?.cancel()
+        await run.listener?.stop()
     }
 
     private static func userMessage(for error: Error) -> String {

@@ -87,12 +87,13 @@ struct HostPortForwardingTests {
         // stop a started tunnel; only an explicit stop (or app termination)
         // tears it down.
         let sheet = try sourceFile("UI/WebTunnel/SessionWebTunnelSheet.swift")
-        // Closing (Done / onDisappear) must not stop the tunnel; only the
-        // explicit Stop Tunnel control may call model.stop().
+        // Closing the manager or the in-app browser must stop nothing, so neither
+        // has anything to do when it disappears; only a forward's own Stop
+        // button (or Stop all) stops it.
         #expect(sheet.contains("Button(\"Done\") { dismiss() }"))
-        let onClose = sheet.components(separatedBy: ".onDisappear")[0]
-        #expect(!onClose.contains("model.stop()"))
-        #expect(sheet.contains("Stop Tunnel"))
+        #expect(!sheet.contains(".onDisappear"))
+        #expect(sheet.contains("await model.stop(tunnel.id)"))
+        #expect(sheet.contains("tunnel.stop"))
 
         let forwarding = try sourceFile("UI/Settings/HostPortForwarding.swift")
         #expect(forwarding.contains("SessionWebTunnelSheet("))
@@ -101,7 +102,7 @@ struct HostPortForwardingTests {
         // The monitor bar carries the live indicator with an explicit stop.
         let bar = try sourceFile("UI/Metrics/HostMetricsBarView.swift")
         #expect(bar.contains("metrics.port-forwards"))
-        #expect(bar.contains("Stop tunnel"))
+        #expect(bar.contains("metrics.port-forwards.stop-all"))
     }
 
     private func sourceFile(_ relativePath: String) throws -> String {

@@ -1,21 +1,12 @@
 import SwiftUI
 import UIKit
 
-func prepareHopPasswordForTunnelStart(
-    passwords: inout [UUID: String],
-    previousTunnelID: UUID?,
-    nextTunnelID: UUID
-) -> String? {
-    let nextPassword = passwords[nextTunnelID]
-    if let previousTunnelID, previousTunnelID != nextTunnelID {
-        passwords.removeValue(forKey: previousTunnelID)
-    }
-    return nextPassword
-}
-
+/// One host's port forwards: the saved connections, each with a Start button, and
+/// above them the ones that are running, each with its local address, the two
+/// browser shortcuts and a Stop button.
 struct SessionWebTunnelSheet: View {
-    /// The app-owned session: closing this sheet no longer stops a running
-    /// tunnel or drops the SSH connection — the user stops those explicitly.
+    /// The app-owned session: closing this sheet stops nothing and keeps the SSH
+    /// connection — the user stops forwards explicitly.
     let session: PortForwardingSession
     let onChange: ([SessionWebTunnel]) -> Void
 
@@ -33,7 +24,10 @@ struct SessionWebTunnelSheet: View {
     @State private var editorRequest: TunnelEditorRequest?
     @State private var browserRequest: TunnelBrowserRequest?
     @State private var passwordPrompt: TunnelPasswordPrompt?
-    @State private var copiedLocalhostURL = false
+    /// The running forward whose address was just copied.
+    @State private var copiedTunnelID: UUID?
+    /// The running forward being asked whether it speaks TLS, for a browser shortcut.
+    @State private var openingTunnelID: UUID?
 
     init(
         session: PortForwardingSession,
@@ -46,46 +40,28 @@ struct SessionWebTunnelSheet: View {
     var body: some View {
         NavigationStack {
             List {
-                if tunnels.isEmpty {
-                    Section {
-                        ContentUnavailableView {
-                            Label("No Web Tunnels", systemImage: "network")
-                        } description: {
-                            Text("Add any HTTP/HTTPS/VNC service reachable from this SSH host. The app tunnels it to a local port — web pages open in the app or Safari, VNC hands off to your VNC client — even when this device cannot route to the target IP itself.")
-                        }
-                    }
-                } else {
-                    Section("Configured") {
-                        ForEach(tunnels) { tunnel in
-                            tunnelRow(tunnel)
-                        }
-                        .onDelete(perform: delete)
-                    }
-                }
+                runningSection
+                connectionsSection
 
                 Section {
                     Button {
                         editorRequest = TunnelEditorRequest(tunnel: nil)
                     } label: {
-                        Label("Add SSH Web Tunnel", systemImage: "plus")
+                        Label("Add Port Forward", systemImage: "plus")
                     }
                     .accessibilityIdentifier("tunnel.add")
-                } header: {
-                    Text("New SSH tunnel")
                 } footer: {
-                    Text("Configure any HTTP/HTTPS/VNC target reachable from the connected SSH host. The listener binds only to 127.0.0.1, and HTTPS certificate exceptions apply only to the exact local tunnel WebView origin.")
+                    Text("Each forward listens only on 127.0.0.1 of this device. In App and Safari open http or https, whichever the service itself answers in; an HTTPS certificate exception applies only to that forward's own local address.")
                 }
-
-                statusSection
             }
             .scrollContentBackground(.hidden)
             .background(Theme.bg)
-            .navigationTitle("SSH Web Tunnels")
+            .navigationTitle("Port Forwarding")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    // Closing the window leaves a started tunnel running; the
-                    // monitor bar shows it and the host editor can stop it.
+                    // Closing the window leaves started forwards running; the
+                    // monitor bar shows them and the host editor can stop them.
                     Button("Done") { dismiss() }
                 }
             }
@@ -104,51 +80,169 @@ struct SessionWebTunnelSheet: View {
                 .preferredColorScheme(.dark)
             }
             .fullScreenCover(item: $browserRequest) { request in
-                SessionWebTunnelBrowserScreen(
-                    tunnel: request.tunnel,
-                    loopbackURL: request.loopbackURL,
-                    localhostURL: request.localhostURL,
-                    model: model,
-                    onStop: stopActiveTunnel
-                )
-                .preferredColorScheme(.dark)
+                SessionWebTunnelBrowserScreen(tunnel: request.tunnel, address: request.address)
+                    .preferredColorScheme(.dark)
             }
             .sheet(item: $passwordPrompt) { prompt in
                 TunnelPasswordEntrySheet(tunnel: prompt.tunnel) { password in
+                    // An empty answer is a choice too ("use the host's own key"),
+                    // remembered so the next start does not ask again.
                     hopPasswords[prompt.tunnel.id] = password
-                    Task {
-                        await start(prompt.tunnel, hopPassword: prepareHopPasswordForTunnelStart(
-                            passwords: &hopPasswords,
-                            previousTunnelID: model.activeTunnel?.id,
-                            nextTunnelID: prompt.tunnel.id
-                        ))
-                    }
+                    Task { await start(prompt.tunnel) }
                 }
                 .preferredColorScheme(.dark)
             }
         }
-        .onDisappear {
-            // Deliberately does NOT stop the tunnel: the user asked for it to
-            // survive closing the manager until stopped explicitly. Hop
-            // passwords persist in the session for the same reason.
-            guard editorRequest == nil, browserRequest == nil else { return }
+    }
+
+    // MARK: - Running
+
+    @ViewBuilder
+    private var runningSection: some View {
+        if !model.running.isEmpty {
+            Section {
+                ForEach(model.running) { tunnel in
+                    runningRow(tunnel)
+                }
+            } header: {
+                Text("Running (\(model.runningCount) of \(SessionWebTunnelModel.runningLimit))")
+            } footer: {
+                Text("Keep AI Manager on screen while a forward is in use. iOS may suspend it in the background; come back here if a connection stalls.")
+            }
         }
     }
 
-    private func tunnelRow(_ tunnel: SessionWebTunnel) -> some View {
+    private func runningRow(_ tunnel: SessionWebTunnel) -> some View {
         VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(tunnel.label)
+                    .font(Theme.label(15))
+                Spacer()
+                Button(role: .destructive) {
+                    Task { await model.stop(tunnel.id) }
+                } label: {
+                    Label("Stop", systemImage: "stop.circle")
+                }
+                .buttonStyle(.borderless)
+                .accessibilityIdentifier("tunnel.stop")
+            }
+            switch model.status(for: tunnel.id) {
+            case .connecting:
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text("Starting…")
+                        .font(Theme.body(13))
+                        .foregroundStyle(Theme.textSecondary)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("tunnel.status")
+            case .listening(let port):
+                listening(tunnel, port: port)
+            case .idle, .failed:
+                EmptyView()
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    @ViewBuilder
+    private func listening(_ tunnel: SessionWebTunnel, port: Int) -> some View {
+        let address = "127.0.0.1:\(port)"
+        let copied = copiedTunnelID == tunnel.id
+        Button {
+            UIPasteboard.general.string = address
+            copiedTunnelID = tunnel.id
+        } label: {
+            Label {
+                Text(verbatim: copied ? "Copied \(address)" : "Listening on \(address)")
+            } icon: {
+                Image(systemName: copied ? "checkmark" : "network")
+            }
+                .font(Theme.mono(13))
+                .foregroundStyle(Theme.success)
+        }
+        .buttonStyle(.borderless)
+        .accessibilityHint("Copies the address")
+        .accessibilityIdentifier("tunnel.status")
+
+        Text(verbatim: "to \(tunnel.targetAddress)" + (tunnel.hop.map { " via \($0.username)@\($0.host)" } ?? ""))
+            .font(Theme.mono(11))
+            .foregroundStyle(Theme.textSecondary)
+            .lineLimit(1)
+
+        if let problem = model.connectionProblem(for: tunnel.id) {
+            Label(problem, systemImage: "exclamationmark.triangle.fill")
+                .font(Theme.body(12))
+                .foregroundStyle(Theme.warning)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("tunnel.problem")
+        }
+
+        HStack(spacing: 10) {
+            Button {
+                open(tunnel) { browserRequest = TunnelBrowserRequest(tunnel: tunnel, address: $0) }
+            } label: {
+                Label("In App", systemImage: "rectangle.inset.filled")
+            }
+            .buttonStyle(.bordered)
+            .accessibilityIdentifier("tunnel.open.inapp")
+            Button {
+                open(tunnel) { openURL($0.localhostURL) }
+            } label: {
+                Label("Safari", systemImage: "safari")
+            }
+            .buttonStyle(.bordered)
+            .accessibilityIdentifier("tunnel.open.external")
+            if openingTunnelID == tunnel.id {
+                ProgressView()
+            }
+        }
+        .disabled(openingTunnelID != nil)
+    }
+
+    // MARK: - Connections
+
+    @ViewBuilder
+    private var connectionsSection: some View {
+        if tunnels.isEmpty {
+            Section {
+                ContentUnavailableView {
+                    Label("No Port Forwards", systemImage: "network")
+                } description: {
+                    Text("Add any TCP service reachable from this SSH host: a web page, RDP, VNC, a database. The app serves it on a local port of this device, even when the device cannot route to the target itself.")
+                }
+            }
+        } else {
+            Section {
+                ForEach(tunnels) { tunnel in
+                    connectionRow(tunnel)
+                }
+                .onDelete(perform: delete)
+            } header: {
+                Text("Connections")
+            } footer: {
+                if !model.canStartAnother {
+                    Text("\(SessionWebTunnelModel.runningLimit) forwards are running, the most that can run at once. Stop one to start another.")
+                }
+            }
+        }
+    }
+
+    private func connectionRow(_ tunnel: SessionWebTunnel) -> some View {
+        let status = model.status(for: tunnel.id)
+        return VStack(alignment: .leading, spacing: 8) {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(tunnel.label)
                         .font(Theme.label(15))
-                    Text("\(tunnel.scheme.rawValue)://\(tunnel.targetHost):\(tunnel.targetPort)")
+                    Text(verbatim: tunnel.targetAddress)
                         .font(Theme.mono(12))
                         .foregroundStyle(Theme.textSecondary)
                         .lineLimit(1)
-                    Text(routeSummary(for: tunnel))
+                    Text(verbatim: routeSummary(for: tunnel))
                         .font(Theme.mono(11))
                         .foregroundStyle(Theme.textSecondary)
-                        .lineLimit(1)
+                        .lineLimit(2)
                 }
                 Spacer()
                 Button("Edit") {
@@ -156,111 +250,44 @@ struct SessionWebTunnelSheet: View {
                 }
                 .buttonStyle(.borderless)
                 .accessibilityIdentifier("tunnel.edit.\(tunnel.id.uuidString)")
-                if tunnel.scheme.isWeb {
+                switch status {
+                case .connecting, .listening:
+                    Label("Running", systemImage: "checkmark.circle.fill")
+                        .font(Theme.body(13))
+                        .foregroundStyle(Theme.success)
+                        .accessibilityIdentifier("tunnel.running")
+                case .idle, .failed:
                     Button {
-                        openInApp(tunnel)
+                        Task { await start(tunnel) }
                     } label: {
-                        Label("In App", systemImage: "rectangle.inset.filled")
+                        Label("Start", systemImage: "play.fill")
                     }
-                    .buttonStyle(.bordered)
-                    .disabled(model.status == .connecting)
-                    .accessibilityIdentifier("tunnel.open.inapp")
+                    .buttonStyle(.borderedProminent)
+                    .tint(Theme.accent)
+                    .disabled(!model.canStartAnother)
+                    .accessibilityIdentifier("tunnel.start")
                 }
-                Button {
-                    openExternally(tunnel)
-                } label: {
-                    if tunnel.scheme.isWeb {
-                        Label("Safari", systemImage: "safari")
-                    } else {
-                        Label("VNC Client", systemImage: "display")
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(Theme.accent)
-                .disabled(model.status == .connecting)
-                .accessibilityIdentifier("tunnel.open.external")
+            }
+            if case .failed(let message) = status {
+                Label(message, systemImage: "exclamationmark.triangle.fill")
+                    .font(Theme.body(12))
+                    .foregroundStyle(Theme.danger)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("tunnel.failure")
             }
         }
         .padding(.vertical, 4)
     }
 
-    @ViewBuilder
-    private var statusSection: some View {
-        Section {
-            switch model.status {
-            case .idle:
-                Label("Not running", systemImage: "circle")
-                    .foregroundStyle(Theme.textSecondary)
-                    .accessibilityIdentifier("tunnel.status")
-            case .connecting:
-                HStack {
-                    ProgressView()
-                    Text("Starting loopback tunnel…")
-                }
-                .accessibilityIdentifier("tunnel.status")
-            case .listening(let port):
-                Label("Listening on 127.0.0.1:\(port)", systemImage: "network")
-                    .foregroundStyle(Theme.warning)
-                    .accessibilityIdentifier("tunnel.status")
-            case .open(let port):
-                Label("Open on 127.0.0.1:\(port)", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(Theme.success)
-                    .accessibilityIdentifier("tunnel.status")
-            case .failed(let message):
-                Label {
-                    Text(message)
-                } icon: {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                }
-                .foregroundStyle(Theme.danger)
-                .accessibilityIdentifier("tunnel.status")
-            }
-
-            if let localhostURL = model.localhostURL {
-                let isVNC = model.activeTunnel?.scheme == .vnc
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(isVNC ? "VNC URL" : "Safari URL")
-                        .font(Theme.label(13))
-                    Text(localhostURL.absoluteString)
-                        .font(Theme.mono(12))
-                        .foregroundStyle(Theme.textSecondary)
-                        .textSelection(.enabled)
-                }
-                Button {
-                    openURL(localhostURL)
-                } label: {
-                    Label(isVNC ? "Open in VNC Client" : "Open in Safari",
-                          systemImage: isVNC ? "display" : "safari")
-                }
-                Button {
-                    UIPasteboard.general.string = localhostURL.absoluteString
-                    copiedLocalhostURL = true
-                } label: {
-                    Label(
-                        copiedLocalhostURL ? "Copied localhost URL" : "Copy localhost URL",
-                        systemImage: copiedLocalhostURL ? "checkmark" : "doc.on.doc"
-                    )
-                }
-                Button(role: .destructive) {
-                    Task { await stopActiveTunnel() }
-                } label: {
-                    Label("Stop Tunnel", systemImage: "stop.circle")
-                }
-                .accessibilityIdentifier("tunnel.stop")
-            }
-        } header: {
-            Text("Status")
-        } footer: {
-            Text(
-                "Keep AI Manager running while you use Safari. The system may suspend "
-                + "the tunnel in the background; return to AI Manager and refresh "
-                + "Safari if the page stops loading."
-            )
-        }
-    }
+    // MARK: - Actions
 
     private func save(_ tunnel: SessionWebTunnel, hopPassword: String) {
         if let index = tunnels.firstIndex(where: { $0.id == tunnel.id }) {
+            if tunnels[index] != tunnel {
+                // A running forward keeps the settings it was started with, so a
+                // changed one is stopped: the next Start uses what was saved.
+                Task { await model.stop(tunnel.id) }
+            }
             tunnels[index] = tunnel
         } else {
             tunnels.append(tunnel)
@@ -277,15 +304,21 @@ struct SessionWebTunnelSheet: View {
         let deletedIDs = offsets.map { tunnels[$0].id }
         tunnels.remove(atOffsets: offsets)
         for id in deletedIDs {
-            hopPasswords.removeValue(forKey: id)
+            forget(id)
         }
         persist()
     }
 
     private func delete(id: UUID) {
         tunnels.removeAll { $0.id == id }
-        hopPasswords.removeValue(forKey: id)
+        forget(id)
         persist()
+    }
+
+    /// A deleted forward must not keep listening, or keep its hop password.
+    private func forget(_ id: UUID) {
+        hopPasswords.removeValue(forKey: id)
+        Task { await model.stop(id) }
     }
 
     private func persist() {
@@ -293,53 +326,35 @@ struct SessionWebTunnelSheet: View {
     }
 
     private func routeSummary(for tunnel: SessionWebTunnel) -> String {
-        let local = tunnel.localPort.map { "localhost:\($0)" } ?? "automatic local port"
+        let local = tunnel.localPort.map { "local port \($0)" } ?? "automatic local port"
         guard let hop = tunnel.hop else {
             return "\(local) • direct from SSH host"
         }
         return "\(local) • via \(hop.username)@\(hop.host):\(hop.port)"
     }
 
-    private func openInApp(_ tunnel: SessionWebTunnel) {
+    /// Finds out whether the forward carries http or https, then hands its address on.
+    private func open(_ tunnel: SessionWebTunnel, _ present: @escaping (TunnelWebAddress) -> Void) {
+        guard openingTunnelID == nil else { return }
+        openingTunnelID = tunnel.id
         Task {
-            await start(tunnel)
-            if let loopbackURL = model.loopbackURL,
-               let localhostURL = model.localhostURL {
-                browserRequest = TunnelBrowserRequest(
-                    tunnel: tunnel,
-                    loopbackURL: loopbackURL,
-                    localhostURL: localhostURL
-                )
-            }
-        }
-    }
-
-    private func openExternally(_ tunnel: SessionWebTunnel) {
-        Task {
-            await start(tunnel)
-            if let localhostURL = model.localhostURL {
-                openURL(localhostURL)
-            }
+            defer { openingTunnelID = nil }
+            guard let address = await model.webAddress(for: tunnel.id) else { return }
+            present(address)
         }
     }
 
     private func start(_ tunnel: SessionWebTunnel) async {
-        // A stopped tunnel forgets its hop password (never persisted). Restarting
-        // it without re-prompting would silently drop the password and fail
-        // authentication, so ask for it again up front.
-        if tunnel.hop != nil, hopPasswords[tunnel.id] == nil {
+        // A hop password is never saved, so after a relaunch a hop forward has
+        // none. Ask once whether to type one or to rely on the first host's own
+        // key; starting without asking would silently fail a password hop.
+        guard tunnel.hop == nil || hopPasswords[tunnel.id] != nil else {
             passwordPrompt = TunnelPasswordPrompt(tunnel: tunnel)
             return
         }
-        await start(tunnel, hopPassword: prepareHopPasswordForTunnelStart(
-            passwords: &hopPasswords,
-            previousTunnelID: model.activeTunnel?.id,
-            nextTunnelID: tunnel.id
-        ))
-    }
+        let hopPassword = hopPasswords[tunnel.id].flatMap { $0.isEmpty ? nil : $0 }
 
-    private func start(_ tunnel: SessionWebTunnel, hopPassword: String?) async {
-        // The tunnel runs over the session's SSH connection. The settings
+        // The forward runs over the session's SSH connection. The settings
         // screen connects it on appear; the host-detail entry point does not,
         // so ensure it here rather than failing with a bare "not connected".
         if case .connected = session.connection.state {
@@ -361,13 +376,6 @@ struct SessionWebTunnelSheet: View {
         }
         await model.start(tunnel, hopPassword: hopPassword)
     }
-
-    private func stopActiveTunnel() async {
-        // The hop password deliberately SURVIVES the stop: the session is
-        // app-owned and memory-only, so restarting the same tunnel must not
-        // fail with a silently dropped password.
-        await model.stop()
-    }
 }
 
 private struct TunnelEditorRequest: Identifiable {
@@ -378,8 +386,7 @@ private struct TunnelEditorRequest: Identifiable {
 private struct TunnelBrowserRequest: Identifiable {
     let id = UUID()
     let tunnel: SessionWebTunnel
-    let loopbackURL: URL
-    let localhostURL: URL
+    let address: TunnelWebAddress
 }
 
 private struct TunnelPasswordPrompt: Identifiable {
@@ -387,9 +394,11 @@ private struct TunnelPasswordPrompt: Identifiable {
     let tunnel: SessionWebTunnel
 }
 
-/// Minimal re-entry sheet shown when a hop tunnel is restarted after its
-/// in-memory password was forgotten (app relaunch, or the tunnel was deleted
-/// and re-added). The password goes straight back into the session.
+/// Shown when a hop forward is started and the session holds no answer for it
+/// yet (first start, or after an app relaunch): type the hop's password, or start
+/// without one and let the first host's own key, SSH config or agent log in.
+/// Either answer goes straight back into the session and is not asked for again
+/// while the app runs.
 private struct TunnelPasswordEntrySheet: View {
     let tunnel: SessionWebTunnel
     let onSubmit: (String) -> Void
@@ -407,9 +416,18 @@ private struct TunnelPasswordEntrySheet: View {
                         .autocorrectionDisabled()
                         .textContentType(.password)
                 } header: {
-                    Text("Hop password required")
+                    Text("Hop password")
                 } footer: {
-                    Text("This tunnel authenticates the SSH hop with a password that is kept only in memory while AI Manager runs. Re-enter it to start the tunnel.")
+                    Text("A password is kept only in memory while AI Manager runs, so it is asked for again after a relaunch.")
+                }
+                Section {
+                    Button("Start without a password") {
+                        onSubmit("")
+                        dismiss()
+                    }
+                    .accessibilityIdentifier("tunnel.password.none")
+                } footer: {
+                    Text("Uses the key, SSH config or agent that the connected first host already has for this hop.")
                 }
             }
             .navigationTitle(tunnel.label)
@@ -441,7 +459,6 @@ private struct SessionWebTunnelEditorSheet: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var label: String
-    @State private var scheme: SessionWebTunnelScheme
     @State private var targetHost: String
     @State private var targetPort: String
     @State private var localPortMode: SessionWebTunnelLocalPortMode
@@ -459,19 +476,16 @@ private struct SessionWebTunnelEditorSheet: View {
         onDelete: (() -> Void)? = nil,
         onSave: @escaping (SessionWebTunnel, String) -> Void
     ) {
-        let tunnel = tunnel ?? SessionWebTunnel(
-            label: "",
-            scheme: .https,
-            targetHost: "",
-            targetPort: 443
-        )
+        // A new forward starts with an empty port: there is no protocol to
+        // guess a default from, and a wrong prefilled number is easy to miss.
+        let isNew = tunnel == nil
+        let tunnel = tunnel ?? SessionWebTunnel(label: "", targetHost: "", targetPort: 0)
         originalID = tunnel.id
         self.onDelete = onDelete
         self.onSave = onSave
         _label = State(initialValue: tunnel.label)
-        _scheme = State(initialValue: tunnel.scheme)
         _targetHost = State(initialValue: tunnel.targetHost)
-        _targetPort = State(initialValue: String(tunnel.targetPort))
+        _targetPort = State(initialValue: isNew ? "" : String(tunnel.targetPort))
         _localPortMode = State(
             initialValue: tunnel.localPort == nil ? .automatic : .fixed
         )
@@ -489,7 +503,6 @@ private struct SessionWebTunnelEditorSheet: View {
         SessionWebTunnel(
             id: originalID,
             label: label.trimmingCharacters(in: .whitespacesAndNewlines),
-            scheme: scheme,
             targetHost: targetHost.trimmingCharacters(in: .whitespacesAndNewlines),
             targetPort: Int(targetPort) ?? 0,
             localPort: localPortMode == .automatic
@@ -514,21 +527,7 @@ private struct SessionWebTunnelEditorSheet: View {
                     TextField("Label", text: $label)
                         .accessibilityIdentifier("tunnel.field.label")
                 }
-                Section("Remote target") {
-                    Picker("Scheme", selection: $scheme) {
-                        ForEach(SessionWebTunnelScheme.allCases) { scheme in
-                            Text(scheme.rawValue.uppercased()).tag(scheme)
-                        }
-                    }
-                    .accessibilityIdentifier("tunnel.field.scheme")
-                    .onChange(of: scheme) { _, newScheme in
-                        // Adopt the scheme's standard port unless the user has
-                        // typed something non-default, which we must not clobber.
-                        let standardPorts = SessionWebTunnelScheme.allCases.map(\.defaultPort)
-                        if targetPort.isEmpty || standardPorts.contains(Int(targetPort) ?? -1) {
-                            targetPort = String(newScheme.defaultPort)
-                        }
-                    }
+                Section {
                     TextField("Host or IP", text: $targetHost)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
@@ -536,6 +535,10 @@ private struct SessionWebTunnelEditorSheet: View {
                     TextField("Port", text: $targetPort)
                         .keyboardType(.numberPad)
                         .accessibilityIdentifier("tunnel.field.targetPort")
+                } header: {
+                    Text("Remote target")
+                } footer: {
+                    Text("Where the service listens, as seen from the SSH host, or from the hop when one is set below. Any TCP service can be forwarded.")
                 }
                 Section {
                     Picker("Local port mode", selection: $localPortMode) {
@@ -552,7 +555,8 @@ private struct SessionWebTunnelEditorSheet: View {
                 } footer: {
                     Text(
                         "The listener is always bound only to 127.0.0.1. Choose "
-                        + "Fixed for a stable Safari localhost address."
+                        + "Fixed for an address that stays the same, such as one "
+                        + "saved in an RDP or VNC client."
                     )
                 }
                 Section {
@@ -614,7 +618,7 @@ private struct SessionWebTunnelEditorSheet: View {
                     }
                 }
             }
-            .navigationTitle("Web Tunnel")
+            .navigationTitle("Port Forward")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -642,30 +646,28 @@ private struct SessionWebTunnelEditorSheet: View {
     }
 }
 
+/// The in-app browser for one running forward. It only looks at the forward:
+/// closing it stops nothing, and a page that will not load is the page's problem,
+/// shown here, not a failure of the forward.
 private struct SessionWebTunnelBrowserScreen: View {
     let tunnel: SessionWebTunnel
-    let loopbackURL: URL
-    let localhostURL: URL
-    @Bindable var model: SessionWebTunnelModel
-    let onStop: () async -> Void
+    let address: TunnelWebAddress
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
     @State private var copiedLocalhostURL = false
+    @State private var failure: String?
 
     var body: some View {
         NavigationStack {
             ZStack {
                 SessionWebTunnelWebView(
-                    loopbackURL: loopbackURL,
-                    onFinish: { model.webViewDidFinish() },
-                    onFailure: { model.webViewDidFail($0) }
+                    loopbackURL: address.loopbackURL,
+                    onFinish: { failure = nil },
+                    onFailure: { failure = $0 }
                 )
-                if case .connecting = model.status {
-                    loadingOverlay
-                }
-                if case .failed(let message) = model.status {
-                    failureOverlay(message)
+                if let failure {
+                    failureOverlay(failure)
                 }
             }
             .navigationTitle(tunnel.label)
@@ -678,14 +680,14 @@ private struct SessionWebTunnelBrowserScreen: View {
                     VStack(spacing: 1) {
                         Text(tunnel.label)
                             .font(.headline)
-                        Text("\(tunnel.targetHost):\(tunnel.targetPort) via SSH")
+                        Text(verbatim: "\(tunnel.targetAddress) via SSH")
                             .font(.caption2.monospaced())
                             .foregroundStyle(.secondary)
                     }
                 }
                 ToolbarItemGroup(placement: .primaryAction) {
                     Button {
-                        UIPasteboard.general.string = localhostURL.absoluteString
+                        UIPasteboard.general.string = address.localhostURL.absoluteString
                         copiedLocalhostURL = true
                     } label: {
                         Label(
@@ -696,25 +698,11 @@ private struct SessionWebTunnelBrowserScreen: View {
                         )
                     }
                     Button {
-                        openURL(localhostURL)
+                        openURL(address.localhostURL)
                     } label: {
                         Label("Open in Safari", systemImage: "safari")
                     }
                 }
-            }
-        }
-        .onDisappear {
-            Task { await onStop() }
-        }
-    }
-
-    private var loadingOverlay: some View {
-        ZStack {
-            Theme.bg.opacity(0.82)
-            VStack(spacing: 12) {
-                ProgressView()
-                Text("Opening SSH tunnel…")
-                    .font(Theme.label(15))
             }
         }
     }
@@ -727,11 +715,15 @@ private struct SessionWebTunnelBrowserScreen: View {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.system(size: 36))
                         .foregroundStyle(Theme.danger)
-                    Text("Tunnel failed")
+                    Text("The page did not load")
                         .font(Theme.title(18))
                     Text(message)
                         .font(Theme.body(14))
                         .foregroundStyle(Theme.textSecondary)
+                        .multilineTextAlignment(.center)
+                    Text("The forward is still running. If this port is not a web page, use its address in the app that speaks its protocol.")
+                        .font(Theme.body(12))
+                        .foregroundStyle(Theme.textMuted)
                         .multilineTextAlignment(.center)
                     Button("Close") { dismiss() }
                         .buttonStyle(.borderedProminent)

@@ -3,9 +3,9 @@ import Observation
 import SwiftUI
 
 /// One host's live port-forwarding state, owned by the app rather than by the
-/// port-management sheet. A tunnel the user started keeps running after the
-/// sheet closes — it is stopped only explicitly (Stop Tunnel / Stop all),
-/// when the host session is removed, or when the app terminates.
+/// port-management sheet. Tunnels the user started keep running after the
+/// sheet closes — each is stopped only explicitly (its Stop button, or Stop
+/// all), when the host session is removed, or when the app terminates.
 @MainActor
 @Observable
 final class PortForwardingSession {
@@ -19,34 +19,28 @@ final class PortForwardingSession {
     /// True while the user has left this session running on purpose.
     var isManaged = false
 
-    init(host: Host, keyStore: KeyStore, knownHosts: KnownHostsStore, tunnels: [SessionWebTunnel]) {
+    /// - Parameter model: the forwards' model; by default one that forwards over
+    ///   this session's own SSH connection.
+    init(host: Host, keyStore: KeyStore, knownHosts: KnownHostsStore, tunnels: [SessionWebTunnel],
+         model: SessionWebTunnelModel? = nil) {
         self.host = host
         self.tunnels = tunnels
         let connection = HostConnection(host: host, keyStore: keyStore, knownHosts: knownHosts)
         self.connection = connection
-        self.model = SessionWebTunnelModel(server: connection.makeSessionWebTunnelServer())
+        self.model = model ?? SessionWebTunnelModel(server: connection.makeSessionWebTunnelServer())
     }
 
     /// Number of tunnels currently serving traffic (connecting counts too, so
     /// the monitor indicator never shows zero for a tunnel mid-start).
-    var activeTunnelCount: Int {
-        switch model.status {
-        case .connecting, .listening, .open: return 1
-        case .idle, .failed: return 0
-        }
-    }
+    var activeTunnelCount: Int { model.runningCount }
 
     func connect() {
         guard case .idle = connection.state else { return }
         Task { await connection.connect() }
     }
 
-    func stopTunnel() async {
-        await model.stop()
-    }
-
     func shutdown() async {
-        await model.stop()
+        await model.stopAll()
         await connection.disconnect()
     }
 }
@@ -92,7 +86,7 @@ final class PortForwardingManager {
         Self.saveTunnels(session.tunnels, hostID: session.host.id)
     }
 
-    /// Explicitly retires one host's session: stops its tunnel and disconnects.
+    /// Explicitly retires one host's session: stops its tunnels and disconnects.
     func remove(hostID: UUID) async {
         guard let session = sessions.removeValue(forKey: hostID) else { return }
         await session.shutdown()

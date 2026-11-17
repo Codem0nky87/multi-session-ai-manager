@@ -87,7 +87,7 @@ struct HerdrPortForwardingSheet: View {
                 }
             }
             .padding(24)
-            .navigationTitle("SSH Web Tunnels")
+            .navigationTitle("Port Forwarding")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -117,7 +117,7 @@ struct HerdrPortForwardingSheet: View {
                 .buttonStyle(.borderedProminent)
             }
             .padding(24)
-            .navigationTitle("SSH Web Tunnels")
+            .navigationTitle("Port Forwarding")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
