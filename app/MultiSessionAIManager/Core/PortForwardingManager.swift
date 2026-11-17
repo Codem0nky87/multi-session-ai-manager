@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import SwiftUI
+import UIKit
 
 /// One host's live port-forwarding state, owned by the app rather than by the
 /// port-management sheet. Tunnels the user started keep running after the
@@ -19,15 +20,92 @@ final class PortForwardingSession {
     /// True while the user has left this session running on purpose.
     var isManaged = false
 
-    /// - Parameter model: the forwards' model; by default one that forwards over
-    ///   this session's own SSH connection.
+    /// How the SSH connection under the forwards is kept alive.
+    struct KeepAlive: Sendable {
+        /// 30 s stays inside common NAT, firewall and VPN idle-eviction windows.
+        var interval: Duration = .seconds(30)
+        /// How long a probe may hang before the link counts as dead. A half-open
+        /// connection never answers.
+        var probeTimeout: Duration = .seconds(10)
+    }
+
+    @ObservationIgnored private let keepAlivePolicy: KeepAlive
+    @ObservationIgnored private var keepAliveTask: Task<Void, Never>?
+    @ObservationIgnored private var foregroundTask: Task<Void, Never>?
+    @ObservationIgnored private var isCheckingLink = false
+
+    /// - Parameters:
+    ///   - model: the forwards' model; by default one that forwards over this
+    ///     session's own SSH connection.
+    ///   - transport: the SSH transport of that connection.
     init(host: Host, keyStore: KeyStore, knownHosts: KnownHostsStore, tunnels: [SessionWebTunnel],
-         model: SessionWebTunnelModel? = nil) {
+         model: SessionWebTunnelModel? = nil, transport: SSHTransport = NIOSSHTransport(),
+         keepAlive: KeepAlive = KeepAlive()) {
         self.host = host
         self.tunnels = tunnels
-        let connection = HostConnection(host: host, keyStore: keyStore, knownHosts: knownHosts)
+        let connection = HostConnection(host: host, keyStore: keyStore, knownHosts: knownHosts, transport: transport)
         self.connection = connection
         self.model = model ?? SessionWebTunnelModel(server: connection.makeSessionWebTunnelServer())
+        self.keepAlivePolicy = keepAlive
+        self.model.onConnectionProblem = { [weak self] in
+            Task { await self?.keepAlive() }
+        }
+        startKeepAlive()
+    }
+
+    deinit {
+        keepAliveTask?.cancel()
+        foregroundTask?.cancel()
+    }
+
+    /// Keeps the SSH connection under running forwards alive, and replaces it when
+    /// it has died.
+    ///
+    /// An idle forward sends nothing, so a NAT, firewall or VPN in the path drops
+    /// the flow without a word. The listeners on this device would then accept
+    /// connections that go nowhere, and the only cure was to stop and restart
+    /// every forward. A small round trip refreshes the flow. If it gets no answer
+    /// the connection is made again underneath the listeners, which keep their
+    /// ports, so the next connection through a forward simply works.
+    ///
+    /// Nothing is sent for a host with no forward running. iOS suspends the app in
+    /// the background, where nothing can be kept alive; the check runs at once on
+    /// return instead.
+    func keepAlive() async {
+        guard model.runningCount > 0, !isCheckingLink else { return }
+        switch connection.state {
+        case .connecting, .hostKeyChanged:
+            // Already being connected, or waiting for the user to look at a
+            // changed key. Neither is this check's to settle.
+            return
+        case .idle, .connected, .failed:
+            break
+        }
+        isCheckingLink = true
+        defer { isCheckingLink = false }
+        if await connection.verifyAlive(timeout: keepAlivePolicy.probeTimeout) { return }
+        guard model.runningCount > 0 else { return }
+        await connection.connect()
+        if connection.state == .connected {
+            model.clearConnectionProblems()
+        }
+    }
+
+    private func startKeepAlive() {
+        let interval = keepAlivePolicy.interval
+        keepAliveTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: interval) } catch { return }
+                guard let self else { return }
+                await self.keepAlive()
+            }
+        }
+        foregroundTask = Task { [weak self] in
+            for await _ in NotificationCenter.default.notifications(named: UIApplication.didBecomeActiveNotification) {
+                guard let self else { return }
+                await self.keepAlive()
+            }
+        }
     }
 
     /// Number of tunnels currently serving traffic (connecting counts too, so
@@ -40,6 +118,8 @@ final class PortForwardingSession {
     }
 
     func shutdown() async {
+        keepAliveTask?.cancel()
+        foregroundTask?.cancel()
         await model.stopAll()
         await connection.disconnect()
     }

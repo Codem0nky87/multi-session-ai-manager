@@ -83,6 +83,36 @@ import Testing
         #expect(value.scoped(to: "elsewhere").pill == HostAttentionPill(level: .warning, count: 1))
     }
 
+    // MARK: - The long-press menu says which agents
+
+    @Test func theMenuNamesEachAgentAndTheSessionItIsIn() throws {
+        let value = try attention(line(blocked: [("default", "needs an answer")],
+                                       done: [("desktop", "finished"), ("default", "also done")],
+                                       rateLimited: ["claude_code", "codex"]))
+        #expect(value.menuSections == [
+            .init(title: "Waiting for you", rows: ["needs an answer · default"]),
+            .init(title: "Rate limited", rows: ["Claude Code", "Codex"]),
+            .init(title: "Finished", rows: ["finished · desktop", "also done · default"]),
+        ])
+    }
+
+    @Test func aListThatWasCutSaysHowManyMoreThereAre() throws {
+        let value = try attention(line(blocked: [("default", "a"), ("default", "b")], blockedCount: 7))
+        #expect(value.menuSections == [.init(title: "Waiting for you", rows: ["a · default", "b · default", "and 5 more"])])
+    }
+
+    @Test func aQuietHostAddsNothingToTheMenu() throws {
+        #expect(try attention(line()).menuSections.isEmpty)
+        #expect(try attention(line(blocked: [("default", "stale")], available: false)).menuSections.isEmpty)
+        #expect(try attention(line(rateLimited: ["codex"], available: false)).menuSections
+                == [.init(title: "Rate limited", rows: ["Codex"])])
+    }
+
+    @Test func aSessionTabsMenuListsOnlyItsOwnAgents() throws {
+        let value = try attention(line(done: [("default", "a"), ("desktop", "b")]))
+        #expect(value.scoped(to: "desktop").menuSections == [.init(title: "Finished", rows: ["b · desktop"])])
+    }
+
     @Test func theSummaryIsSpokenInFull() throws {
         #expect(try attention(line(blocked: [("default", "a")])).spokenSummary == "1 agent is waiting for you")
         #expect(try attention(line(blocked: [("default", "a"), ("default", "b")], done: [("default", "c")],

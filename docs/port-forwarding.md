@@ -65,6 +65,30 @@ iOS suspends the app soon after it leaves the screen, and a suspended app
 forwards nothing. Keep AI Manager visible next to the client (Split View,
 Slide Over, Stage Manager).
 
+### Keeping a forward alive
+
+An idle forward sends nothing, so a NAT, firewall or VPN on the path drops the
+SSH connection without a word. The listeners on the device would then accept
+connections that go nowhere. `PortForwardingSession.keepAlive()` prevents that
+and repairs it:
+
+- **A beat every 30 seconds** while any forward on the host is running: one
+  tiny round trip (`true`) on the SSH connection, which refreshes the flow.
+  Nothing is sent for a host with no forward running.
+- **Reconnect underneath.** If the beat gets no answer within 10 seconds the
+  SSH connection is made again. The listeners keep their ports, so the address
+  in the client stays valid and the next connection simply works; no forward
+  has to be stopped and started.
+- **At once when it matters.** The same check runs immediately when a
+  connection through a forward fails, and when the app comes back to the
+  front. iOS suspends the app in the background, where nothing can be kept
+  alive, so the link is usually gone on return.
+- **The hop leg** keeps itself alive too: its `ssh` runs with
+  `ServerAliveInterval=30`, `ServerAliveCountMax=3`.
+
+A changed host key is not reconnected automatically; that is the user's to
+look at.
+
 ### http or https
 
 Only the two browser shortcuts need a scheme, and they ask the port. Before

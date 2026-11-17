@@ -101,6 +101,17 @@ struct HostTabStrip: View {
                         return true
                     }
                     .contextMenu {
+                        // What the pill is counting. Choosing a row goes to that host.
+                        if let sections = waiting?.menuSections, !sections.isEmpty {
+                            ForEach(sections, id: \.title) { section in
+                                Section(section.title) {
+                                    ForEach(Array(section.rows.enumerated()), id: \.offset) { _, row in
+                                        Button(row) { store.select(tab.id) }
+                                    }
+                                }
+                            }
+                            Divider()
+                        }
                         Menu("Theme") {
                             Button("Default (Global)") {
                                 store.setTheme(nil, for: tab.id)

@@ -221,6 +221,10 @@ final class SessionWebTunnelModel {
     /// Bumped by every start and stop of a tunnel, so the late result of a start that
     /// was since stopped or restarted cannot overwrite what replaced it.
     private var generations: [UUID: UInt] = [:]
+    /// Called when a connection through a listening tunnel fails. A dead SSH link
+    /// shows up this way first, so whoever keeps the link alive checks it now
+    /// rather than at its next beat.
+    @ObservationIgnored var onConnectionProblem: (() -> Void)?
 
     init(server: any SessionWebTunnelServing, probe: any TunnelTLSProbing = NIOTunnelTLSProbe()) {
         self.server = server
@@ -235,6 +239,14 @@ final class SessionWebTunnelModel {
     /// target that refused it. The tunnel keeps listening: the service may yet start.
     func connectionProblem(for id: UUID) -> String? {
         runs[id]?.connectionProblem
+    }
+
+    /// Drops what earlier connections ran into: the link they failed on has been
+    /// replaced, so the next connection starts with a clean slate.
+    func clearConnectionProblems() {
+        for id in runs.keys {
+            runs[id]?.connectionProblem = nil
+        }
     }
 
     /// Tunnels that are connecting or listening, in the order they were started.
@@ -268,6 +280,7 @@ final class SessionWebTunnelModel {
             Task { @MainActor [weak self] in
                 guard let self, self.generations[id] == generation, self.runs[id]?.listener != nil else { return }
                 self.runs[id]?.connectionProblem = message
+                self.onConnectionProblem?()
             }
         }
         let server = self.server

@@ -32,6 +32,11 @@ struct SessionWebTunnelRemoteForwardCommands: Equatable {
             "-o \(Self.quote(hasPassword ? "BatchMode=no" : "BatchMode=yes"))",
             "-o \(Self.quote("StrictHostKeyChecking=accept-new"))",
             "-o \(Self.quote("ExitOnForwardFailure=yes"))",
+            // The leg from this host to the hop idles as well. Keep-alives stop a
+            // firewall between them from dropping it, and end the process when
+            // the hop is truly gone instead of leaving a forward that goes nowhere.
+            "-o \(Self.quote("ServerAliveInterval=30"))",
+            "-o \(Self.quote("ServerAliveCountMax=3"))",
         ]
         if hasPassword {
             options.append("-o \(Self.quote("NumberOfPasswordPrompts=1"))")

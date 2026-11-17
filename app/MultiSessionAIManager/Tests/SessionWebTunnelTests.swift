@@ -358,6 +358,18 @@ struct NIOSessionWebTunnelServerTests {
         await restarted?.stop()
     }
 
+    @Test func theHopLegSendsItsOwnKeepAlives() {
+        // The leg from the first host to the hop idles too. Without keep-alives a
+        // firewall between them drops it silently and the forward goes dead.
+        for password in [nil, "secret"] as [String?] {
+            let commands = SessionWebTunnelRemoteForwardCommands(
+                hop: .init(username: "root", host: "jump"), targetHost: "target", targetPort: 3389,
+                remoteForwardPort: 13389, controlPath: "/tmp/keepalive.sock", hopPassword: password)
+            #expect(commands.start.contains("-o 'ServerAliveInterval=30'"))
+            #expect(commands.start.contains("-o 'ServerAliveCountMax=3'"))
+        }
+    }
+
     @Test func remoteForwardCommandsShellQuoteGeneratedValues() {
         let commands = SessionWebTunnelRemoteForwardCommands(
             hop: .init(username: "ro'ot", host: "jump';echo unsafe", port: 2222),
@@ -774,6 +786,35 @@ struct NIOSessionWebTunnelServerTests {
         #expect(model.running.isEmpty)
         #expect(forwards.allSatisfy { server.listener(for: $0.id)?.stopCallCount == 1 })
         #expect(forwards.allSatisfy { model.status(for: $0.id) == .idle })
+    }
+
+    @Test func problemsAreForgottenOnceTheLinkIsBack() async {
+        let server = await openServer()
+        let model = SessionWebTunnelModel(server: server)
+        let console = SessionWebTunnel.internalConsole
+        await model.start(console)
+        server.emitConnectionError("SSH host could not reach 10.44.0.25:9443.", for: console.id)
+        await Task.yield()
+        #expect(model.connectionProblem(for: console.id) != nil)
+
+        model.clearConnectionProblems()
+
+        #expect(model.connectionProblem(for: console.id) == nil)
+        #expect(model.status(for: console.id) == .listening(localPort: 49152))
+    }
+
+    @Test func aProblemOnAForwardIsReportedToWhoeverKeepsTheLinkAlive() async {
+        let server = await openServer()
+        let model = SessionWebTunnelModel(server: server)
+        var reported = 0
+        model.onConnectionProblem = { reported += 1 }
+        let console = SessionWebTunnel.internalConsole
+        await model.start(console)
+
+        server.emitConnectionError("SSH host could not reach 10.44.0.25:9443.", for: console.id)
+        await Task.yield()
+
+        #expect(reported == 1)
     }
 
     @Test func theBrowserUsesHTTPSOnlyWhenThePortSpeaksTLS() async {

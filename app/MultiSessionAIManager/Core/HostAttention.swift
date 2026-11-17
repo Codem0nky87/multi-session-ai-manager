@@ -87,6 +87,39 @@ struct HostAttention: Decodable, Equatable, Sendable {
         return nil
     }
 
+    /// One titled group of rows in the host tab's long-press menu.
+    struct MenuSection: Equatable, Sendable {
+        let title: String
+        let rows: [String]
+    }
+
+    /// Which agents the pill is counting, for the tab's long-press menu: the pill
+    /// says how many, this says which, each with the Herdr session it runs in.
+    var menuSections: [MenuSection] {
+        func rows(_ items: [Item], total: Int) -> [String] {
+            var rows = items.map { $0.session.isEmpty ? $0.name : "\($0.name) · \($0.session)" }
+            // The host sends only the first few of a long list.
+            if total > items.count { rows.append("and \(total - items.count) more") }
+            return rows
+        }
+        var sections: [MenuSection] = []
+        if available, blockedCount > 0 {
+            sections.append(MenuSection(title: "Waiting for you", rows: rows(blocked, total: blockedCount)))
+        }
+        if !rateLimited.isEmpty {
+            sections.append(MenuSection(title: "Rate limited", rows: rateLimited.map(Self.providerName)))
+        }
+        if available, doneCount > 0 {
+            sections.append(MenuSection(title: "Finished", rows: rows(done, total: doneCount)))
+        }
+        return sections
+    }
+
+    /// "claude_code" as "Claude Code".
+    private static func providerName(_ identifier: String) -> String {
+        identifier.split(separator: "_").map { $0.prefix(1).uppercased() + $0.dropFirst() }.joined(separator: " ")
+    }
+
     /// Everything the pill stands for, for VoiceOver: the pill shows one number.
     var spokenSummary: String? {
         var parts: [String] = []

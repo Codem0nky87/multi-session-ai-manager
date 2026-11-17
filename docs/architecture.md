@@ -308,6 +308,10 @@ What a watch will not do:
 A tab bound to a named Herdr session counts only that session's agents; a tab
 on the host as a whole counts every session. A rate limit belongs to the host.
 
+The pill says how many; the tab's long-press menu says which: each agent by
+name with the Herdr session it runs in, grouped as *Waiting for you*, *Rate
+limited* and *Finished*. Choosing a row goes to that host's tab.
+
 ## Module map
 
 | Path | Responsibility |
