@@ -15,95 +15,16 @@ struct HostMetricsBarView: View {
     @State private var showingGPUDetail = false
     @State private var showingNetworkDetail = false
     @State private var showingDiskDetail = false
-    @State private var showingTunnels = false
+    @State private var showingForwards = false
     @State private var showingPowerDetail = false
 
     var body: some View {
         HStack(spacing: 16) {
-            // Live port-forward indicator: a modern pill showing how many
-            // proxy address runners are active for this host. Tapping it
-            // reopens that host's port manager. Hidden when nothing runs.
-            if let hostID, portForwarding?.activeTunnelCount(for: hostID) ?? 0 > 0 {
-                Button {
-                    showingTunnels = true
-                } label: {
-                    HStack(spacing: 5) {
-                        Circle()
-                            .fill(Theme.success)
-                            .frame(width: 7, height: 7)
-                        Image(systemName: "network")
-                            .font(.system(size: 10, weight: .bold))
-                        Text("\(portForwarding?.activeTunnelCount(for: hostID) ?? 0)")
-                            .font(HerdrTheme.mono(.caption, weight: .bold))
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Capsule().fill(HerdrTheme.selection))
-                    .foregroundStyle(HerdrTheme.text)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(portForwarding?.activeTunnelCount(for: hostID) == 1
-                                    ? "1 port forward running. Tap to manage."
-                                    : "\(portForwarding?.activeTunnelCount(for: hostID) ?? 0) port forwards running. Tap to manage.")
-                .accessibilityIdentifier("metrics.port-forwards")
-                .popover(isPresented: $showingTunnels, arrowEdge: .bottom) {
-                    // The sheet is full-screen-ish; a compact popover body
-                    // showing status plus a stop control keeps the bar usable.
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("PORT FORWARDS")
-                            .font(HerdrTheme.mono(.caption, weight: .bold))
-                            .foregroundStyle(HerdrTheme.subtext)
-                        if let session = portForwarding?.sessions[hostID] {
-                            // One line per running forward, each with its own stop.
-                            ForEach(session.model.running) { tunnel in
-                                HStack(spacing: 8) {
-                                    switch session.model.status(for: tunnel.id) {
-                                    case .listening(let port):
-                                        Label {
-                                            // Verbatim: a port is a name, not a quantity to group digits in.
-                                            Text(verbatim: "\(tunnel.label) · 127.0.0.1:\(port)")
-                                        } icon: {
-                                            Image(systemName: "checkmark.circle.fill")
-                                        }
-                                        .foregroundStyle(HerdrTheme.green)
-                                    default:
-                                        Label {
-                                            Text(verbatim: "\(tunnel.label) · starting…")
-                                        } icon: {
-                                            Image(systemName: "arrow.triangle.2.circlepath")
-                                        }
-                                        .foregroundStyle(HerdrTheme.subtext)
-                                    }
-                                    Spacer(minLength: 4)
-                                    Button {
-                                        Task { await session.model.stop(tunnel.id) }
-                                    } label: {
-                                        Image(systemName: "stop.circle")
-                                            .frame(minWidth: 32, minHeight: 32)
-                                            .contentShape(Rectangle())
-                                    }
-                                    .buttonStyle(.plain)
-                                    .foregroundStyle(HerdrTheme.red)
-                                    .accessibilityLabel("Stop \(tunnel.label)")
-                                }
-                                .font(HerdrTheme.mono(.caption))
-                                .lineLimit(1)
-                            }
-                            Button(role: .destructive) {
-                                Task { await portForwarding?.remove(hostID: hostID) }
-                            } label: {
-                                Label("Stop all", systemImage: "stop.circle")
-                                    .font(HerdrTheme.mono(.subheadline))
-                            }
-                            .buttonStyle(.plain)
-                            .foregroundStyle(HerdrTheme.red)
-                            .accessibilityIdentifier("metrics.port-forwards.stop-all")
-                        }
-                    }
-                    .padding()
-                    .frame(width: 300)
-                    .background(HerdrTheme.background)
-                    .presentationCompactAdaptation(.popover)
+            // Live port-forward indicator: how many forwards run for this host,
+            // and behind it the list of them. Hidden when nothing runs.
+            if let hostID, let session = portForwarding?.sessions[hostID], session.activeTunnelCount > 0 {
+                PortForwardsPill(session: session, isShowingForwards: $showingForwards) {
+                    await portForwarding?.remove(hostID: hostID)
                 }
             }
 

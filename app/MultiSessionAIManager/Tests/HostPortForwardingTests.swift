@@ -156,8 +156,10 @@ struct HostPortForwardingTests {
 
         // The monitor bar carries the live indicator with an explicit stop.
         let bar = try sourceFile("UI/Metrics/HostMetricsBarView.swift")
-        #expect(bar.contains("metrics.port-forwards"))
-        #expect(bar.contains("metrics.port-forwards.stop-all"))
+        #expect(bar.contains("PortForwardsPill(session: session"))
+        let pill = try sourceFile("UI/Metrics/PortForwardsPill.swift")
+        #expect(pill.contains("metrics.port-forwards"))
+        #expect(pill.contains("metrics.port-forwards.stop-all"))
     }
 
     private func sourceFile(_ relativePath: String) throws -> String {
