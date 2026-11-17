@@ -16,6 +16,8 @@ final class HostTabsModel {
     private var isRecoveryForeground = false
 
     private(set) var sessions: [UUID: HerdrHostSession] = [:]
+    /// What is waiting on each open tab's host, kept current in the background.
+    let attention: HostAttentionCenter
 
     init(
         hostStore: HostStore,
@@ -29,6 +31,19 @@ final class HostTabsModel {
         self.keyStore = keyStore
         self.knownHosts = knownHosts
         self.makeTransport = makeTransport
+        self.attention = HostAttentionCenter(keyStore: keyStore, knownHosts: knownHosts,
+                                             makeTransport: { makeTransport() })
+    }
+
+    /// Watches the hosts that have a tab open while the app is in front, and
+    /// nothing while it is not.
+    func refreshAttentionWatch(isForeground: Bool) {
+        guard isForeground else {
+            Task { await attention.stopAll() }
+            return
+        }
+        let open = Set(tabStore.tabs.map(\.hostID))
+        attention.watch(hostStore.hosts.filter { open.contains($0.id) })
     }
 
     func session(for tab: HostTab) -> HerdrHostSession {
@@ -130,7 +145,7 @@ struct RootView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 0) {
-                HostTabStrip(store: tabStore, hosts: hostStore.hosts) { showingPicker = true }
+                HostTabStrip(store: tabStore, hosts: hostStore.hosts, attention: tabs.attention) { showingPicker = true }
                 // Copies the focused Herdr pane's text to the iPad pasteboard.
                 // Only shown with a live tab: it asks Herdr over that tab's own
                 // authenticated SSH connection.
@@ -402,8 +417,18 @@ struct RootView: View {
             guard count > 0, incomingFile == nil, !isFetchingIncoming else { return }
             fetchNextIncoming()
         }
+        .task { tabs.refreshAttentionWatch(isForeground: scenePhase == .active) }
+        .onChange(of: tabStore.tabs.map(\.hostID)) { _, _ in
+            tabs.refreshAttentionWatch(isForeground: scenePhase == .active)
+        }
+        .onChange(of: hostStore.hosts) { _, _ in
+            tabs.refreshAttentionWatch(isForeground: scenePhase == .active)
+        }
         .onChange(of: scenePhase) { _, phase in
             updateRecoveryContext()
+            // `.inactive` is a passing state (a notification banner, the app
+            // switcher): only a real move to the background ends the watches.
+            if phase != .inactive { tabs.refreshAttentionWatch(isForeground: phase == .active) }
             guard phase == .active else { return }
             AppleIntelligenceEngine.shared.checkAvailability()
             guard let tab = selectedTab else { return }

@@ -195,6 +195,15 @@ enum HostServiceInstaller {
         return "\"$HOME/.local/bin/msam-host-agent\" metrics --loop"
     }
 
+    /// The notification stream: one small line when what needs attention on the
+    /// host changes. It reads the service's state files and runs nothing else.
+    static func attentionCommand(isWindows: Bool) -> String {
+        if isWindows {
+            return powershell("& \"$env:USERPROFILE/.local/bin/msam-host-agent.cmd\" attention --loop; exit $LASTEXITCODE")
+        }
+        return "\"$HOME/.local/bin/msam-host-agent\" attention --loop"
+    }
+
     static func metricsReportCommand(period: String?, isWindows: Bool) -> String {
         let periodArg: String
         if let period, !period.isEmpty {

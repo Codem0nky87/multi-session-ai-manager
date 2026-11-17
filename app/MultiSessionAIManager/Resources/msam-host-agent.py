@@ -15,13 +15,27 @@ import threading
 import time
 import urllib.parse
 
-VERSION = '1.1.2'
+VERSION = '1.2.0'
 ROOT = Path(__file__).resolve().parent
 HOME = Path(os.environ.get('MSAM_HOST_HOME', str(Path.home())))
 STATE = HOME / '.local/state/msam-host-agent'
 UPDATER_STATE = HOME / '.local/state/msam-agent-updater'
 STOP = threading.Event()
 WINDOWS_NETWORK = None
+
+# Seconds between polls of every Herdr session's agents. The app shows a pill on
+# a host's tab when an agent there is blocked or has finished, and that should
+# follow within a few seconds, not a quarter of a minute.
+INVENTORY_INTERVAL = 3
+# The list of Herdr sessions changes rarely and is re-read less often.
+SESSION_REFRESH_INTERVAL = 15
+# An inventory older than this says nothing about now: the poller is stuck.
+ATTENTION_MAX_AGE = 30
+ATTENTION_PREFIX = 'MSAM_ATTENTION='
+ATTENTION_LIMIT = 20
+# An unchanged summary is repeated this often, so a reader can tell a quiet
+# host from a dead stream.
+ATTENTION_HEARTBEAT = 15
 
 # Per-component versions for the service status. Scripts that declare one
 # report it verbatim; the rest report a short content digest so the app can
@@ -190,19 +204,67 @@ def sample_metrics(module):
     return value
 
 
-def inventory():
-    def run(args, env=None):
-        result = subprocess.run(args, env=env or environment(), capture_output=True, timeout=10, check=True)
-        return json.loads(result.stdout)
-    sessions = run(['herdr', 'session', 'list', '--json']).get('sessions', [])
+def herdr(args, env=None):
+    result = subprocess.run(['herdr'] + args, env=env or environment(), capture_output=True, timeout=10, check=True)
+    return json.loads(result.stdout)
+
+
+def running_sessions():
+    sessions = herdr(['session', 'list', '--json']).get('sessions', [])
+    return [session for session in sessions[:32] if session.get('running') and session.get('socket_path')]
+
+
+def session_agents(sessions):
     result = []
-    for session in sessions[:32]:
-        if not session.get('running') or not session.get('socket_path'):
-            continue
+    for session in sessions:
         env = dict(environment(), HERDR_SOCKET_PATH=session['socket_path'])
-        agents = run(['herdr', 'agent', 'list'], env).get('result', {}).get('agents', [])
+        try:
+            agents = herdr(['agent', 'list'], env).get('result', {}).get('agents', [])
+        except (OSError, ValueError, subprocess.SubprocessError):
+            # The session ended since it was listed. One that is gone must not
+            # blind the inventory to the others.
+            continue
         result.append({'session': session['name'], 'socketPath': session['socket_path'], 'agents': agents[:256]})
     return result
+
+
+def inventory():
+    return session_agents(running_sessions())
+
+
+def attention():
+    """What on this host is waiting for its user.
+
+    Herdr has no feed of the notifications it pops up, but it reports the agent
+    state behind them: `blocked` is an agent waiting for an answer or a
+    permission, and `done` is one that finished while nobody was looking, which
+    Herdr clears itself once its pane is viewed. A provider that is rate limited
+    is listed too. Read from the files the daemon already keeps, so asking costs
+    no Herdr call.
+    """
+    providers = (read_json(STATE / 'providers.json', {}) or {}).get('providers') or {}
+    summary = {
+        'available': False, 'blocked': [], 'done': [], 'blocked_count': 0, 'done_count': 0,
+        'rate_limited': sorted(name for name, value in providers.items()
+                               if isinstance(value, dict) and value.get('state') == 'RATE_LIMITED')[:ATTENTION_LIMIT],
+    }
+    state = read_json(STATE / 'agents.json', None)
+    if not isinstance(state, dict) or state.get('error') or time.time() - state.get('at', 0) > ATTENTION_MAX_AGE:
+        return summary
+    summary['available'] = True
+    for session in state.get('sessions', []):
+        for agent in session.get('agents', []):
+            status = agent.get('agent_status')
+            if status not in ('blocked', 'done'):
+                continue
+            pane = str(agent.get('pane_id') or '')
+            name = agent.get('name') or agent.get('terminal_title_stripped') or agent.get('agent') or pane
+            summary[status].append({'session': str(session.get('session') or ''), 'pane_id': pane,
+                                    'name': str(name)[:80], 'agent': agent.get('agent')})
+    for status in ('blocked', 'done'):
+        summary[status + '_count'] = len(summary[status])
+        summary[status] = summary[status][:ATTENTION_LIMIT]
+    return summary
 
 
 def background_updates():
@@ -222,12 +284,20 @@ def background_updates():
 
 
 def background_inventory():
+    sessions, refreshed = [], None
     while not STOP.is_set():
         try:
-            atomic_json(STATE / 'agents.json', {'at': time.time(), 'sessions': inventory()})
+            now = time.monotonic()
+            if refreshed is None or now - refreshed >= SESSION_REFRESH_INTERVAL:
+                sessions, refreshed = running_sessions(), now
+            found = session_agents(sessions)
+            if len(found) != len(sessions):
+                refreshed = None  # a session went away: list them again next time
+            atomic_json(STATE / 'agents.json', {'at': time.time(), 'sessions': found})
         except (OSError, ValueError, subprocess.SubprocessError) as error:
+            refreshed = None
             atomic_json(STATE / 'agents.json', {'at': time.time(), 'sessions': [], 'error': str(error)})
-        STOP.wait(15)
+        STOP.wait(INVENTORY_INTERVAL)
 
 
 def background_provider_pulse():
@@ -322,6 +392,22 @@ def stream_metrics(loop):
         time.sleep(0.5)
 
 
+def stream_attention(loop):
+    """The notification feed for the app's background connection: one small line
+    when what needs attention changes, and nothing else. It carries no metrics
+    and attaches to no Herdr session, so watching a host this way costs it
+    almost nothing and does not disturb the layout of anyone's terminal."""
+    last = printed_at = None
+    while True:
+        current, now = attention(), time.monotonic()
+        if current != last or printed_at is None or now - printed_at >= ATTENTION_HEARTBEAT:
+            print(ATTENTION_PREFIX + json.dumps(current), flush=True)
+            last, printed_at = current, now
+        if not loop:
+            return
+        time.sleep(1)
+
+
 class RequestHandler(http.server.BaseHTTPRequestHandler):
     """HTTP request handler for MSAM host agent API endpoints."""
 
@@ -408,7 +494,8 @@ def main():
     global HOME, STATE, UPDATER_STATE
     parser = argparse.ArgumentParser()
     parser.add_argument('--home')
-    parser.add_argument('command', choices=['serve', 'windows-service', 'status', 'metrics', 'agents', 'updates', 'self-test', 'analyze-task', 'report', 'monitor'])
+    parser.add_argument('command', choices=['serve', 'windows-service', 'status', 'metrics', 'agents', 'attention', 'updates', 'self-test',
+                                            'analyze-task', 'report', 'monitor'])
     parser.add_argument('args', nargs='*')
     parser.add_argument('--loop', action='store_true')
     options, remaining = parser.parse_known_args()
@@ -429,6 +516,8 @@ def main():
         stream_metrics(options.loop)
     elif options.command == 'agents':
         print(json.dumps(read_json(STATE / 'agents.json', {'sessions': []})))
+    elif options.command == 'attention':
+        stream_attention(options.loop)
     elif options.command == 'analyze-task':
         transcript_path = options.args[0] if options.args else ""
         target_provider = options.args[1] if len(options.args) > 1 else "codex"

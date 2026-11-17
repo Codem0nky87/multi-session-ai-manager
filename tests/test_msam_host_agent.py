@@ -695,6 +695,185 @@ class HostAgentTests(unittest.TestCase):
                     mock_monitor.assert_called_once_with(['--oneshot'])
 
 
+class AttentionTests(unittest.TestCase):
+    """What on a host is waiting for its user, for the app's pill on the host tab."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.home = Path(self.temp.name)
+        self.agent = module('msam-host-agent.py')
+        self.agent.HOME = self.home
+        self.agent.STATE = self.home / '.local/state/msam-host-agent'
+        self.agent.STATE.mkdir(parents=True)
+
+    def pane(self, status, pane='w1:p1', name='build fixer', kind='claude', **extra):
+        return dict({'agent': kind, 'agent_status': status, 'pane_id': pane, 'name': name}, **extra)
+
+    def record(self, sessions, age=0, providers=None, error=None):
+        state = {'at': time.time() - age, 'sessions': sessions}
+        if error:
+            state['error'] = error
+        self.agent.atomic_json(self.agent.STATE / 'agents.json', state)
+        if providers is not None:
+            self.agent.atomic_json(self.agent.STATE / 'providers.json', {'providers': providers})
+
+    def test_a_blocked_agent_and_a_finished_one_are_reported_apart(self):
+        self.record([{'session': 'default', 'agents': [
+            self.pane('blocked', 'w1:p1', 'needs an answer'), self.pane('done', 'w1:p2', 'finished', 'codex'),
+            self.pane('working', 'w1:p3'), self.pane('idle', 'w1:p4'), self.pane('unknown', 'w1:p5')]}])
+        summary = self.agent.attention()
+        self.assertEqual(summary['blocked'], [
+            {'session': 'default', 'pane_id': 'w1:p1', 'name': 'needs an answer', 'agent': 'claude'}])
+        self.assertEqual(summary['done'], [
+            {'session': 'default', 'pane_id': 'w1:p2', 'name': 'finished', 'agent': 'codex'}])
+        self.assertEqual(summary['rate_limited'], [])
+        self.assertTrue(summary['available'])
+
+    def test_every_herdr_session_on_the_host_counts(self):
+        self.record([{'session': 'default', 'agents': [self.pane('blocked', 'a:p1')]},
+                     {'session': 'desktop', 'agents': [self.pane('blocked', 'b:p1'), self.pane('done', 'b:p2')]}])
+        summary = self.agent.attention()
+        self.assertEqual([(item['session'], item['pane_id']) for item in summary['blocked']],
+                         [('default', 'a:p1'), ('desktop', 'b:p1')])
+        self.assertEqual([item['session'] for item in summary['done']], ['desktop'])
+
+    def test_a_rate_limited_provider_is_named(self):
+        self.record([], providers={'codex': {'state': 'RATE_LIMITED'}, 'claude_code': {'state': 'HEALTHY'},
+                                   'antigravity': {'state': 'RATE_LIMITED'}, 'broken': 'not a mapping'})
+        self.assertEqual(self.agent.attention()['rate_limited'], ['antigravity', 'codex'])
+
+    def test_an_agent_without_a_name_is_called_by_its_title_then_its_kind(self):
+        self.record([{'session': 'default', 'agents': [
+            self.pane('blocked', 'w:p1', name='', terminal_title_stripped='Refactor the parser'),
+            self.pane('blocked', 'w:p2', name=None, kind='codex'),
+            self.pane('blocked', 'w:p3', name=None, kind=None)]}])
+        self.assertEqual([item['name'] for item in self.agent.attention()['blocked']],
+                         ['Refactor the parser', 'codex', 'w:p3'])
+
+    def test_long_names_and_long_lists_are_cut_but_still_counted(self):
+        self.record([{'session': 'default', 'agents': [
+            self.pane('blocked', 'w:p%d' % index, name='x' * 300) for index in range(60)]}])
+        summary = self.agent.attention()
+        self.assertEqual(len(summary['blocked']), self.agent.ATTENTION_LIMIT)
+        self.assertEqual(summary['blocked_count'], 60)
+        self.assertLessEqual(len(summary['blocked'][0]['name']), 80)
+
+    def test_nothing_is_claimed_when_the_inventory_is_old_missing_or_failed(self):
+        blocked = [{'session': 'default', 'agents': [self.pane('blocked')]}]
+        for label, setup in [
+            ('missing', lambda: None),
+            ('old', lambda: self.record(blocked, age=120)),
+            ('failed', lambda: self.record(blocked, error='herdr is not installed')),
+        ]:
+            with self.subTest(label):
+                (self.agent.STATE / 'agents.json').unlink(missing_ok=True)
+                setup()
+                summary = self.agent.attention()
+                self.assertFalse(summary['available'])
+                self.assertEqual(summary['blocked'], [])
+                self.assertEqual(summary['blocked_count'], 0)
+
+    def test_the_inventory_polls_agents_often_and_sessions_less_often(self):
+        calls = []
+
+        def run(args, **kwargs):
+            calls.append(args[1:3])
+            if args[1:3] == ['session', 'list']:
+                payload = {'sessions': [{'name': 'default', 'running': True, 'socket_path': '/tmp/one.sock'},
+                                        {'name': 'stopped', 'running': False, 'socket_path': '/tmp/two.sock'}]}
+            else:
+                payload = {'result': {'agents': [self.pane('blocked')]}}
+            return subprocess.CompletedProcess(args, 0, stdout=json.dumps(payload).encode())
+
+        waits = []
+
+        def wait(seconds):
+            waits.append(seconds)
+            if len(waits) >= 3:
+                self.agent.STOP.set()
+
+        self.addCleanup(self.agent.STOP.clear)
+        with patch.object(self.agent.subprocess, 'run', side_effect=run), \
+             patch.object(self.agent.STOP, 'wait', side_effect=wait):
+            self.agent.background_inventory()
+
+        self.assertEqual(waits, [self.agent.INVENTORY_INTERVAL] * 3)
+        self.assertLessEqual(self.agent.INVENTORY_INTERVAL, 5, 'A blocked agent should show within seconds')
+        self.assertEqual(calls.count(['session', 'list']), 1, 'The session list is not re-read on every poll')
+        self.assertEqual(calls.count(['agent', 'list']), 3)
+        saved = self.agent.read_json(self.agent.STATE / 'agents.json')
+        self.assertEqual([session['session'] for session in saved['sessions']], ['default'])
+        self.assertEqual(self.agent.attention()['blocked_count'], 1)
+
+    def test_a_session_that_went_away_does_not_blind_the_others(self):
+        def run(args, env=None, **kwargs):
+            if args[1:3] == ['session', 'list']:
+                payload = {'sessions': [{'name': 'gone', 'running': True, 'socket_path': '/tmp/gone.sock'},
+                                        {'name': 'default', 'running': True, 'socket_path': '/tmp/ok.sock'}]}
+                return subprocess.CompletedProcess(args, 0, stdout=json.dumps(payload).encode())
+            if env['HERDR_SOCKET_PATH'] == '/tmp/gone.sock':
+                raise subprocess.CalledProcessError(1, args)
+            return subprocess.CompletedProcess(args, 0, stdout=json.dumps(
+                {'result': {'agents': [self.pane('done')]}}).encode())
+
+        with patch.object(self.agent.subprocess, 'run', side_effect=run):
+            sessions = self.agent.session_agents(self.agent.running_sessions())
+        self.assertEqual([session['session'] for session in sessions], ['default'])
+
+    def test_the_notification_stream_prints_a_line_only_when_something_changes(self):
+        self.agent.atomic_json(self.agent.STATE / 'status.json', {'heartbeat': time.time()})
+        self.record([{'session': 'default', 'agents': [self.pane('working')]}])
+        steps = [
+            lambda: None,                                                            # nothing new
+            lambda: self.record([{'session': 'default', 'agents': [self.pane('blocked')]}]),
+            lambda: None,
+        ]
+        printed = []
+
+        def sleep(_):
+            if not steps:
+                raise KeyboardInterrupt
+            steps.pop(0)()
+
+        with patch.object(self.agent.time, 'sleep', side_effect=sleep), \
+             patch('builtins.print', side_effect=lambda *args, **kwargs: printed.append(args[0])):
+            with self.assertRaises(KeyboardInterrupt):
+                self.agent.stream_attention(loop=True)
+
+        self.assertEqual(len(printed), 2, printed)
+        self.assertTrue(all(line.startswith('MSAM_ATTENTION=') for line in printed))
+        first, second = (json.loads(line.split('=', 1)[1]) for line in printed)
+        self.assertEqual(first['blocked_count'], 0)
+        self.assertEqual(second['blocked_count'], 1)
+
+    def test_the_notification_stream_repeats_itself_as_a_heartbeat(self):
+        self.record([])
+        clock = [1000.0]
+        printed = []
+
+        def sleep(seconds):
+            clock[0] += 6
+            self.record([])                       # keep the inventory fresh on the fake clock
+            if clock[0] > 1000 + 40:
+                raise KeyboardInterrupt
+
+        with patch.object(self.agent.time, 'sleep', side_effect=sleep), \
+             patch.object(self.agent.time, 'monotonic', side_effect=lambda: clock[0]), \
+             patch('builtins.print', side_effect=lambda *args, **kwargs: printed.append(args[0])):
+            with self.assertRaises(KeyboardInterrupt):
+                self.agent.stream_attention(loop=True)
+        self.assertGreaterEqual(len(printed), 3, 'An unchanged summary is still repeated so the app knows the stream is alive')
+
+    def test_one_reading_is_available_without_a_stream(self):
+        self.record([{'session': 'default', 'agents': [self.pane('done')]}])
+        printed = []
+        with patch('builtins.print', side_effect=lambda *args, **kwargs: printed.append(args[0])):
+            self.agent.stream_attention(loop=False)
+        self.assertEqual(json.loads(printed[0].split('=', 1)[1])['done_count'], 1)
+        self.assertEqual(len(printed), 1)
+
+
 class WindowsUpdaterTests(unittest.TestCase):
     def setUp(self):
         self.worker = module('msam-agent-updater-windows.py')

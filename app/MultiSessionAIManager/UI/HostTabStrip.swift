@@ -6,6 +6,44 @@ enum HostTabTitle {
         guard let session = tab.sessionName, !session.isEmpty else { return host.name }
         return "\(host.name):\(session)"
     }
+
+    /// The tab's name and, when something waits on its host, what: the pill shows
+    /// a colour and a number, which mean nothing read aloud.
+    static func spoken(for tab: HostTab, hosts: [Host], attention: HostAttention?) -> String {
+        let title = title(for: tab, hosts: hosts)
+        guard let summary = attention?.spokenSummary else { return title }
+        return "\(title), \(summary)"
+    }
+}
+
+/// The count beside a host's name: red for agents that are blocked, amber for a
+/// rate-limited provider, blue for agents that have finished.
+struct HostAttentionPillView: View {
+    let pill: HostAttentionPill
+    /// The selected tab is filled with the accent colour, which is the "finished"
+    /// blue; there the pill is drawn dark with coloured digits so it stays visible.
+    var onSelectedTab = false
+
+    static func color(for level: HostAttentionLevel) -> Color {
+        switch level {
+        case .error: HerdrTheme.red
+        case .warning: HerdrTheme.yellow
+        case .info: HerdrTheme.accent
+        }
+    }
+
+    var body: some View {
+        let color = Self.color(for: pill.level)
+        Text(verbatim: pill.count > 99 ? "99+" : "\(pill.count)")
+            .font(HerdrTheme.mono(.caption2, weight: .bold))
+            .monospacedDigit()
+            .foregroundStyle(onSelectedTab ? color : HerdrTheme.background)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .frame(minWidth: 16)
+            .background(Capsule().fill(onSelectedTab ? HerdrTheme.background : color))
+            .accessibilityHidden(true)
+    }
 }
 
 /// The app's outer tab bar. Tabs are hosts; the remote Herdr renders below it
@@ -13,6 +51,8 @@ enum HostTabTitle {
 struct HostTabStrip: View {
     @Bindable var store: HostTabStore
     let hosts: [Host]
+    /// What is waiting on each tab's host. Nil (previews, tests) shows no pills.
+    var attention: HostAttentionCenter? = nil
     let onAdd: () -> Void
 
     var body: some View {
@@ -20,10 +60,16 @@ struct HostTabStrip: View {
             HStack(spacing: 0) {
                 ForEach(store.tabs) { tab in
                     let selected = tab.id == store.selectedTabID
+                    let waiting = attention?.attention(for: tab)
                     Button {
                         store.select(tab.id)
                     } label: {
-                        Text(HostTabTitle.title(for: tab, hosts: hosts))
+                        HStack(spacing: 6) {
+                            Text(HostTabTitle.title(for: tab, hosts: hosts))
+                            if let pill = waiting?.pill {
+                                HostAttentionPillView(pill: pill, onSelectedTab: selected)
+                            }
+                        }
                             .font(HerdrTheme.mono(.caption2, weight: selected ? .semibold : .regular))
                             .foregroundStyle(selected ? HerdrTheme.background : HerdrTheme.subtext)
                             .padding(.horizontal, 10)
@@ -42,6 +88,7 @@ struct HostTabStrip: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("host.tab.\(tab.id.uuidString)")
+                    .accessibilityLabel(HostTabTitle.spoken(for: tab, hosts: hosts, attention: waiting))
                     .accessibilityAddTraits(selected ? .isSelected : [])
                     .draggable(tab.id.uuidString)
                     .dropDestination(for: String.self) { items, _ in

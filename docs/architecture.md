@@ -256,6 +256,58 @@ a NIO event loop. Two patterns keep that safe:
 Framework completion handlers that fire off-main must be `nonisolated`/`@Sendable`;
 under Swift 6 a `@MainActor` callback invoked off-main traps at runtime.
 
+## What is waiting on a host
+
+Each host tab shows a small pill beside the host's name when something there
+wants the user: red with a count for agents that are **blocked** (waiting for an
+answer or a permission), amber for a **rate-limited provider**, blue for agents
+that have **finished** and not been looked at. The most severe one wins. A quiet
+host shows nothing.
+
+Herdr has no feed of the notifications it pops up. What it reports is the agent
+state behind them, `blocked` and `done`, and it clears `done` itself once the
+agent's pane is viewed. So the pill follows Herdr's own state and there is
+nothing to dismiss in the app.
+
+```
+Herdr sessions ──herdr agent list, every 3 s──▶ host service ──agents.json
+                                                       │
+                             msam-host-agent attention --loop   (one line per change, heartbeat every 15 s)
+                                                       │
+iPad: HostAttentionCenter ── one SSH connection per host with an open tab ──▶ pill on the tab
+```
+
+- **Host side.** `msam-host-agent.py` polls every Herdr session's agents every
+  3 seconds (the session list itself every 15) and `attention()` reduces that,
+  plus the provider states it already keeps, to a summary. It reports
+  `available: false` when it could not read Herdr or the inventory is older than
+  30 seconds, because "nothing is known" must not look like "nothing is blocked".
+- **The stream.** `attention --loop` prints `MSAM_ATTENTION=<json>` when the
+  summary changes and repeats it every 15 seconds. It reads the service's state
+  files and calls nothing.
+- **App side.** `HostAttentionCenter` keeps one `HostAttentionWatch` per host
+  that has a tab open, including tabs not opened since launch. A watch is its
+  own SSH connection carrying only that stream: no terminal, no metrics, and no
+  attach to Herdr, so it never takes over the layout of a session the way a
+  second terminal client would. Watches run while the app is in front and are
+  closed when it goes to the background.
+
+What a watch will not do:
+
+- **Trust a host first.** It connects only to a host whose key is already
+  pinned, which happens when the user opens the host. A changed key is left for
+  the user to resolve in the host's own tab; the watch neither trusts it nor
+  keeps retrying.
+- **Believe a quiet socket.** 45 seconds without a line means the stream is
+  dead; the pill is removed and the stream reopened. While nothing is known
+  there is no pill.
+- **Hammer an old host.** A service installed before this command exists ends
+  the stream at once without a line; that host is asked again every 10 minutes.
+  The service is upgraded the normal way, when its tab connects.
+
+A tab bound to a named Herdr session counts only that session's agents; a tab
+on the host as a whole counts every session. A rate limit belongs to the host.
+
 ## Module map
 
 | Path | Responsibility |
@@ -272,6 +324,7 @@ under Swift 6 a `@MainActor` callback invoked off-main traps at runtime.
 | `Resources/msam-agent-updater.sh` | Host-owned durable update/rolling-restore worker |
 | `Core/HostHelperScript.swift` | On-demand host helpers uploaded by content hash (`msam-host-software.py`, `msam-disk-usage.py`) |
 | `Core/VolumeUsage*.swift` | Largest files on a volume: the scan request and the per-host result cache |
+| `Core/HostAttention*.swift` | What is waiting on a host: the summary, and the background connection per host that keeps it current |
 | `Core/HostConnection.swift` | Auth, host-key policy, connection lifecycle |
 | `Core/NIOSSHTransport.swift` | SwiftNIO SSH + Citadel transport, PTY channels, forwarding |
 | `Core/SSHService.swift` | Bounded remote commands with a normalised PATH |

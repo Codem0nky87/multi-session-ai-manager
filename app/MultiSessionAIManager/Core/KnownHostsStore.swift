@@ -18,4 +18,6 @@ final class KnownHostsStore: @unchecked Sendable {
         return known == fingerprint ? .match : .mismatch
     }
     func pin(host: String, fingerprint: String) { var m = map; m[host] = fingerprint; map = m }
+    /// Whether this host's key has been accepted before, by the user opening it.
+    func isPinned(host: String) -> Bool { map[host] != nil }
 }
