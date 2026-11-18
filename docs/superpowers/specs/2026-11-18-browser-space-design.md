@@ -209,8 +209,10 @@ does not depend on what Herdr draws.
   `HUP`.
 - **Locator** (Swift Testing): a full region, a moved one, two regions, an
   obstructed one, one cut off by the grid edge, a marker inside ordinary text,
-  no marker. One test feeds bytes captured from a real Herdr session through
-  `TerminalEmulator` and expects the pane's true rectangle.
+  no marker. One test feeds what the placeholder writes through
+  `TerminalEmulator`. Bytes captured from a real Herdr session are replayed in
+  the end-to-end check, not committed: a capture carries the host's own screen
+  text.
 - **Commands**: the three commands for a named and an unnamed session, quoting,
   parsing Herdr's answer, and Herdr's refusals.
 - **Model**: follow at once, drop after the grace period, keep the page across
