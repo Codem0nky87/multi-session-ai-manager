@@ -112,6 +112,25 @@ If GitHub is rate limiting, or the listing is too large for GitHub to send
 whole, the install is attempted from the top of the repository and the host
 reports what it found.
 
+### Plugins that draw pictures
+
+AI Manager's terminal shows no pictures, and a program that draws them in a
+Herdr pane sends megabytes a second to every attached client, which is enough
+to freeze the session over a slow link. A plugin that draws pictures is
+therefore not installed from the app, from the list or by typing its
+repository: its row reads **Pictures not supported** and the sheet says what
+told it so.
+
+A plugin's manifest has no field for this, so the plugin's own words are read:
+its manifest, the README beside it, and the README of its repository, for
+"kitty graphics", "graphics protocol" or "sixel". Among the 120 most starred
+plugins in Herdr's marketplace that finds five (terminal-browser,
+terminal-code, herdr-browser, herdr-plannotator, herdr-pet), all of which draw
+pictures, and no others. Files that cannot be read are no reason to refuse a
+plugin. Installing one on the host with `herdr plugin install` is not
+prevented; when such a program runs, the tab says **Pictures are not
+supported** (see [architecture](architecture.md#no-pictures)).
+
 ### Updates
 
 Opening **Manage plugins** asks the host what is newer, and the sheet says so on

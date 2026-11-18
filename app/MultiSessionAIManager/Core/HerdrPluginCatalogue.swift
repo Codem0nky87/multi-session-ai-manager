@@ -35,6 +35,10 @@ protocol PluginCatalogueFetching: Sendable {
     /// takes: `owner/repo` for a manifest at the top, `owner/repo/folder` for one
     /// in a folder. Empty when the repository holds no manifest at all.
     func pluginSources(in fullName: String) async throws -> [String]
+    /// Whether the plugin at this source draws pictures in the terminal, going
+    /// by its manifest and READMEs. Nil when they do not say so, and when they
+    /// cannot be read: not knowing is no reason to refuse a plugin.
+    func pictureNeed(of source: String) async -> PluginPictureNeed?
 }
 
 enum PluginCatalogueError: Error, Equatable {
@@ -104,6 +108,34 @@ struct GitHubPluginCatalogue: PluginCatalogueFetching {
             throw PluginCatalogueError.unavailable("the repository is too large to look through for a plugin")
         }
         return found.sources
+    }
+
+    /// Where a plugin describes itself: its manifest, the README beside it, and
+    /// the README of its repository. Read as plain files, which costs nothing
+    /// against GitHub's hourly limit for the API.
+    static func descriptionFiles(of source: String) -> [(file: String, url: URL)] {
+        let parts = source.split(separator: "/").map(String.init)
+        guard parts.count >= 2 else { return [] }
+        let folder = parts.dropFirst(2).joined(separator: "/")
+        let inFolder = folder.isEmpty ? "" : folder + "/"
+        var files = [inFolder + manifestFileName, inFolder + "README.md"]
+        if !folder.isEmpty { files.append("README.md") }
+        return files.compactMap { file in
+            URL(string: "https://raw.githubusercontent.com/\(parts[0])/\(parts[1])/HEAD/\(file)").map { (file, $0) }
+        }
+    }
+
+    func pictureNeed(of source: String) async -> PluginPictureNeed? {
+        for (file, url) in Self.descriptionFiles(of: source) {
+            guard let (data, response) = try? await fetch(url),
+                  (response as? HTTPURLResponse)?.statusCode == 200 else { continue }
+            // A README is a few kilobytes; nobody needs megabytes of one read.
+            let text = String(decoding: data.prefix(400_000), as: UTF8.self)
+            if let phrase = PluginPictureRequirement.phrase(in: text) {
+                return PluginPictureNeed(phrase: phrase, file: file)
+            }
+        }
+        return nil
     }
 
     private func status(of response: URLResponse) throws -> Int {

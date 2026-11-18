@@ -540,6 +540,8 @@ struct HerdrPluginManagerSheet: View {
             } else if model.pluginChoices[plugin.fullName] != nil {
                 // Its plugins are listed underneath, each with its own Install.
                 EmptyView()
+            } else if model.pictureBlocked[plugin.fullName] != nil {
+                picturesNotSupported
             } else if model.isInstalled(plugin.fullName) {
                 Label("Installed", systemImage: "checkmark.circle.fill")
                     .font(.system(.footnote, design: .rounded, weight: .semibold))
@@ -562,6 +564,16 @@ struct HerdrPluginManagerSheet: View {
         .padding(.vertical, 4)
     }
 
+    /// In place of Install, for a plugin that draws pictures in the terminal.
+    private var picturesNotSupported: some View {
+        Label("Pictures not supported", systemImage: "photo.badge.exclamationmark")
+            .font(.system(.footnote, design: .rounded, weight: .semibold))
+            .foregroundStyle(Theme.textMuted)
+            .labelStyle(.titleAndIcon)
+            .frame(minHeight: 44)
+            .accessibilityHint("AI Manager does not install plugins that draw pictures in the terminal.")
+    }
+
     /// One plugin of a repository that holds several, named by its folder.
     private func pluginChoiceRow(_ source: String, in plugin: CataloguePlugin) -> some View {
         HStack(spacing: Theme.Space.sm) {
@@ -576,6 +588,8 @@ struct HerdrPluginManagerSheet: View {
             Spacer(minLength: Theme.Space.sm)
             if model.busyIdentifier == source {
                 ProgressView().tint(Theme.accent)
+            } else if model.pictureBlocked[source] != nil {
+                picturesNotSupported
             } else if model.isInstalled(source: source) {
                 Label("Installed", systemImage: "checkmark.circle.fill")
                     .font(.system(.footnote, design: .rounded, weight: .semibold))

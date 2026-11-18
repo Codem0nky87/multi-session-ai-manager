@@ -259,6 +259,82 @@ final class TestTerminalFrameClock: TerminalFrameClock {
         #expect(clock.stopCount == 2)
     }
 
+    // MARK: - Pictures
+
+    private static let frame = "\u{1b}_Ga=t,t=d,f=24,s=2,v=1,i=7,q=2,m=0;AAAAAAAA\u{1b}\\\u{1b}_Ga=p,i=7,p=1,c=2,r=1,q=2\u{1b}\\"
+
+    private func eventually(_ what: String, _ condition: () -> Bool) async {
+        let deadline = ContinuousClock.now + .seconds(3)
+        while !condition() && ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(condition(), "timed out waiting for: \(what)")
+    }
+
+    @Test func aProgramAskingWhetherPicturesWorkGetsNoYesFromThisTerminal() {
+        // The engine understands the kitty graphics protocol and answered "OK",
+        // while the app shows no pictures at all. terminal-browser was told yes
+        // and its user looked at an empty pane.
+        let clock = TestTerminalFrameClock()
+        let e = TerminalEmulator(cols: 20, rows: 5, frameClock: clock)
+        let pty = FakePTYChannel(command: "herdr", cols: 20, rows: 5, onOutput: { _ in }, onClose: {})
+        e.pty = pty
+
+        // The question every such program asks, followed by "who are you".
+        e.feed(Data("\u{1b}_Gi=4207,a=q,t=d,f=24,s=1,v=1;AAAA\u{1b}\\\u{1b}[c".utf8))
+        e.tick()
+
+        let answer = String(decoding: pty.sent, as: UTF8.self)
+        #expect(answer.contains("\u{1b}[?"), "It still says what kind of terminal it is")
+        #expect(!answer.contains("_G"), "and nothing about pictures: \(answer.debugDescription)")
+        #expect(!e.isRefusingPictures, "Asking is not drawing")
+    }
+
+    @Test func picturesAreKeptFromTheScreenAndTheTabSaysTheyAreNotSupported() {
+        let clock = TestTerminalFrameClock()
+        let e = TerminalEmulator(cols: 20, rows: 5, frameClock: clock)
+        e.setVisibility(true, for: TerminalVisibilityOwner())
+
+        e.feed(Data("before\(Self.frame)after".utf8))
+        e.tick()
+
+        #expect(e.isRefusingPictures)
+        #expect(e.lines.first?.plainText.hasPrefix("beforeafter") == true)
+    }
+
+    @Test func theNoticeLeavesOnceThePicturesStop() async {
+        let clock = TestTerminalFrameClock()
+        let e = TerminalEmulator(cols: 20, rows: 5, frameClock: clock)
+        e.pictureNoticeLinger = .milliseconds(60)
+
+        e.feed(Data(Self.frame.utf8))
+        e.tick()
+        #expect(e.isRefusingPictures)
+
+        await eventually("the notice to leave") { !e.isRefusingPictures }
+    }
+
+    @Test func aNoticeTheUserClosedStaysClosedForThatProgramAndReturnsForTheNext() async {
+        let clock = TestTerminalFrameClock()
+        let e = TerminalEmulator(cols: 20, rows: 5, frameClock: clock)
+        e.pictureNoticeLinger = .milliseconds(80)
+        e.feed(Data(Self.frame.utf8))
+        e.tick()
+
+        e.dismissPictureNotice()
+        #expect(!e.isRefusingPictures)
+        // The same program draws on: no need to say it again.
+        e.feed(Data(Self.frame.utf8))
+        e.tick()
+        #expect(!e.isRefusingPictures)
+
+        // It stops. Later another one starts.
+        try? await Task.sleep(for: .milliseconds(250))
+        e.feed(Data(Self.frame.utf8))
+        e.tick()
+        #expect(e.isRefusingPictures)
+    }
+
     /// Herdr gives a session's one layout to the client that last attached, resized,
     /// typed or regained focus. Without focus reports a host open on two devices
     /// stayed laid out for the other one's grid: the text size in Settings was

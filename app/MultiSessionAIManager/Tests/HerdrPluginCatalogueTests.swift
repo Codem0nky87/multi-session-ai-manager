@@ -222,6 +222,56 @@ import Testing
 
         #expect(try await catalogue.pluginSources(in: "owner/repo") == ["owner/repo/plugin"])
     }
+
+    // MARK: - Does the plugin draw pictures?
+
+    private static let raw = "https://raw.githubusercontent.com/zenbu-labs/terminal-browser/HEAD/"
+
+    @Test func aPluginsOwnWordsAreReadFromItsManifestItsReadmeAndItsRepositorysReadme() async {
+        // terminal-browser says it only in the README of its repository: neither
+        // its manifest nor the README in the plugin's own folder mentions pictures.
+        let catalogue = catalogue([
+            Self.raw + "herdr-plugin/herdr-plugin.toml": (200, #"id = "zenbu-labs.terminal-browser""#),
+            Self.raw + "herdr-plugin/README.md": (200, "A real browser that runs inside your terminal"),
+            Self.raw + "README.md": (200, "Terminals that support the Kitty Graphics protocol allow a program to display pixels."),
+        ])
+
+        let need = await catalogue.pictureNeed(of: "zenbu-labs/terminal-browser/herdr-plugin")
+
+        #expect(need == PluginPictureNeed(phrase: "kitty graphics", file: "README.md"))
+        #expect(StandInGitHub.state.requested == [
+            Self.raw + "herdr-plugin/herdr-plugin.toml", Self.raw + "herdr-plugin/README.md", Self.raw + "README.md",
+        ])
+    }
+
+    @Test func theFileThatSaysSoIsNamedAndNoFurtherOneIsFetched() async {
+        let catalogue = catalogue([
+            "https://raw.githubusercontent.com/nikok6/herdr-pet/HEAD/herdr-plugin.toml":
+                (200, "# host terminal that speaks the kitty graphics protocol (Ghostty, kitty, WezTerm)."),
+        ])
+
+        let need = await catalogue.pictureNeed(of: "nikok6/herdr-pet")
+
+        #expect(need == PluginPictureNeed(phrase: "kitty graphics", file: "herdr-plugin.toml"))
+        #expect(StandInGitHub.state.requested.count == 1)
+    }
+
+    @Test func aPluginThatSaysNothingAboutPicturesNeedsNone() async {
+        let base = "https://raw.githubusercontent.com/smarzban/herdr-file-viewer/HEAD/"
+        let catalogue = catalogue([
+            base + "herdr-plugin.toml": (200, #"id = "herdr-file-viewer""#),
+            base + "README.md": (200, "A git-aware, read-only file viewer."),
+        ])
+
+        #expect(await catalogue.pictureNeed(of: "smarzban/herdr-file-viewer") == nil)
+        // The repository's README is the plugin's own when the plugin is at the top.
+        #expect(StandInGitHub.state.requested == [base + "herdr-plugin.toml", base + "README.md"])
+    }
+
+    @Test func filesThatCannotBeReadAreNoReasonToRefuseAPlugin() async {
+        // A private repository, or GitHub unreachable from this device.
+        #expect(await catalogue([:]).pictureNeed(of: "owner/private-plugin") == nil)
+    }
 }
 
 /// Answers the catalogue's requests from a table instead of the network.

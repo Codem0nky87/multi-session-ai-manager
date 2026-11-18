@@ -224,6 +224,16 @@ final class TerminalEmulator {
     /// can append without violating actor isolation.
     @ObservationIgnored private let inbound = InboundBuffer()
 
+    /// True while a program on the host is drawing pictures. This terminal shows
+    /// none, so the tab says that instead of leaving an empty pane unexplained.
+    private(set) var isRefusingPictures = false
+    /// How long after the last picture the notice stays up.
+    @ObservationIgnored var pictureNoticeLinger: Duration = .seconds(4)
+    @ObservationIgnored private var pictureFilter = TerminalPictureFilter()
+    @ObservationIgnored private var lastPictureAt: ContinuousClock.Instant?
+    @ObservationIgnored private var pictureNoticeDismissed = false
+    @ObservationIgnored private var pictureNoticeTask: Task<Void, Never>?
+
     /// Last cursor position we rendered, so we can repaint the old + new cursor rows.
     @ObservationIgnored private var lastCursorLocation: (x: Int, y: Int) = (-1, -1)
 
@@ -289,9 +299,51 @@ final class TerminalEmulator {
 
     private func drainIntoCore() {
         let pending = inbound.drain()
-        if !pending.isEmpty {
-            terminal.feed(byteArray: pending)
+        guard !pending.isEmpty else { return }
+        // Pictures never reach the core: it would say it supports them, and
+        // decode and keep every one, for a screen that shows none.
+        let output = pictureFilter.strip(pending)
+        if output.drew { picturesArrived() }
+        if !output.bytes.isEmpty {
+            terminal.feed(byteArray: output.bytes)
         }
+    }
+
+    // MARK: - Pictures
+
+    private func picturesArrived() {
+        lastPictureAt = .now
+        if !pictureNoticeDismissed, !isRefusingPictures {
+            isRefusingPictures = true
+        }
+        guard pictureNoticeTask == nil else { return }
+        pictureNoticeTask = Task { [weak self] in
+            while true {
+                guard let remaining = self?.pictureNoticeRemaining, remaining > .zero else { break }
+                try? await Task.sleep(for: remaining)
+                if Task.isCancelled { return }
+            }
+            self?.picturesStopped()
+        }
+    }
+
+    /// How much longer the notice stays if no further picture arrives.
+    private var pictureNoticeRemaining: Duration? {
+        lastPictureAt.map { pictureNoticeLinger - (ContinuousClock.now - $0) }
+    }
+
+    private func picturesStopped() {
+        isRefusingPictures = false
+        pictureNoticeDismissed = false
+        lastPictureAt = nil
+        pictureNoticeTask = nil
+    }
+
+    /// Hides the notice for as long as the program keeps drawing. The next
+    /// program that draws, after this one has stopped, is announced again.
+    func dismissPictureNotice() {
+        pictureNoticeDismissed = true
+        isRefusingPictures = false
     }
 
     /// Whether a temporary render frame is currently scheduled. Internal so
@@ -305,6 +357,7 @@ final class TerminalEmulator {
         stopped = true
         frameClock.stop()
         inbound.shutdown()
+        pictureNoticeTask?.cancel()
     }
 
     /// One requested render frame: drain inbound bytes into the core terminal,

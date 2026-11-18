@@ -358,6 +358,30 @@ The gesture rules that hold this together are load-bearing and easy to break:
 - Pane-divider drags need a UIKit `UIPanGestureRecognizer`; a SwiftUI
   `DragGesture` over a `UIScrollView` does not fire reliably.
 
+### No pictures
+
+The terminal shows text only. SwiftTerm's core does understand the kitty
+graphics protocol, though: it answers "supported" when a program asks, and
+decodes and keeps every picture it is sent, while the app's own renderer draws
+none of them. So `TerminalPictureFilter` removes picture commands
+(`ESC _ G … ESC \`) from a host's output before the core sees it. The core then
+has no question to answer, and nothing to decode.
+
+When a command that draws arrives, `TerminalEmulator.isRefusingPictures` turns
+on and the tab shows **Pictures are not supported**, until a few seconds after
+the last one or until dismissed. A program that only asks is not announced.
+
+The filter cannot stop the pictures from being sent. Under Herdr the app is
+never asked: Herdr tells every program in a pane that pictures work (measured
+on 0.9.5) and forwards them to each attached client as whole uncompressed
+frames, about 3.8 MB each for a full pane and 14 MB/s from a browser running in
+one. Over a slow link that stream alone freezes the session. Only Herdr can
+stop it, with `kitty_graphics = false` under `[terminal]` in the host's Herdr
+config: clients that attach afterwards get no pictures, and once Herdr has
+restarted, programs are told there are none. For the same reason the plugin
+manager does not install plugins that draw pictures (see
+[host setup](host-setup.md#plugins-that-draw-pictures)).
+
 ### The grid the host draws for
 
 The text size only changes the app's cell metrics; what the host draws for is the

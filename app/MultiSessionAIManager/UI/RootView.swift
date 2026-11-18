@@ -856,6 +856,12 @@ struct HostTerminalView: View {
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
+                if session.terminal.isRefusingPictures {
+                    PicturesNotSupportedNotice { session.terminal.dismissPictureNotice() }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                        .transition(.opacity)
+                }
+
                 if session.status != .live {
                     HostSessionStatusOverlay(
                         status: session.status,

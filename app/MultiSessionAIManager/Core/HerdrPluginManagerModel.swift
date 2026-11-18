@@ -64,6 +64,11 @@ final class HerdrPluginManagerModel {
     /// repository's `owner/repo`. Each is a source `install(source:ref:)` takes.
     private(set) var pluginChoices: [String: [String]] = [:]
 
+    /// Plugins found to draw pictures in the terminal, which the app does not
+    /// install: by the `owner/repo` of their row and by their source, with the
+    /// reason shown to the user.
+    private(set) var pictureBlocked: [String: String] = [:]
+
     private(set) var busyIdentifier: String?
     private(set) var errorMessage: String?
     private(set) var noticeMessage: String?
@@ -246,6 +251,7 @@ final class HerdrPluginManagerModel {
                 herdr-plugin.toml in any of its folders, so Herdr cannot install it.
                 """
         case 1:
+            guard await !refusesForPictures(sources[0], listedAs: plugin.fullName) else { return }
             await performInstall(source: sources[0], ref: nil, identifier: plugin.fullName)
         default:
             pluginChoices[plugin.fullName] = sources
@@ -266,7 +272,26 @@ final class HerdrPluginManagerModel {
         defer { busyIdentifier = nil; operation = nil }
         errorMessage = nil
         noticeMessage = nil
+        operation = Operation(title: trimmed, step: "Checking the repository…")
+        guard await !refusesForPictures(trimmed, listedAs: trimmed) else { return }
         await performInstall(source: trimmed, ref: ref, identifier: trimmed)
+    }
+
+    /// True when the plugin draws pictures in the terminal. It is then not
+    /// installed, its row says so from now on, and the user is told why.
+    private func refusesForPictures(_ source: String, listedAs name: String) async -> Bool {
+        if pictureBlocked[name] == nil {
+            guard let need = await catalogue.pictureNeed(of: source) else { return false }
+            let reason = """
+                \(source) draws pictures in the terminal: its \(need.file) mentions "\(need.phrase)". \
+                AI Manager does not support pictures, and a program that draws them can freeze \
+                the session, so it is not installed from here.
+                """
+            pictureBlocked[name] = reason
+            pictureBlocked[source] = reason
+        }
+        errorMessage = pictureBlocked[name]
+        return true
     }
 
     private func performInstall(source: String, ref: String?, identifier: String) async {

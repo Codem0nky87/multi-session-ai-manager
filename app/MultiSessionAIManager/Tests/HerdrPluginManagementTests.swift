@@ -404,6 +404,15 @@ private final class StubCatalogue: PluginCatalogueFetching, @unchecked Sendable 
         if let sourcesError { throw sourcesError }
         return sourcesByRepo[fullName] ?? []
     }
+
+    /// The plugins that say they draw pictures, by source.
+    var pictureNeeds: [String: PluginPictureNeed] = [:]
+    private(set) var pictureChecks: [String] = []
+
+    func pictureNeed(of source: String) async -> PluginPictureNeed? {
+        pictureChecks.append(source)
+        return pictureNeeds[source]
+    }
 }
 
 @Suite @MainActor struct HerdrPluginManagerModelTests {
@@ -591,6 +600,70 @@ private final class StubCatalogue: PluginCatalogueFetching, @unchecked Sendable 
         await model.search("other")
 
         #expect(model.pluginChoices.isEmpty)
+    }
+
+    @Test func aPluginThatDrawsPicturesIsNotInstalledAndItsRowSaysSo() async {
+        // terminal-browser, installed from the list, filled its pane with pictures
+        // the app cannot show and froze the session with the stream of them.
+        let catalogue = StubCatalogue()
+        catalogue.sourcesByRepo["zenbu-labs/terminal-browser"] = ["zenbu-labs/terminal-browser/herdr-plugin"]
+        catalogue.pictureNeeds["zenbu-labs/terminal-browser/herdr-plugin"] =
+            PluginPictureNeed(phrase: "kitty graphics", file: "README.md")
+        let (model, transport) = makeModel(catalogue)
+        await model.connection.connect()
+        let commandsBefore = transport.commandsRun.count
+        let browser = CataloguePlugin(fullName: "zenbu-labs/terminal-browser", description: "", stars: 4707, htmlURL: nil)
+
+        await model.verifyThenInstall(browser)
+
+        #expect(transport.commandsRun.count == commandsBefore, "Nothing is run on the host")
+        #expect(model.pictureBlocked["zenbu-labs/terminal-browser"] != nil, "Its row shows it instead of Install")
+        let message = model.errorMessage ?? ""
+        #expect(message.contains("does not support pictures"))
+        #expect(message.contains(#"README.md mentions "kitty graphics""#), "It says what told it so: \(message)")
+        #expect(!model.isBusy)
+
+        // Asked again, it answers from what it knows.
+        await model.verifyThenInstall(browser)
+        #expect(catalogue.pictureChecks == ["zenbu-labs/terminal-browser/herdr-plugin"])
+        #expect(transport.commandsRun.count == commandsBefore)
+        await model.connection.disconnect()
+    }
+
+    @Test func typingTheRepositoryOfAPicturePluginDoesNotInstallItEither() async {
+        let catalogue = StubCatalogue()
+        catalogue.pictureNeeds["zenbu-labs/terminal-code/herdr-plugin"] =
+            PluginPictureNeed(phrase: "kitty graphics", file: "README.md")
+        let (model, transport) = makeModel(catalogue)
+        await model.connection.connect()
+        let commandsBefore = transport.commandsRun.count
+
+        await model.install(source: "zenbu-labs/terminal-code/herdr-plugin", ref: nil)
+
+        #expect(transport.commandsRun.count == commandsBefore)
+        #expect(model.errorMessage?.contains("does not support pictures") == true)
+        #expect(model.pictureBlocked["zenbu-labs/terminal-code/herdr-plugin"] != nil)
+        #expect(model.operation == nil)
+        #expect(!model.isBusy)
+        await model.connection.disconnect()
+    }
+
+    @Test func oneOfSeveralPluginsThatDrawsPicturesIsRefusedByItself() async {
+        let catalogue = StubCatalogue()
+        catalogue.sourcesByRepo["owner/kit"] = ["owner/kit/pet", "owner/kit/layout"]
+        catalogue.pictureNeeds["owner/kit/pet"] = PluginPictureNeed(phrase: "kitty graphics", file: "pet/herdr-plugin.toml")
+        let (model, transport) = makeModel(catalogue)
+        await model.connection.connect()
+        await model.verifyThenInstall(CataloguePlugin(fullName: "owner/kit", description: "", stars: 3, htmlURL: nil))
+        let commandsBefore = transport.commandsRun.count
+
+        await model.install(source: "owner/kit/pet", ref: nil)
+
+        #expect(transport.commandsRun.count == commandsBefore)
+        #expect(model.pictureBlocked["owner/kit/pet"] != nil)
+        #expect(model.pictureBlocked["owner/kit/layout"] == nil)
+        #expect(model.pictureBlocked["owner/kit"] == nil, "The repository's other plugin can still be installed")
+        await model.connection.disconnect()
     }
 
     @Test func theManifestIsCheckedOnlyForTheRowTheUserPicked() async {
