@@ -73,7 +73,7 @@ turn terminal output into a stored transcript.
 - **Port forwarding + in-app browser** — forward a port on the host (optionally
   through a second SSH hop) to a loopback listener on the iPad and open it in an
   embedded web view. See [docs/port-forwarding.md](docs/port-forwarding.md).
-- **Browser spaces** — a web browser that is a space in Herdr's own layout,
+- **Browser spaces** — a web browser, with tabs, that is a space in Herdr's own layout,
   opened from Herdr's "new" (Workspace or Browser). Its pages are fetched by
   the SSH host, so sites that exist only on its network open by their real
   names. See [docs/browser-space.md](docs/browser-space.md).
@@ -147,7 +147,7 @@ action — never a plain Retry.
 | [docs/terminal.md](docs/terminal.md) | Select mode, copy, pointer vs touch, and terminal geometry |
 | [docs/file-transfer.md](docs/file-transfer.md) | The two-way file bridge and the `herdr-file-viewer` seam |
 | [docs/port-forwarding.md](docs/port-forwarding.md) | Port forwards (up to five at once), second hops, and the in-app browser for a forwarded port |
-| [docs/browser-space.md](docs/browser-space.md) | The browser as a Herdr space: opening one, limits, how the pane is found, how pages are fetched through the host |
+| [docs/browser-space.md](docs/browser-space.md) | The browser as a Herdr space: opening one, tabs, limits, how the pane is found and kept through a change of size, how pages are fetched through the host |
 | [docs/development.md](docs/development.md) | Project generation, tests, and TestFlight delivery |
 | [docs/security.md](docs/security.md) | Trust boundaries, secret storage, and what leaves the device |
 

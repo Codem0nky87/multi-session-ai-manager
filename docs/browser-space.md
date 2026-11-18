@@ -23,19 +23,40 @@ you would on the host. An address without a scheme is `http://`; type
   all the way Herdr does those for any space. The page follows the pane.
 - Switching to another space hides the browser and keeps its page. Coming back
   shows the same page where it was.
-- After a reconnect or an app restart the space is still in Herdr, and the
-  address it showed last is opened again.
+- After a reconnect or an app restart the space is still in Herdr, and what it
+  had open comes back: its tabs, and the address each showed last.
 - When a Herdr menu or dialog covers the pane, the browser steps aside until it
   is gone.
 - Closing the space in Herdr closes the browser.
+
+### Tabs
+
+**+** at the right end of the browser's bar opens another page as a tab, empty
+and with the address bar ready. Once a space has two tabs they are listed above
+the bar by their pages' titles: tap one to show it, **×** to close it.
+
+- Every tab is a browser of its own (`Core/BrowserSpaceTabs.swift`), so going
+  back to a tab shows it as it was left, with what was typed into it.
+- The tabs of one host share its cookies and sign-ins.
+- A space has at most eight tabs; each is a web view that stays in memory.
+- Closing the only tab leaves an empty one.
+- After a restart only the tab that is shown loads its page; the others load
+  when they are chosen.
+
+### Typing
+
+Tap the address bar or a text field of a page and the keyboard is its own. The
+on-screen keyboard makes the terminal shorter, as it does when typing into the
+terminal, so Herdr lays the screen out once for the space above the keyboard
+and the page is fully visible there.
 
 ## Limits
 
 - **Other terminals see a placeholder.** A desktop terminal attached to the
   same Herdr session shows that pane filled with `░` and a short marker, not
   the page.
-- **One page per space.** No tabs, bookmarks or downloads. A link that asks for
-  a new window opens in the same page.
+- **No bookmarks or downloads.** A link that asks for a new window opens in
+  the tab it was tapped in.
 - **The keyboard goes to whatever was tapped last.** While the page has it,
   Herdr's key bindings do not reach Herdr; tap the terminal to give it back.
 - **"new" is recognised by its text.** With the sidebar collapsed, or a Herdr
@@ -77,12 +98,43 @@ real item to Herdr's list. It does this instead:
 4. **Showing it** (`Core/BrowserSpaceModel.swift`, `UI/Browser/`). The browser
    is placed at `column × cell width`, `row × cell height`. A pane that moves
    is followed at once; one that disappears is dropped after 120 ms, so a
-   repaint does not flicker the page. Each space keeps its page while it is
-   off screen, and its last address is saved per host (the newest twelve).
+   repaint does not flicker the page. Each space keeps its tabs and their
+   pages while it is off screen, and what its tabs showed last is saved per
+   host (the newest twelve spaces).
 5. **"new"** (`Core/TerminalNewSpaceButton.swift`). A tap is offered to the app
    before it is sent to Herdr. It is taken only when the tapped row's sidebar
    part reads `new` … `menu` and the tap is on `new`; choosing Workspace then
    sends Herdr the tap it would have had.
+
+### The keyboard and a change of size
+
+The browser sits on a terminal whose size the keyboard changes, and three
+things keep a page's text field usable. Each was a fault first: typing into a
+page made the screen flash and the keyboard go away again.
+
+- **The panes take no part in the terminal's layout**
+  (`BrowserSpacePaneLayout`). A pane is as tall as the host last drew it. A
+  pane that counted in the layout held the terminal's height up when the
+  keyboard came up, so the terminal could only shrink about three rows for
+  every redraw from the host: twelve sizes, and twelve Herdr layouts, over more
+  than two seconds. The panes are drawn over a base that takes exactly the
+  space it is given, and are cut off at its edges.
+- **A pane waits for the redraw that follows a change of size.** Right after
+  the terminal changes size the placeholder on screen is cut off, and it stays
+  so until the host has drawn it again: 0.1 to 0.25 seconds on a local network,
+  longer than the 120 ms above. Dropping the pane then took the keyboard from
+  the page that had raised it; the keyboard went away, and the terminal changed
+  size once more. So after a change of size a pane stays for up to 1.5 seconds
+  (`BrowserSpaceModel.terminalResized`), and the wait is over as soon as the
+  host has drawn it. The exception is a change of size made while the terminal
+  itself has the keyboard: that follows a tap on Herdr, which may be what takes
+  the space off the screen, so the browser gets out of the way as fast as ever.
+- **The terminal does not take the keyboard back.** Nothing clears the
+  terminal's own request for the keyboard when another field takes it. When
+  the window became active again (another app, a password prompt) the terminal
+  asked again and typing went to Herdr. It now leaves the keyboard with any
+  field that has it (`KeyInputController.suspendForDeactivation`,
+  `restoreAfterActivation`).
 
 ## How pages are fetched
 
