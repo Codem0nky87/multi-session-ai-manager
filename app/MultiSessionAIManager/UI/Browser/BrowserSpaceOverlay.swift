@@ -18,20 +18,47 @@ struct BrowserSpaceOverlay: View {
     }
 
     var body: some View {
-        ZStack(alignment: .topLeading) {
+        BrowserSpacePaneLayout(regions: forwarding == nil ? [] : spaces.regions, cell: cell) { region in
             if let forwarding {
-                ForEach(spaces.regions) { region in
-                    let frame = BrowserSpaceGeometry.frame(of: region, cell: cell)
-                    HostBrowserPane(spaceID: region.id, page: spaces.page(for: region.id),
-                                    forwarding: forwarding, spaces: spaces)
-                        .frame(width: frame.width, height: frame.height)
-                        .offset(x: frame.minX, y: frame.minY)
-                }
+                HostBrowserPane(spaceID: region.id, page: spaces.page(for: region.id),
+                                forwarding: forwarding, spaces: spaces)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         // Not in `body`: making the session changes the manager, which a view
         // being drawn must not do.
         .task(id: current) { forwarding = portForwarding?.session(for: host) }
+    }
+}
+
+/// Each pane over the cells of its region, without any say in how large the
+/// terminal under it is.
+///
+/// A pane is as large as the host last drew it. When the terminal has just
+/// become shorter (the keyboard came up) the pane is still the old height, and
+/// a pane that took part in the layout held the terminal's height up: the
+/// terminal could then only shrink a few rows for every redraw from the host,
+/// and Herdr laid the whole screen out again for each of them. So the panes are
+/// drawn over a base that takes exactly the space it is given, and cut off at
+/// its edges.
+struct BrowserSpacePaneLayout<Pane: View>: View {
+    let regions: [BrowserSpaceRegion]
+    let cell: CGSize
+    @ViewBuilder let pane: (BrowserSpaceRegion) -> Pane
+
+    var body: some View {
+        Color.clear
+            // Outside the panes every touch belongs to the terminal underneath.
+            .allowsHitTesting(false)
+            .overlay(alignment: .topLeading) {
+                ZStack(alignment: .topLeading) {
+                    ForEach(regions) { region in
+                        let frame = BrowserSpaceGeometry.frame(of: region, cell: cell)
+                        pane(region)
+                            .frame(width: frame.width, height: frame.height)
+                            .offset(x: frame.minX, y: frame.minY)
+                    }
+                }
+            }
+            .clipped()
     }
 }

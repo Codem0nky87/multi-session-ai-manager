@@ -80,4 +80,78 @@ import UIKit
                 "\(session.browserSpaces.regions)")
         await session.stop()
     }
+
+    @Test func theBrowserStaysWhileAShorterTerminalWaitsForItsHost() async throws {
+        let keys = KeyStore(backing: InMemoryKeychain())
+        let connection = HostConnection(host: try host(keys), keyStore: keys,
+                                        knownHosts: KnownHostsStore(defaults: store()), transport: FakeSSHTransport())
+        let session = HerdrHostSession(
+            connection: connection, sessionName: nil,
+            terminal: TerminalEmulator(history: .hostOwned, frameClock: TestTerminalFrameClock()))
+        let window = try window(HostTerminalView(session: session).environment(TerminalSettings(defaults: store())),
+                                size: CGSize(width: 900, height: 600))
+        defer { window.isHidden = true }
+        let watching = TerminalVisibilityOwner()
+        _ = session.terminal.setVisibility(true, for: watching)
+        #expect(await soon { session.terminal.cols >= 80 && session.terminal.rows >= 14 })
+        let tall = session.terminal.rows
+
+        // A browser space over the whole height, as its placeholder draws it.
+        var bytes = "\u{1b}[?1049h"
+        for row in 2...(tall - 1) { bytes += "\u{1b}[\(row);21H" + String(repeating: "░", count: 40) }
+        bytes += "\u{1b}[2;21H" + BrowserSpaceMarker.text(id: "7f3a2c", columns: 40, rows: tall - 2)
+        session.terminal.feed(Data(bytes.utf8))
+        #expect(await soon { session.terminal.tick(); return session.browserSpaces.regions.count == 1 })
+
+        // The keyboard comes up: the window's terminal gets shorter. No host
+        // answers here, as none has yet in the moment a real one takes.
+        window.frame = CGRect(x: 0, y: 0, width: 900, height: 320)
+        #expect(await soon { session.terminal.tick(); return session.terminal.rows < tall })
+        for _ in 0..<40 {
+            session.terminal.tick()
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(session.browserSpaces.regions.count == 1,
+                "A browser dropped here loses the keyboard its page just raised")
+        await session.stop()
+    }
+
+    // MARK: The panes take no part in the terminal's layout
+
+    @MainActor @Observable final class Measured { var height: CGFloat = 0 }
+
+    /// How tall the terminal's place is with these panes over it, in a window
+    /// that leaves it little room.
+    private func terminalHeight(under panes: [BrowserSpaceRegion]) async throws -> CGFloat {
+        let measured = Measured()
+        let screen = VStack(spacing: 0) {
+            ZStack {
+                Color.blue
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(GeometryReader { proxy in
+                        Color.clear.onChange(of: proxy.size, initial: true) { _, size in measured.height = size.height }
+                    })
+                BrowserSpacePaneLayout(regions: panes, cell: CGSize(width: 10, height: 10)) { _ in Color.red }
+            }
+            Color.gray.frame(height: 150)
+        }
+        let window = try window(screen, size: CGSize(width: 600, height: 400))
+        defer { window.isHidden = true }
+        _ = await soon { measured.height > 0 }
+        try await Task.sleep(for: .milliseconds(100))
+        return measured.height
+    }
+
+    @Test func aPaneTallerThanTheTerminalDoesNotHoldTheTerminalsHeightUp() async throws {
+        // The terminal has just become shorter (the keyboard came up) and the
+        // pane is still as tall as the host last drew it. If the pane props the
+        // terminal up, the terminal can only shrink a few rows per redraw, and
+        // Herdr lays the screen out again for every one of them.
+        let alone = try await terminalHeight(under: [])
+        let tallPane = BrowserSpaceRegion(id: "7f3a2c", column: 2, row: 1, columns: 30, rows: 60)   // 600 points
+        let underATallPane = try await terminalHeight(under: [tallPane])
+
+        #expect(alone > 50 && alone < 300, "The window leaves the terminal some room: \(alone)")
+        #expect(underATallPane == alone, "\(underATallPane) with the pane, \(alone) without")
+    }
 }

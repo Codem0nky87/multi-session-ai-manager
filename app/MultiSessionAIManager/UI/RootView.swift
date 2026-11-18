@@ -945,6 +945,12 @@ struct HostTerminalView: View {
             .onChange(of: session.terminal.renderGeneration, initial: true) { _, _ in
                 session.browserSpaces.show(BrowserSpaceLocator.regions(in: session.terminal.lines))
             }
+            // A new size (the keyboard, a turned device, a resized window) is
+            // followed by a redraw from the host, and a browser waits for it.
+            .onChange(of: session.terminal.resizeGeneration) { _, _ in
+                session.browserSpaces.terminalResized(
+                    whileItHasTheKeyboard: inputController.view?.isFirstResponder ?? false)
+            }
             .popover(item: $newSpaceTap, attachmentAnchor: .rect(.rect(newSpaceAnchor)), arrowEdge: .leading) { tap in
                 VStack(alignment: .leading, spacing: 0) {
                     Button("Workspace") {

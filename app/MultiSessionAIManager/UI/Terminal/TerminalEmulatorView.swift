@@ -1200,6 +1200,17 @@ private struct TerminalScrollContainer<Content: View>: UIViewControllerRepresent
     }
 }
 
+private extension UIView {
+    /// The view in this hierarchy that is first responder, if one is.
+    var viewWithTheKeyboard: UIView? {
+        if isFirstResponder { return self }
+        for subview in subviews {
+            if let found = subview.viewWithTheKeyboard { return found }
+        }
+        return nil
+    }
+}
+
 private extension UIScrollView {
     var hasScrollableContent: Bool {
         // Insets deliberately excluded -- see TerminalScrollAnchor.hasScrollableContent.
@@ -1309,7 +1320,11 @@ final class KeyInputController {
     }
 
     func suspendForDeactivation() {
-        wasFocusedBeforeDeactivation = isFocusRequested || (view?.isFirstResponder ?? false)
+        // A request that another field has answered since is not this terminal's
+        // to have back: nothing clears `isFocusRequested` when the address bar or
+        // a page of a browser space takes the keyboard.
+        wasFocusedBeforeDeactivation = (view?.isFirstResponder ?? false)
+            || (isFocusRequested && !anotherFieldHasTheKeyboard)
         isFocusRequested = false
         view?.resignFirstResponder()
     }
@@ -1317,7 +1332,17 @@ final class KeyInputController {
     func restoreAfterActivation() {
         guard wasFocusedBeforeDeactivation else { return }
         wasFocusedBeforeDeactivation = false
+        // Nor is the keyboard taken from a field that got it while the app was away.
+        guard !anotherFieldHasTheKeyboard else { return }
         focus()
+    }
+
+    /// Something other than this terminal is being typed into in its window: a
+    /// text field, or the page of a browser space. Only what happens by itself
+    /// asks; a tap on the terminal takes the keyboard whoever has it.
+    private var anotherFieldHasTheKeyboard: Bool {
+        guard let view, let holder = view.window?.viewWithTheKeyboard, holder !== view else { return false }
+        return holder is UIKeyInput
     }
 
     private func focusAttachedViewIfRequested() {

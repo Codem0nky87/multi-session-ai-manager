@@ -55,6 +55,59 @@ import Testing
         #expect(model.regions == [region()], "And not dropped later for having been gone")
     }
 
+    // MARK: The terminal changes size
+
+    @Test func aPaneStaysWhileTheHostRedrawsATerminalThatChangedSize() async throws {
+        // The keyboard came up: the terminal is shorter, and until the host has
+        // drawn the pane at its new size the placeholder on screen is cut off.
+        let model = BrowserSpaceModel(hostID: host, defaults: defaults(), grace: .milliseconds(40), resizeHold: .seconds(5))
+        model.show([region()])
+        model.terminalResized(whileItHasTheKeyboard: false)
+        model.show([])
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(model.regions == [region()], "Dropping it here takes the keyboard away from the page that raised it")
+        model.show([region(columns: 100)])
+        #expect(model.regions == [region(columns: 100)])
+    }
+
+    @Test func aPaneAlreadyMissingWhenTheTerminalChangesSizeStaysToo() async throws {
+        // The two reports arrive in either order.
+        let model = BrowserSpaceModel(hostID: host, defaults: defaults(), grace: .milliseconds(40), resizeHold: .seconds(5))
+        model.show([region()])
+        model.show([])
+        model.terminalResized(whileItHasTheKeyboard: false)
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(model.regions == [region()])
+    }
+
+    @Test func aPaneThatDoesNotComeBackAfterAChangeOfSizeIsDropped() async {
+        let model = BrowserSpaceModel(hostID: host, defaults: defaults(), grace: .milliseconds(20), resizeHold: .milliseconds(150))
+        model.show([region()])
+        model.terminalResized(whileItHasTheKeyboard: false)
+        model.show([])
+        #expect(await soon { model.regions.isEmpty })
+    }
+
+    @Test func aPaneIsNotKeptForAChangeOfSizeTheTerminalsOwnKeyboardMade() async {
+        // A tap on Herdr gave the terminal the keyboard: the user is changing
+        // what Herdr shows, and the browser must be out of the way at once.
+        let model = BrowserSpaceModel(hostID: host, defaults: defaults(), grace: .milliseconds(30), resizeHold: .seconds(30))
+        model.show([region()])
+        model.terminalResized(whileItHasTheKeyboard: true)
+        model.show([])
+        #expect(await soon { model.regions.isEmpty })
+    }
+
+    @Test func onceThePaneIsBackTheWaitForItIsOver() async {
+        let model = BrowserSpaceModel(hostID: host, defaults: defaults(), grace: .milliseconds(30), resizeHold: .seconds(30))
+        model.show([region()])
+        model.terminalResized(whileItHasTheKeyboard: false)
+        model.show([])
+        model.show([region()])          // the host has drawn it at its new size
+        model.show([])                  // and now a Herdr menu covers it
+        #expect(await soon { model.regions.isEmpty }, "A menu must not wait for a change of size that is over")
+    }
+
     @Test func onlyThePaneThatLeftIsDropped() async {
         let model = BrowserSpaceModel(hostID: host, defaults: defaults(), grace: .milliseconds(30))
         model.show([region("aaaaaa"), region("bbbbbb", column: 80, columns: 59)])
