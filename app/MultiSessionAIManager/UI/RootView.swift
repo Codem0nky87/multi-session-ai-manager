@@ -705,15 +705,18 @@ struct RootView: View {
     /// SSH connection. The browser then appears where Herdr puts that space.
     private func openBrowserSpace(in tab: HostTab) {
         let session = tabs.session(for: tab)
-        guard let service = session.connection.provisioningCommandRunner else {
-            toastCenter.error("SSH connection not available")
-            return
-        }
         guard let script = BrowserSpaceOpener.bundledPlaceholder() else {
             toastCenter.error("This build is missing the browser space helper")
             return
         }
         Task {
+            // The tab may only just have been selected, and a link that died
+            // while the app was suspended still reads as connected.
+            await session.ensureLive()
+            guard let service = session.connection.provisioningCommandRunner else {
+                toastCenter.error("SSH connection not available")
+                return
+            }
             do {
                 try await BrowserSpaceOpener.open(using: service, sessionName: session.sessionName, script: script)
             } catch {

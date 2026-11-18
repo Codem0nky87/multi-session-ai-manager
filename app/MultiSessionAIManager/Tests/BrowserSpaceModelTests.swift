@@ -43,13 +43,16 @@ import Testing
         #expect(await soon { model.regions.isEmpty })
     }
 
-    @Test func aPaneThatComesBackWithinTheMomentStays() async throws {
-        let model = BrowserSpaceModel(hostID: host, defaults: defaults(), grace: .milliseconds(60))
+    @Test func aPaneGoneForLessThanTheMomentIsNeverDropped() async throws {
+        // A Herdr repaint: the placeholder is not there for a frame or two.
+        let model = BrowserSpaceModel(hostID: host, defaults: defaults(), grace: .milliseconds(400))
         model.show([region()])
         model.show([])
+        try await Task.sleep(for: .milliseconds(60))
+        #expect(model.regions == [region()], "Still drawn while the moment lasts")
         model.show([region()])
-        try await Task.sleep(for: .milliseconds(200))
-        #expect(model.regions == [region()])
+        try await Task.sleep(for: .milliseconds(600))
+        #expect(model.regions == [region()], "And not dropped later for having been gone")
     }
 
     @Test func onlyThePaneThatLeftIsDropped() async {
