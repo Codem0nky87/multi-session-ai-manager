@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+import urllib.error
 from unittest.mock import patch
 
 SOURCE = Path(__file__).resolve().parents[1] / 'app/MultiSessionAIManager/Resources/msam-host-software.py'
@@ -164,6 +165,15 @@ class PluginVersionTests(unittest.TestCase):
         _, requested = self.check(self.plugin(subdir='viewer-plugin'))
         self.assertTrue(requested[-1].endswith('/' + 'b' * 40 + '/viewer-plugin/herdr-plugin.toml'))
 
+    def test_a_plugin_several_folders_down_is_checked_like_any_other(self):
+        # Herdr reports the folder as one path, and its marketplace lists plugins
+        # that sit two and more folders down.
+        result, requested = self.check(self.plugin(subdir='plugins/herdr'))
+        self.assertIsNone(result['error'])
+        self.assertEqual(result['source'], 'owner/viewer/plugins/herdr')
+        self.assertEqual(result['availableVersion'], '1.18.0')
+        self.assertTrue(requested[-1].endswith('/' + 'b' * 40 + '/plugins/herdr/herdr-plugin.toml'))
+
     def test_a_current_plugin_costs_no_manifest_request(self):
         result, requested = self.check(self.plugin(commit='b' * 40))
         self.assertEqual(len(requested), 1)
@@ -191,6 +201,62 @@ class PluginVersionTests(unittest.TestCase):
         plugin = self.plugin()
         del plugin['version']
         self.assertIsNone(self.check(plugin)[0]['installedVersion'])
+
+
+class PluginFolderTests(unittest.TestCase):
+    """A repository may keep its plugin in a folder, any number of folders down."""
+
+    def github(self, manifest_path):
+        """A public repository whose only manifest is at `manifest_path`."""
+        def download(url, *args, **kwargs):
+            if url == 'https://api.github.com/repos/owner/repo':
+                return json.dumps({'default_branch': 'main'}).encode()
+            if url == 'https://api.github.com/repos/owner/repo/commits/main':
+                return json.dumps({'sha': 'c' * 40}).encode()
+            if url == 'https://raw.githubusercontent.com/owner/repo/' + 'c' * 40 + '/' + manifest_path:
+                return b'id = "browser"\nname = "Browser"\n'
+            raise urllib.error.HTTPError(url, 404, 'Not Found', None, None)
+        return download
+
+    def test_the_manifest_is_read_from_the_folder_the_source_names(self):
+        with patch.object(software, 'download', side_effect=self.github('plugins/herdr/herdr-plugin.toml')):
+            manifest, files, commit = software.plugin_metadata('owner/repo/plugins/herdr')
+        self.assertEqual(manifest['id'], 'browser')
+        self.assertEqual(commit, 'c' * 40)
+        self.assertEqual(files, {})
+
+    def test_a_source_may_name_a_folder_several_levels_down(self):
+        software.valid_source('owner/repo/plugins/herdr', None)
+        software.valid_source('owner/repo/a/b/c/d/e', None)
+
+    def test_a_folder_path_cannot_climb_out_or_carry_anything_but_names(self):
+        endless = 'owner/repo/' + '/'.join(['x'] * 40)
+        for source in ['owner/repo/a/../b', 'owner/repo//a', 'owner/repo/a/', 'owner/repo/a b', 'owner/repo/a;id', endless]:
+            with self.assertRaises(ValueError, msg=source):
+                software.valid_source(source, None)
+
+    def test_a_repository_with_no_manifest_where_asked_says_where_a_plugin_can_be(self):
+        # GitHub answers 404 for the manifest, as it does for a private repository,
+        # so the check falls back to git, which finds the repository but no manifest.
+        def run(args, timeout=120, check=True):
+            if 'show' in args:
+                result = subprocess.CompletedProcess(
+                    args, 128, stdout="fatal: path 'herdr-plugin.toml' does not exist in '" + 'c' * 40 + "'\n")
+                if check:
+                    raise RuntimeError(result.stdout)
+                return result
+            return subprocess.CompletedProcess(args, 0, stdout='c' * 40 + '\n')
+
+        with patch.object(software, 'download', side_effect=self.github('herdr-plugin/herdr-plugin.toml')), \
+             patch.object(software, 'ensure_tools', return_value=[]), \
+             patch.object(software, 'executable', return_value='/usr/bin/git'), \
+             patch.object(software, 'run', side_effect=run):
+            with self.assertRaises(RuntimeError) as raised:
+                software.plugin_metadata('owner/repo')
+        message = str(raised.exception)
+        self.assertIn('owner/repo has no herdr-plugin.toml at its top level', message)
+        self.assertIn('owner/repo/folder', message)
+        self.assertNotIn('fatal:', message)
 
 
 class HerdrReleaseTests(unittest.TestCase):

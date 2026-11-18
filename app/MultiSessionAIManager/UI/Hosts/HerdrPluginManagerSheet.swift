@@ -495,6 +495,11 @@ struct HerdrPluginManagerSheet: View {
                     } else {
                         ForEach(model.results) { plugin in
                             catalogueRow(plugin)
+                            // A repository that holds several plugins: each one
+                            // is installed by itself, as in Herdr's marketplace.
+                            ForEach(model.pluginChoices[plugin.fullName] ?? [], id: \.self) { source in
+                                pluginChoiceRow(source, in: plugin)
+                            }
                             if plugin.id != model.results.last?.id {
                                 Divider().overlay(Theme.hairline)
                             }
@@ -532,6 +537,9 @@ struct HerdrPluginManagerSheet: View {
             Spacer(minLength: Theme.Space.sm)
             if model.busyIdentifier == plugin.fullName {
                 ProgressView().tint(Theme.accent)
+            } else if model.pluginChoices[plugin.fullName] != nil {
+                // Its plugins are listed underneath, each with its own Install.
+                EmptyView()
             } else if model.isInstalled(plugin.fullName) {
                 Label("Installed", systemImage: "checkmark.circle.fill")
                     .font(.system(.footnote, design: .rounded, weight: .semibold))
@@ -554,10 +562,46 @@ struct HerdrPluginManagerSheet: View {
         .padding(.vertical, 4)
     }
 
+    /// One plugin of a repository that holds several, named by its folder.
+    private func pluginChoiceRow(_ source: String, in plugin: CataloguePlugin) -> some View {
+        HStack(spacing: Theme.Space.sm) {
+            Image(systemName: "arrow.turn.down.right")
+                .font(.system(.caption, weight: .semibold))
+                .foregroundStyle(Theme.textMuted)
+            Text(verbatim: String(source.dropFirst(plugin.fullName.count + 1)))
+                .font(.system(.footnote, design: .monospaced))
+                .foregroundStyle(Theme.textPrimary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: Theme.Space.sm)
+            if model.busyIdentifier == source {
+                ProgressView().tint(Theme.accent)
+            } else if model.isInstalled(source: source) {
+                Label("Installed", systemImage: "checkmark.circle.fill")
+                    .font(.system(.footnote, design: .rounded, weight: .semibold))
+                    .foregroundStyle(Theme.success)
+                    .labelStyle(.titleAndIcon)
+            } else {
+                Button {
+                    Task { await model.install(source: source, ref: nil) }
+                } label: {
+                    Text("Install")
+                        .font(.system(.footnote, design: .rounded, weight: .semibold))
+                        .foregroundStyle(Theme.accent)
+                        .frame(minHeight: 44)
+                }
+                .buttonStyle(.plain)
+                .disabled(model.installedActionsBlocked)
+                .accessibilityIdentifier("host.plugins.install.\(source)")
+            }
+        }
+        .padding(.leading, Theme.Space.sm)
+    }
+
     @ViewBuilder private var manualInstall: some View {
         DisclosureGroup(isExpanded: $showingManual) {
             VStack(alignment: .leading, spacing: Theme.Space.sm) {
-                DarkField(label: "owner/repo", text: $manualSource,
+                DarkField(label: "owner/repo or owner/repo/folder", text: $manualSource,
                           placeholder: "smarzban/herdr-file-viewer",
                           autocapitalize: false, autocorrect: false,
                           accessibilityID: "host.plugins.manual.source")

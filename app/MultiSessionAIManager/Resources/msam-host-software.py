@@ -270,24 +270,39 @@ def install_agent(tool):
 
 
 def valid_source(source, ref):
+    # owner/repo, then the folder that holds the plugin, if it is not the top one.
+    # Herdr takes any number of folders; its marketplace lists plugins five down.
     parts = source.split('/')
-    if len(parts) not in (2, 3) or any(not re.fullmatch(r'[A-Za-z0-9_.-]+', p) or p in ('.', '..') for p in parts):
+    if not 2 <= len(parts) <= 12 or len(source) > 200 \
+            or any(not re.fullmatch(r'[A-Za-z0-9_.-]+', p) or p in ('.', '..') for p in parts):
         raise ValueError('Invalid plugin repository')
     if ref and (not re.fullmatch(r'[A-Za-z0-9_./-]{1,100}', ref) or ref.startswith('-') or '..' in ref.split('/')):
         raise ValueError('Invalid plugin ref')
 
 
+def source_location(source):
+    """`owner/repo`, and the plugin's folder in it as a path prefix: '' or 'a/b/'."""
+    parts = source.split('/')
+    return '/'.join(parts[:2]), ''.join(part + '/' for part in parts[2:])
+
+
+def missing_manifest(source):
+    repository, prefix = source_location(source)
+    return ('{} has no herdr-plugin.toml {}. If the plugin is kept in a folder of the repository, '
+            'install it as {}/folder.').format(
+                repository, 'in ' + prefix.rstrip('/') if prefix else 'at its top level', repository)
+
+
 def github_metadata(source, ref=None):
     valid_source(source, ref)
-    parts = source.split('/')
-    repository = '/'.join(parts[:2])
+    repository, prefix = source_location(source)
     api = 'https://api.github.com/repos/' + repository
     if not ref:
         ref = json.loads(download(api))['default_branch']
     commit = json.loads(download(api + '/commits/' + urllib.parse.quote(ref, safe='')))['sha']
     if not re.fullmatch('[0-9a-f]{40}', commit):
         raise RuntimeError('GitHub returned an invalid commit')
-    base = 'https://raw.githubusercontent.com/' + repository + '/' + commit + '/' + (parts[2] + '/' if len(parts) == 3 else '')
+    base = 'https://raw.githubusercontent.com/' + repository + '/' + commit + '/' + prefix
     manifest = toml_module().loads(download(base + 'herdr-plugin.toml').decode('utf-8'))
     if SYSTEM not in manifest.get('platforms', ['linux', 'macos', 'windows']):
         raise RuntimeError('{} does not support {}.'.format(manifest.get('name', source), SYSTEM))
@@ -311,15 +326,19 @@ def plugin_metadata(source, ref=None):
     # Reuse host Git credentials for private repositories and API rate limits.
     # A bare checkout reads metadata without running repository build scripts.
     ensure_tools(['git'])
-    parts = source.split('/')
-    url = 'https://github.com/' + '/'.join(parts[:2]) + '.git'
-    prefix = parts[2] + '/' if len(parts) == 3 else ''
+    repository, prefix = source_location(source)
+    url = 'https://github.com/' + repository + '.git'
     with tempfile.TemporaryDirectory(prefix='msam-plugin-check-') as tmp:
         git = [executable('git'), '-C', tmp]
         run(git + ['init', '--bare', '--quiet'])
         run(git + ['-c', 'core.hooksPath=', 'fetch', '--depth=1', '--quiet', url, ref or 'HEAD'], timeout=300)
         commit = run(git + ['rev-parse', 'FETCH_HEAD']).stdout.strip()
-        manifest = toml_module().loads(run(git + ['show', commit + ':' + prefix + 'herdr-plugin.toml']).stdout)
+        shown = run(git + ['show', commit + ':' + prefix + 'herdr-plugin.toml'], check=False)
+        if shown.returncode:
+            # Git's own words for this ("fatal: path ... does not exist in <sha>")
+            # do not say what to do about it.
+            raise RuntimeError(missing_manifest(source))
+        manifest = toml_module().loads(shown.stdout)
         if SYSTEM not in manifest.get('platforms', ['linux', 'macos', 'windows']):
             raise RuntimeError('{} does not support {}.'.format(manifest.get('name', source), SYSTEM))
         files = {}
@@ -444,9 +463,8 @@ def remote_plugin_version(source, commit):
     so a private repository or a manifest that will not parse costs nothing.
     """
     try:
-        parts = source.split('/')
-        base = ('https://raw.githubusercontent.com/' + '/'.join(parts[:2]) + '/' + commit + '/'
-                + (parts[2] + '/' if len(parts) == 3 else ''))
+        repository, prefix = source_location(source)
+        base = 'https://raw.githubusercontent.com/' + repository + '/' + commit + '/' + prefix
         manifest = toml_module().loads(download(base + 'herdr-plugin.toml').decode('utf-8'))
         return plain_version(manifest.get('version'))
     except Exception:

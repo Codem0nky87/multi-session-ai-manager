@@ -21,13 +21,20 @@ struct CataloguePlugin: Identifiable, Equatable, Sendable {
 /// lot of repositories that merely wear the tag -- at the time of writing the
 /// highest-starred results are terminal apps that are not Herdr plugins at all.
 ///
-/// So the manifest is checked LAZILY, when the user picks a row, rather than
+/// So the manifest is looked for LAZILY, when the user picks a row, rather than
 /// for every result: unauthenticated GitHub search allows about 10 requests a
 /// minute, and verifying a page of results would spend that budget in one go.
+///
+/// The manifest need not be at the top of the repository. Herdr installs from
+/// `owner/repo[/folder...]`, and its marketplace lists every manifest in a
+/// repository, each as its own plugin. About one listed repository in sixteen
+/// keeps its plugin in a folder, the most popular ones among them.
 protocol PluginCatalogueFetching: Sendable {
     func search(_ query: String) async throws -> [CataloguePlugin]
-    /// Whether this repository actually carries a plugin manifest.
-    func hasManifest(_ fullName: String) async throws -> Bool
+    /// The plugins in this repository, each as the source `herdr plugin install`
+    /// takes: `owner/repo` for a manifest at the top, `owner/repo/folder` for one
+    /// in a folder. Empty when the repository holds no manifest at all.
+    func pluginSources(in fullName: String) async throws -> [String]
 }
 
 enum PluginCatalogueError: Error, Equatable {
@@ -77,14 +84,55 @@ struct GitHubPluginCatalogue: PluginCatalogueFetching {
         return try Self.parseSearch(data)
     }
 
-    func hasManifest(_ fullName: String) async throws -> Bool {
-        guard let url = Self.manifestURL(fullName: fullName) else { return false }
-        let (_, response) = try await fetch(url)
-        guard let http = response as? HTTPURLResponse else { return false }
-        if http.statusCode == 403 || http.statusCode == 429 {
-            throw PluginCatalogueError.rateLimited
+    /// The whole file listing of the default branch, in one request.
+    static func treeURL(fullName: String) -> URL? {
+        URL(string: "https://api.github.com/repos/\(fullName)/git/trees/HEAD?recursive=1")
+    }
+
+    func pluginSources(in fullName: String) async throws -> [String] {
+        guard let manifest = Self.manifestURL(fullName: fullName),
+              let tree = Self.treeURL(fullName: fullName) else { return [] }
+        // Most plugins keep their manifest at the top, and one small request
+        // settles those. Only a repository without one is looked through.
+        if try status(of: await fetch(manifest).1) == 200 { return [fullName] }
+        let (listing, response) = try await fetch(tree)
+        guard try status(of: response) == 200 else { return [] }
+        let found = try Self.pluginSources(fullName: fullName, tree: listing)
+        if found.sources.isEmpty, !found.isComplete {
+            // GitHub cuts a very large listing short. Nothing found in part of a
+            // repository is not the same as nothing in it.
+            throw PluginCatalogueError.unavailable("the repository is too large to look through for a plugin")
         }
-        return http.statusCode == 200
+        return found.sources
+    }
+
+    private func status(of response: URLResponse) throws -> Int {
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if status == 403 || status == 429 { throw PluginCatalogueError.rateLimited }
+        return status
+    }
+
+    /// Every plugin manifest in a repository's file listing, as install sources,
+    /// the shallowest first. `isComplete` is false when GitHub cut the listing short.
+    static func pluginSources(fullName: String, tree data: Data) throws -> (sources: [String], isComplete: Bool) {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let entries = root["tree"] as? [[String: Any]] else {
+            throw PluginCatalogueError.unavailable("GitHub returned an unreadable file listing")
+        }
+        var sources: [String] = []
+        for entry in entries {
+            guard entry["type"] as? String == "blob", let path = entry["path"] as? String else { continue }
+            var folders = path.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+            guard folders.popLast() == manifestFileName else { continue }
+            let source = ([fullName] + folders).joined(separator: "/")
+            // A folder the installer refuses (a space in its name, say) cannot be
+            // installed from here, so it is not offered.
+            guard HerdrPluginManagement.isValidSource(source) else { continue }
+            sources.append(source)
+        }
+        func depth(_ source: String) -> Int { source.split(separator: "/").count }
+        sources.sort { (depth($0), $0) < (depth($1), $1) }
+        return (sources, !(root["truncated"] as? Bool ?? false))
     }
 
     private func fetch(_ url: URL) async throws -> (Data, URLResponse) {

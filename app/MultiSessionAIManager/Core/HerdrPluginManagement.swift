@@ -26,6 +26,17 @@ struct InstalledPlugin: Identifiable, Equatable, Sendable {
     let originRepository: String?
     var actions: [PluginAction] = []
     var resolvedCommit: String? = nil
+    /// The folder of the repository the plugin was installed from, when it is
+    /// not the top one: `herdr-plugin`, `plugins/herdr`.
+    var originFolder: String? = nil
+
+    /// What `herdr plugin install` was given: `owner/repo`, with the folder
+    /// after it when the plugin lives in one.
+    var originSource: String? {
+        guard let originRepository else { return nil }
+        guard let originFolder, !originFolder.isEmpty else { return originRepository }
+        return "\(originRepository)/\(originFolder)"
+    }
 
     var id: String { pluginID }
 
@@ -175,16 +186,21 @@ enum HerdrPluginManagement {
 
     // MARK: - Source validation
 
-    /// Accepts `owner/repo` or `owner/repo/subdir`, which is what
-    /// `herdr plugin install` takes.
+    /// Accepts `owner/repo`, optionally followed by the folder that holds the
+    /// plugin (`owner/repo/herdr-plugin`, `owner/repo/plugins/herdr`), which is
+    /// what `herdr plugin install` takes. Herdr puts no limit on how deep the
+    /// folder is, and its marketplace lists plugins five folders down.
     ///
     /// Validated rather than passed through: this string is interpolated into a
     /// command line, so a value carrying a space, quote or semicolon would run
     /// as a second command on the user's host.
+    /// Owner, repository and up to ten folders. The host script applies the same limit.
+    static let maximumSourceParts = 12
+
     static func isValidSource(_ source: String) -> Bool {
         let trimmed = source.trimmingCharacters(in: .whitespacesAndNewlines)
         let parts = trimmed.split(separator: "/", omittingEmptySubsequences: false)
-        guard (2...3).contains(parts.count) else { return false }
+        guard (2...maximumSourceParts).contains(parts.count), trimmed.count <= 200 else { return false }
         let allowed = CharacterSet(charactersIn:
             "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
         return parts.allSatisfy { part in
@@ -445,7 +461,8 @@ enum HerdrPluginManagement {
                 enabled: entry["enabled"] as? Bool ?? true,
                 originRepository: Self.originRepository(from: entry["source"]),
                 actions: Self.parseActions(entry["actions"]),
-                resolvedCommit: (entry["source"] as? [String: Any])?["resolved_commit"] as? String
+                resolvedCommit: (entry["source"] as? [String: Any])?["resolved_commit"] as? String,
+                originFolder: (entry["source"] as? [String: Any])?["subdir"] as? String
             )
         }
     }

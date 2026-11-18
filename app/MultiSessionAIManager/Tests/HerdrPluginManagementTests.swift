@@ -12,6 +12,22 @@ import Testing
         #expect(HerdrPluginManagement.isValidSource("a-b.c/d_e-f"))
     }
 
+    @Test func aPluginAnyNumberOfFoldersDownIsAccepted() {
+        // Herdr takes owner/repo[/folder...], and its marketplace lists plugins
+        // two folders down (openclaw/crabbox) and deeper.
+        #expect(HerdrPluginManagement.isValidSource("openclaw/crabbox/plugins/herdr"))
+        #expect(HerdrPluginManagement.isValidSource("owner/repo/a/b/c/d/e"))
+    }
+
+    @Test func aFolderPathCannotClimbOutOrRunOnForEver() {
+        #expect(!HerdrPluginManagement.isValidSource("owner/repo/a/../b"))
+        #expect(!HerdrPluginManagement.isValidSource("owner/repo//a"))
+        #expect(!HerdrPluginManagement.isValidSource("owner/repo/a/"))
+        #expect(!HerdrPluginManagement.isValidSource("owner/repo/a b"))
+        #expect(!HerdrPluginManagement.isValidSource("owner/repo/a;id"))
+        #expect(!HerdrPluginManagement.isValidSource("owner/repo/" + Array(repeating: "x", count: 40).joined(separator: "/")))
+    }
+
     @Test func aSourceCarryingShellMetacharactersIsRefused() {
         // THE reason this function exists: the source lands in a command line
         // that runs on the user's machine.
@@ -27,7 +43,6 @@ import Testing
         #expect(!HerdrPluginManagement.isValidSource("justrepo"))
         #expect(!HerdrPluginManagement.isValidSource("owner/"))
         #expect(!HerdrPluginManagement.isValidSource("/repo"))
-        #expect(!HerdrPluginManagement.isValidSource("a/b/c/d"))
         #expect(!HerdrPluginManagement.isValidSource(""))
     }
 
@@ -374,19 +389,20 @@ import Testing
 private final class StubCatalogue: PluginCatalogueFetching, @unchecked Sendable {
     var results: [CataloguePlugin] = []
     var searchError: Error?
-    var manifestByRepo: [String: Bool] = [:]
-    var manifestError: Error?
-    private(set) var manifestChecks: [String] = []
+    /// The plugins each repository holds; one not named here holds none.
+    var sourcesByRepo: [String: [String]] = [:]
+    var sourcesError: Error?
+    private(set) var repositoriesLookedThrough: [String] = []
 
     func search(_ query: String) async throws -> [CataloguePlugin] {
         if let searchError { throw searchError }
         return results
     }
 
-    func hasManifest(_ fullName: String) async throws -> Bool {
-        manifestChecks.append(fullName)
-        if let manifestError { throw manifestError }
-        return manifestByRepo[fullName] ?? false
+    func pluginSources(in fullName: String) async throws -> [String] {
+        repositoriesLookedThrough.append(fullName)
+        if let sourcesError { throw sourcesError }
+        return sourcesByRepo[fullName] ?? []
     }
 }
 
@@ -483,7 +499,7 @@ private final class StubCatalogue: PluginCatalogueFetching, @unchecked Sendable 
         // wearing it are not plugins. Installing one would fail on the host
         // after a long wait; refusing early explains why instead.
         let catalogue = StubCatalogue()
-        catalogue.manifestByRepo["someone/not-a-plugin"] = false
+        catalogue.sourcesByRepo["someone/not-a-plugin"] = []
         let (model, transport) = makeModel(catalogue)
 
         await model.verifyThenInstall(
@@ -492,6 +508,89 @@ private final class StubCatalogue: PluginCatalogueFetching, @unchecked Sendable 
 
         #expect(model.errorMessage?.contains("herdr-plugin.toml") == true)
         #expect(!transport.commandsRun.contains { $0.contains("plugin install") })
+    }
+
+    /// What the host answers, in order, to a catalogue install that succeeds.
+    private func answersToAnInstall(of source: String, pluginID: String) -> [Result<SSHCommandResult, SSHCommandExecutionError>] {
+        let parts = source.split(separator: "/").map(String.init)
+        let folder = parts.count > 2 ? #","subdir":"\#(parts.dropFirst(2).joined(separator: "/"))""# : ""
+        let empty = #"{"result":{"plugins":[]}}"#
+        let installed = #"{"result":{"plugins":[{"plugin_id":"\#(pluginID)","name":"\#(pluginID)","source":{"kind":"github","owner":"\#(parts[0])","repo":"\#(parts[1])","resolved_commit":"abc123"\#(folder)}}]}}"#
+        let location = #"MSAM_SOFTWARE={"path":"/home/alice/.local/libexec/msam-host-software/test/software.py","present":true}"#
+        let setup = #"MSAM_SOFTWARE={"plugins":[]}"#
+        return [
+            location,
+            #"MSAM_SOFTWARE={"source":"\#(source)","ref":"abc123","pluginID":"\#(pluginID)","dependencies":[]}"#,
+            empty, "Installed", installed, location, setup, setup, empty, "{}",
+        ].map { .success(SSHCommandResult(exitStatus: 0, stdout: Data($0.utf8), stderr: Data())) }
+    }
+
+    @Test func aPluginKeptInAFolderOfItsRepositoryIsInstalledFromThatFolder() async {
+        // zenbu-labs/terminal-browser keeps its manifest in herdr-plugin/. The
+        // app looked only at the top of the repository and told the user that
+        // Herdr could not install it.
+        let catalogue = StubCatalogue()
+        catalogue.sourcesByRepo["zenbu-labs/terminal-browser"] = ["zenbu-labs/terminal-browser/herdr-plugin"]
+        let (model, transport) = makeModel(catalogue)
+        await model.connection.connect()
+        transport.structuredCommandResults = answersToAnInstall(
+            of: "zenbu-labs/terminal-browser/herdr-plugin", pluginID: "zenbu-labs.terminal-browser")
+
+        await model.verifyThenInstall(
+            CataloguePlugin(fullName: "zenbu-labs/terminal-browser", description: "", stars: 4707, htmlURL: nil)
+        )
+
+        #expect(model.errorMessage == nil)
+        #expect(transport.commandsRun.contains { $0.contains("plugin install zenbu-labs/terminal-browser/herdr-plugin --yes") })
+        #expect(!transport.commandsRun.contains { $0.contains("plugin install zenbu-labs/terminal-browser --yes") })
+        #expect(model.isInstalled("zenbu-labs/terminal-browser"), "The repository's row says Installed")
+        await model.connection.disconnect()
+    }
+
+    @Test func aRepositoryHoldingSeveralPluginsOffersEachRatherThanGuessing() async {
+        let catalogue = StubCatalogue()
+        catalogue.sourcesByRepo["owner/kit"] = ["owner/kit/notify", "owner/kit/plugins/layout"]
+        let (model, transport) = makeModel(catalogue)
+        await model.connection.connect()
+
+        await model.verifyThenInstall(CataloguePlugin(fullName: "owner/kit", description: "", stars: 3, htmlURL: nil))
+
+        #expect(model.pluginChoices["owner/kit"] == ["owner/kit/notify", "owner/kit/plugins/layout"])
+        #expect(model.errorMessage == nil)
+        #expect(model.noticeMessage?.contains("2 plugins") == true)
+        #expect(!transport.commandsRun.contains { $0.contains("plugin install") })
+        #expect(!model.isBusy)
+        await model.connection.disconnect()
+    }
+
+    @Test func oneOfSeveralPluginsIsInstalledByItselfAndOnlyItSaysInstalled() async {
+        let catalogue = StubCatalogue()
+        catalogue.sourcesByRepo["owner/kit"] = ["owner/kit/notify", "owner/kit/plugins/layout"]
+        let (model, transport) = makeModel(catalogue)
+        await model.connection.connect()
+        await model.verifyThenInstall(CataloguePlugin(fullName: "owner/kit", description: "", stars: 3, htmlURL: nil))
+        transport.structuredCommandResults = answersToAnInstall(of: "owner/kit/plugins/layout", pluginID: "layout")
+
+        // What the Install button on that plugin's own line does.
+        await model.install(source: "owner/kit/plugins/layout", ref: nil)
+
+        #expect(model.errorMessage == nil)
+        #expect(transport.commandsRun.contains { $0.contains("plugin install owner/kit/plugins/layout --yes") })
+        #expect(model.isInstalled(source: "owner/kit/plugins/layout"))
+        #expect(!model.isInstalled(source: "owner/kit/notify"))
+        await model.connection.disconnect()
+    }
+
+    @Test func aNewSearchForgetsThePluginsOfferedForTheLastOne() async {
+        let catalogue = StubCatalogue()
+        catalogue.sourcesByRepo["owner/kit"] = ["owner/kit/a", "owner/kit/b"]
+        let (model, _) = makeModel(catalogue)
+        await model.verifyThenInstall(CataloguePlugin(fullName: "owner/kit", description: "", stars: 3, htmlURL: nil))
+        #expect(model.pluginChoices["owner/kit"] != nil)
+
+        await model.search("other")
+
+        #expect(model.pluginChoices.isEmpty)
     }
 
     @Test func theManifestIsCheckedOnlyForTheRowTheUserPicked() async {
@@ -506,14 +605,14 @@ private final class StubCatalogue: PluginCatalogueFetching, @unchecked Sendable 
         await model.search("")
 
         #expect(model.results.count == 20)
-        #expect(catalogue.manifestChecks.isEmpty)
+        #expect(catalogue.repositoriesLookedThrough.isEmpty)
     }
 
     @Test func aRateLimitedPreCheckDoesNotBlockTheInstall() async {
         // Verification is a courtesy; `herdr plugin install` fails safely on its
         // own. Refusing to install because GitHub was busy would be worse.
         let catalogue = StubCatalogue()
-        catalogue.manifestError = PluginCatalogueError.rateLimited
+        catalogue.sourcesError = PluginCatalogueError.rateLimited
         let (model, _) = makeModel(catalogue)
 
         await model.verifyThenInstall(
@@ -556,6 +655,15 @@ private final class StubCatalogue: PluginCatalogueFetching, @unchecked Sendable 
         )
         #expect(plugins.first?.originRepository == "smarzban/herdr-file-viewer")
         #expect(!model.isInstalled("smarzban/herdr-file-viewer"))  // nothing loaded yet
+    }
+
+    @Test func anInstalledPluginRemembersTheFolderItWasInstalledFrom() throws {
+        let plugins = try HerdrPluginManagement.parseList(
+            #"{"result":{"plugins":[{"plugin_id":"crabbox","name":"crabbox","source":{"kind":"github","owner":"openclaw","repo":"crabbox","subdir":"plugins/herdr"}},{"plugin_id":"fv","name":"fv","source":{"kind":"github","owner":"smarzban","repo":"herdr-file-viewer","subdir":null}}]}}"#
+        )
+        #expect(plugins[0].originRepository == "openclaw/crabbox")
+        #expect(plugins[0].originSource == "openclaw/crabbox/plugins/herdr")
+        #expect(plugins[1].originSource == "smarzban/herdr-file-viewer")
     }
 }
 

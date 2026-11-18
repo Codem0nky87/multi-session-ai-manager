@@ -78,13 +78,39 @@ machine over the same authenticated connection.
 - **Installed** shows versions, origins, activation, setup checks, and uninstall.
   Refresh checks the host again instead of remembering that a button was tapped.
 - **Search** finds repositories tagged `herdr-plugin` on GitHub.
-- **Install from a repository** accepts `owner/repo[/subdir]` and an optional ref.
+- **Install from a repository** accepts `owner/repo`, optionally followed by the
+  folder that holds the plugin (`owner/repo/folder`, any number of folders
+  down), and an optional ref.
   Private repositories reuse the host’s existing Git credentials when public
   metadata is unavailable; authentication prompts cannot be answered during
   automatic installation.
 
 A listing is not an endorsement: installing a plugin runs its code on the host.
 The catalogue tag alone does not prove that a repository contains a plugin.
+
+### Where a repository keeps its plugin
+
+A plugin is the folder that holds a `herdr-plugin.toml`. Most repositories keep
+it at the top, but about one in sixteen of those in Herdr's marketplace keep it
+in a folder, the most starred ones among them: the plugin of
+`zenbu-labs/terminal-browser` is in `herdr-plugin/`, and Herdr installs it as
+`zenbu-labs/terminal-browser/herdr-plugin`.
+
+**Install** on a search result therefore finds the manifest first. It asks
+GitHub for the manifest at the top of the repository, and only when there is
+none for the repository's file listing, which it searches for the manifest by
+name. Then:
+
+- **One plugin:** it is installed from its folder.
+- **Several plugins:** each is listed under the repository with its own
+  **Install**, named by its folder. Nothing is chosen for you.
+- **None:** the repository only wears the tag, and the sheet says so.
+
+A repository with a manifest at the top is installed from the top; plugins it
+keeps in folders as well are installed with **Install from a repository**.
+If GitHub is rate limiting, or the listing is too large for GitHub to send
+whole, the install is attempted from the top of the repository and the host
+reports what it found.
 
 ### Updates
 

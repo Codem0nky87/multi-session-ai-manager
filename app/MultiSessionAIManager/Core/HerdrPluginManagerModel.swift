@@ -60,6 +60,10 @@ final class HerdrPluginManagerModel {
     /// nil until a probe answers (or when it failed); the sheet hides the row.
     private(set) var updateStatus: HerdrUpdateStatus?
 
+    /// The plugins of a repository that turned out to hold more than one, by the
+    /// repository's `owner/repo`. Each is a source `install(source:ref:)` takes.
+    private(set) var pluginChoices: [String: [String]] = [:]
+
     private(set) var busyIdentifier: String?
     private(set) var errorMessage: String?
     private(set) var noticeMessage: String?
@@ -109,6 +113,12 @@ final class HerdrPluginManagerModel {
 
     func isInstalled(_ fullName: String) -> Bool {
         installed.contains { $0.originRepository?.lowercased() == fullName.lowercased() }
+    }
+
+    /// Whether the plugin from exactly this source is installed: one folder of a
+    /// repository that holds several plugins, not just any of them.
+    func isInstalled(source: String) -> Bool {
+        installed.contains { $0.originSource?.lowercased() == source.lowercased() }
     }
 
     // MARK: - Installed list
@@ -194,6 +204,7 @@ final class HerdrPluginManagerModel {
     func search(_ query: String) async {
         catalogueState = .loading
         errorMessage = nil
+        pluginChoices = [:]
         do {
             results = try await catalogue.search(query)
             catalogueState = .loaded
@@ -203,11 +214,15 @@ final class HerdrPluginManagerModel {
         }
     }
 
-    /// Checks a repository really carries a plugin manifest.
+    /// Finds the plugin in a repository, then installs it.
     ///
     /// Done per row on demand, never for a whole page: the topic alone does not
     /// make a repository a plugin (plenty of unrelated projects wear the tag),
     /// and unauthenticated GitHub allows only a handful of requests a minute.
+    ///
+    /// The plugin is installed from where its manifest is, which is often a
+    /// folder of the repository and not its top. A repository with several
+    /// plugins is not guessed at: they are offered under its row instead.
     func verifyThenInstall(_ plugin: CataloguePlugin) async {
         guard !installedActionsBlocked else { return }
         busyIdentifier = plugin.fullName
@@ -216,20 +231,26 @@ final class HerdrPluginManagerModel {
         errorMessage = nil
         noticeMessage = nil
 
+        var sources = [plugin.fullName]
         do {
-            guard try await catalogue.hasManifest(plugin.fullName) else {
-                errorMessage = """
-                    \(plugin.fullName) carries the herdr-plugin topic but has no \
-                    herdr-plugin.toml, so Herdr cannot install it.
-                    """
-                return
-            }
+            sources = try await catalogue.pluginSources(in: plugin.fullName)
         } catch {
             // A rate limit must not block the install: verification is a
             // courtesy, and `herdr plugin install` fails safely by itself.
             noticeMessage = "Could not pre-check \(plugin.fullName): \(Self.message(for: error))"
         }
-        await performInstall(source: plugin.fullName, ref: nil, identifier: plugin.fullName)
+        switch sources.count {
+        case 0:
+            errorMessage = """
+                \(plugin.fullName) carries the herdr-plugin topic but has no \
+                herdr-plugin.toml in any of its folders, so Herdr cannot install it.
+                """
+        case 1:
+            await performInstall(source: sources[0], ref: nil, identifier: plugin.fullName)
+        default:
+            pluginChoices[plugin.fullName] = sources
+            noticeMessage = "\(plugin.fullName) holds \(sources.count) plugins. Choose which to install under its name."
+        }
     }
 
     // MARK: - Operations
