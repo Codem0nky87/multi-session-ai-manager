@@ -84,6 +84,9 @@ final class HerdrHostSession {
     /// launches so a relaunch evicts its own orphan rather than adding to it.
     let watchIdentity: String
     let terminal: TerminalEmulator
+    /// The browser spaces of this tab's Herdr session. Here, not in a view: the
+    /// pages must outlive SwiftUI swapping the compact and regular layouts.
+    let browserSpaces: BrowserSpaceModel
     let liveness: LivenessPolicy
     let recovery: RecoveryPolicy
 
@@ -154,6 +157,7 @@ final class HerdrHostSession {
         self.sessionName = sessionName
         self.watchIdentity = watchIdentity
         self.terminal = terminal
+        self.browserSpaces = BrowserSpaceModel(hostID: connection.host.id)
         self.liveness = liveness
         self.recovery = recovery
         HostMetricsLifecycle.shared.register(self)
