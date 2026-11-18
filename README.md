@@ -73,9 +73,10 @@ turn terminal output into a stored transcript.
 - **Port forwarding + in-app browser** — forward a port on the host (optionally
   through a second SSH hop) to a loopback listener on the iPad and open it in an
   embedded web view. See [docs/port-forwarding.md](docs/port-forwarding.md).
-- **Browse through a host** — an In App browser whose pages are fetched by the
-  SSH host, so sites that exist only on its network open by their real names.
-  See [docs/port-forwarding.md](docs/port-forwarding.md#browse-through-this-host).
+- **Browser spaces** — a web browser that is a space in Herdr's own layout,
+  opened from Herdr's "new" (Workspace or Browser). Its pages are fetched by
+  the SSH host, so sites that exist only on its network open by their real
+  names. See [docs/browser-space.md](docs/browser-space.md).
 - **Guided host setup** — a four-step sheet that tests the route to the host,
   installs or updates Herdr, manages its plugins, and checks native session
   restore for every supported AI agent detected in the host's login PATH. One
@@ -145,7 +146,8 @@ action — never a plain Retry.
 | [docs/host-setup.md](docs/host-setup.md) | Keys, host-key pinning, Herdr install, plugins, session-restore integrations |
 | [docs/terminal.md](docs/terminal.md) | Select mode, copy, pointer vs touch, and terminal geometry |
 | [docs/file-transfer.md](docs/file-transfer.md) | The two-way file bridge and the `herdr-file-viewer` seam |
-| [docs/port-forwarding.md](docs/port-forwarding.md) | Port forwards (up to five at once), second hops, the in-app browser, and browsing through a host |
+| [docs/port-forwarding.md](docs/port-forwarding.md) | Port forwards (up to five at once), second hops, and the in-app browser for a forwarded port |
+| [docs/browser-space.md](docs/browser-space.md) | The browser as a Herdr space: opening one, limits, how the pane is found, how pages are fetched through the host |
 | [docs/development.md](docs/development.md) | Project generation, tests, and TestFlight delivery |
 | [docs/security.md](docs/security.md) | Trust boundaries, secret storage, and what leaves the device |
 
@@ -160,6 +162,7 @@ app/MultiSessionAIManager/     SwiftUI iPadOS app (the only product)
 │   ├── Hosts/    Host list/edit, key install, guided setup
 │   ├── Settings/ Settings sheet, port forwarding
 │   ├── WebTunnel/ In-app browser for forwarded ports
+│   ├── Browser/   The browser of a browser space, laid over its Herdr pane
 │   └── Design/   Herdr-matched theme tokens and components
 ├── Tests/        Swift Testing unit tests (hermetic)
 ├── UITests/      Live XCUITests, env-gated against a real host

@@ -341,6 +341,7 @@ limited* and *Finished*. Choosing a row goes to that host's tab.
 | `UI/Hosts/` | Host list/edit, key install, guided Host Setup |
 | `UI/Settings/` | Settings sheet, port-forwarding entry point |
 | `UI/WebTunnel/` | In-app browser over a forwarded port |
+| `Core/BrowserSpace*.swift`, `UI/Browser/` | The browser as a Herdr space: placeholder commands, finding its pane in the grid, the browser laid over it ([browser-space.md](browser-space.md)) |
 | `UI/Design/` | Theme tokens matched to Herdr's own palette |
 
 ## Terminal rendering

@@ -189,69 +189,12 @@ The browser only looks at a forward. Closing it leaves the forward running, and
 a page that will not load is reported in the browser, not as a failure of the
 forward: the port may simply not be a web page.
 
-## Browse through this host
+## A site that needs its own name
 
 A forward carries one port, and the browser that opens it asks for
 `127.0.0.1:<port>`, not for the site's own name. That breaks sites that depend
 on their name: a reverse proxy that picks the site by host name, a certificate
-issued for the name, redirects and links back to the name (which this device
-cannot look up), cookies tied to the domain.
-
-**Browse Through <host>**, in the port forwarding sheet, opens the In App
-browser with an address bar instead. Whatever is typed is fetched by the SSH
-host:
-
-```
-In App browser ──SOCKS5──▶ proxy on 127.0.0.1 ──direct-tcpip──▶ SSH host ──▶ name:port
-   (this device)              (this device)        (the host looks the name up)
-```
-
-- **Names are looked up on the host.** The browser hands the proxy the name as
-  written; the proxy passes it to the host unresolved. An address that exists
-  only on the host's network works, and the page sees its own real address, so
-  links, redirects, sign-ins and certificates behave as they do on the host.
-- **No forward per site.** Every connection the page makes goes the same way.
-- **An address without a scheme is `http://`.** A site that wants HTTPS
-  redirects there; type `https://` for one that listens only on 443.
-
-### What protects it
-
-- **The proxy needs a password** (`HostBrowseProxyCredentials`), random for
-  every browsing session and given only to the browser. It listens on this
-  device's loopback, where any app could otherwise connect and reach whatever
-  the host can reach. A client that offers no password, or the wrong one, is
-  turned away before anything is opened.
-- **It runs only while the browser is open**, on a port the system picks.
-- **No fallback.** If the proxy is gone a page fails; it is never fetched
-  directly from this device.
-- **Each host has its own cookies and sign-ins**
-  (`WKWebsiteDataStore(forIdentifier: host.id)`), apart from every other host's
-  and from the rest of the app.
-- **Certificates are checked as usual.** A site whose certificate this device
-  does not trust (an internal authority, a self-signed one) is refused, and the
-  browser says so. **Visit Anyway** accepts it for that site and port only,
-  until the browser closes.
-- **A changed host key is never accepted from here.** The browser says to open
-  the host's tab, which shows the key and asks.
-
-### When a page does not load
-
-The host says why, and the browser repeats it: *Forge could not open
-wiki.internal:80. Name or service not known.* The reasons are SSH's own
-(`Connection refused`, `Name or service not known`); a host whose SSH server
-restricts forwarding (`AllowTcpForwarding`, `PermitOpen`) answers that it does
-not allow connections to that address. A destination that never answers is
-given up on after 20 seconds.
-
-### Non-secure pages
-
-iOS refuses plain `http://` to a dotted name before a request is even made
-(App Transport Security). Internal sites are often exactly that, so the app
-sets `NSAllowsArbitraryLoadsInWebContent`, which lifts the rule for web content
-only; the app's own connections stay under the default rules.
-
-### Shares the host's connection
-
-The proxy uses the same SSH connection as the host's forwards
-(`PortForwardingSession`), so an open browser is kept alive, and reconnected
-underneath, exactly as a running forward is.
+issued for the name, redirects and links back to the name, cookies tied to the
+domain. For those, open a **browser space** instead: its pages are fetched by
+the SSH host under their real names, with no forward at all. See
+[browser-space.md](browser-space.md).

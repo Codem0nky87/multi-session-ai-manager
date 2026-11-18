@@ -312,12 +312,13 @@ import Testing
     }
 
     @Test func twoPanesSideBySideAreBothFound() {
-        var grid = screen(pane: (20, 1, 19, 11), id: "aaaaaa")
+        // Wide enough for both markers: a marker is 28 cells.
+        var grid = screen(columns: 100, pane: (20, 1, 39, 11), id: "aaaaaa")
         for row in 1..<12 {
-            for column in 40..<60 { grid[row][column] = BrowserSpaceMarker.fill }
+            for column in 60..<100 { grid[row][column] = BrowserSpaceMarker.fill }
         }
-        let marker = Array(BrowserSpaceMarker.text(id: "bbbbbb", columns: 20, rows: 11))
-        grid[1].replaceSubrange(40..<40 + marker.count, with: marker)
+        let marker = Array(BrowserSpaceMarker.text(id: "bbbbbb", columns: 40, rows: 11))
+        grid[1].replaceSubrange(60..<60 + marker.count, with: marker)
         #expect(BrowserSpaceLocator.regions(in: grid).map(\.id) == ["aaaaaa", "bbbbbb"])
     }
 

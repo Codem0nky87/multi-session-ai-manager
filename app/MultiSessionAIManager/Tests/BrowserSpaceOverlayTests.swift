@@ -60,6 +60,11 @@ import UIKit
         let window = try window(HostTerminalView(session: session).environment(TerminalSettings(defaults: store())),
                                 size: CGSize(width: 900, height: 600))
         defer { window.isHidden = true }
+        // The terminal draws only while something visible owns it. The view is
+        // one such owner while its scene is active, which a test host's scene
+        // is not for long; this test is another.
+        let watching = TerminalVisibilityOwner()
+        _ = session.terminal.setVisibility(true, for: watching)
         // The view first sizes the terminal to the window.
         #expect(await soon { session.terminal.cols >= 80 && session.terminal.rows >= 14 })
 
