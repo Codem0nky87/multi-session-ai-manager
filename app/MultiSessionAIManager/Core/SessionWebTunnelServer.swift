@@ -376,6 +376,16 @@ final class NIOSessionWebTunnelServer: SessionWebTunnelServing, @unchecked Senda
                     if let tunnelError = error as? SessionWebTunnelError {
                         throw tunnelError
                     }
+                    // The command did not run: ssh on the first host said
+                    // nothing, about the hop or anything else. Pointing at the
+                    // hop's key or password sends the reader after the wrong thing.
+                    if case .commandFailed(let detail)? = error as? SSHTransportError {
+                        throw SessionWebTunnelError.couldNotStart(
+                            "The SSH connection to the first host failed while the forward was starting. "
+                            + "Start it again."
+                            + Self.diagnosticSuffix("(\(detail))", hopPassword: hopPassword)
+                        )
+                    }
                     throw SessionWebTunnelError.couldNotStart(
                         "Could not start SSH hop \(hop.username)@\(hop.host):\(hop.port). "
                         + Self.authenticationGuidance(hopPassword: hopPassword)

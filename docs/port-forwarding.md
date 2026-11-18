@@ -83,8 +83,24 @@ and repairs it:
   connection through a forward fails, and when the app comes back to the
   front. iOS suspends the app in the background, where nothing can be kept
   alive, so the link is usually gone on return.
+- **Before every start.** Nothing is sent for a host with nothing running, so
+  a connection that died meanwhile (the screen went off, iOS suspended the app)
+  still reads "connected". Every Start, and opening the browser, therefore
+  first makes the same round trip (`PortForwardingSession.ensureLink()`), and
+  the connection is made again if it gets no answer. The forward shows
+  **Starting…** while that happens. Without it the start went out on the dead
+  connection and failed, and because a failed forward is not running, nothing
+  checked the connection afterwards: every Start failed until the app was
+  closed.
+- **One check at a time.** A check that finds the connection dead replaces it.
+  Two doing so at once would take each other's connection away, so a Start
+  waits for a keep-alive check that is already running.
 - **The hop leg** keeps itself alive too: its `ssh` runs with
   `ServerAliveInterval=30`, `ServerAliveCountMax=3`.
+
+A start that fails because the SSH connection to the first host failed says so.
+It no longer suggests checking the hop's key or password: the command never
+reached the first host, so nothing was learned about the hop.
 
 A changed host key is not reconnected automatically; that is the user's to
 look at.

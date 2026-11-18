@@ -319,9 +319,11 @@ import Testing
         #expect(!transport.commandsRun.contains("true"), "Nothing open: nothing to keep alive")
 
         await session.browse.start()
+        // Opening the browser checks the link once itself.
+        let before = transport.commandsRun.filter { $0 == "true" }.count
         await session.keepAlive()
 
-        #expect(transport.commandsRun.filter { $0 == "true" }.count == 1)
+        #expect(transport.commandsRun.filter { $0 == "true" }.count == before + 1)
         await session.shutdown()
     }
 

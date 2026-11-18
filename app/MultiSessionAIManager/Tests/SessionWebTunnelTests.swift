@@ -507,6 +507,26 @@ struct NIOSessionWebTunnelServerTests {
         }
     }
 
+    @Test func aLinkThatDiesUnderAStartIsNotBlamedOnTheHop() async throws {
+        // The command never reached the first host, so ssh said nothing about the
+        // hop. "Verify that the first host has a usable key" sent the reader after
+        // a key that was fine.
+        let (service, transport) = try await connectedSSHService()
+        transport.commandError = SSHTransportError.commandFailed(
+            "remote command failed: NIOSSHError.creatingChannelAfterClosure")
+        let server = NIOSessionWebTunnelServer(service: service)
+
+        do {
+            _ = try await server.start(tunnel: qasProxy()) { _ in }
+            Issue.record("Expected the start to fail")
+        } catch {
+            let message = error.localizedDescription
+            #expect(message.contains("connection to the first host"), "\(message)")
+            #expect(!message.contains("usable key"), "\(message)")
+            #expect(!message.contains("error 0"), "\(message)")
+        }
+    }
+
     @Test func passwordRemoteForwardFailureDoesNotSurfaceHopPassword() async throws {
         let (service, transport) = try await connectedSSHService()
         let password = "secret-hop-pw"
@@ -948,6 +968,42 @@ struct NIOSessionWebTunnelServerTests {
         #expect(model.runningCount == 1)
     }
 
+    @Test func aForwardShowsAsStartingWhileItsLinkIsMadeReady() async {
+        // Checking a link that stopped answering takes seconds. A forward that
+        // looked idle meanwhile would invite a second Start.
+        let server = await openServer()
+        let model = SessionWebTunnelModel(server: server)
+        let link = LinkCheck()
+        model.beforeStart = { await link.run() }
+        let console = SessionWebTunnel.internalConsole
+        let startTask = Task { await model.start(console) }
+
+        #expect(await link.wasAskedFor(), "Every start first makes its link ready")
+        #expect(model.status(for: console.id) == .connecting)
+        #expect(server.startedTunnelIDs.isEmpty, "Nothing is started before the link is ready")
+
+        await link.finish()
+        await startTask.value
+        #expect(model.status(for: console.id) == .listening(localPort: 49152))
+    }
+
+    @Test func aForwardStoppedWhileItsLinkIsMadeReadyIsNeverStarted() async {
+        let server = await openServer()
+        let model = SessionWebTunnelModel(server: server)
+        let link = LinkCheck()
+        model.beforeStart = { await link.run() }
+        let console = SessionWebTunnel.internalConsole
+        let startTask = Task { await model.start(console) }
+        #expect(await link.wasAskedFor())
+
+        await model.stop(console.id)
+        await link.finish()
+        await startTask.value
+
+        #expect(model.status(for: console.id) == .idle)
+        #expect(server.startedTunnelIDs.isEmpty)
+    }
+
     @Test func stoppingEverythingStopsEveryListener() async {
         let server = await openServer()
         let model = SessionWebTunnelModel(server: server)
@@ -1028,7 +1084,7 @@ struct NIOSessionWebTunnelServerTests {
             host: Host(name: "h", address: "10.0.0.1", username: "alice", keyID: keyID, defaultWorkdir: "/home/alice"),
             keyStore: keys,
             knownHosts: KnownHostsStore(defaults: UserDefaults(suiteName: "msam.forwards.\(UUID())")!),
-            tunnels: [], model: model)
+            tunnels: [], model: model, transport: FakeSSHTransport())
         #expect(session.activeTunnelCount == 0)
 
         let rdp = tunnel("RDP"), other = tunnel("Other"), bad = tunnel("Bad")
@@ -1298,6 +1354,33 @@ private final class FakeTLSProbe: TunnelTLSProbing, @unchecked Sendable {
 
     var asked: [Int] {
         lock.withLock { _asked }
+    }
+}
+
+/// A link check that takes as long as the test lets it.
+private actor LinkCheck {
+    private var asked = false
+    private var finished = false
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+
+    func run() async {
+        asked = true
+        guard !finished else { return }
+        await withCheckedContinuation { waiting.append($0) }
+    }
+
+    /// Whether the check was asked for, waiting a moment for it. Never hangs.
+    func wasAskedFor() async -> Bool {
+        for _ in 0..<200 where !asked {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return asked
+    }
+
+    func finish() {
+        finished = true
+        waiting.forEach { $0.resume() }
+        waiting = []
     }
 }
 

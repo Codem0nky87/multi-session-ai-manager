@@ -34,7 +34,14 @@ final class PortForwardingSession {
     @ObservationIgnored private let keepAlivePolicy: KeepAlive
     @ObservationIgnored private var keepAliveTask: Task<Void, Never>?
     @ObservationIgnored private var foregroundTask: Task<Void, Never>?
-    @ObservationIgnored private var isCheckingLink = false
+    /// The check of the link that is running, if one is. There is one at a time:
+    /// two that each replaced a dead connection would take each other's away.
+    @ObservationIgnored private var linkCheck: Task<Void, Never>?
+
+    /// Lets the browser, which is made before the session is complete, reach it.
+    @MainActor private final class Owner {
+        weak var session: PortForwardingSession?
+    }
 
     /// - Parameters:
     ///   - model: the forwards' model; by default one that forwards over this
@@ -48,8 +55,9 @@ final class PortForwardingSession {
         let connection = HostConnection(host: host, keyStore: keyStore, knownHosts: knownHosts, transport: transport)
         self.connection = connection
         self.model = model ?? SessionWebTunnelModel(server: connection.makeSessionWebTunnelServer())
+        let owner = Owner()
         self.browse = HostBrowseModel(server: connection.makeHostBrowseProxyServer()) { [connection] in
-            if connection.state != .connected { await connection.connect() }
+            await owner.session?.ensureLink()
             switch connection.state {
             case .connected:
                 return nil
@@ -63,8 +71,12 @@ final class PortForwardingSession {
             }
         }
         self.keepAlivePolicy = keepAlive
+        owner.session = self
         self.model.onConnectionProblem = { [weak self] in
             Task { await self?.keepAlive() }
+        }
+        self.model.beforeStart = { [weak self] in
+            await self?.ensureLink()
         }
         startKeepAlive()
     }
@@ -88,23 +100,54 @@ final class PortForwardingSession {
     /// the background, where nothing can be kept alive; the check runs at once on
     /// return instead.
     func keepAlive() async {
-        guard needsItsConnection, !isCheckingLink else { return }
-        switch connection.state {
-        case .connecting, .hostKeyChanged:
-            // Already being connected, or waiting for the user to look at a
-            // changed key. Neither is this check's to settle.
-            return
-        case .idle, .connected, .failed:
-            break
+        // A check that is already running will do for this beat.
+        guard needsItsConnection, linkCheck == nil else { return }
+        await checkLink { [weak self] in self?.needsItsConnection ?? false }
+    }
+
+    /// Makes sure the connection answers, for whoever is about to start
+    /// something on it: a forward, or the browser.
+    ///
+    /// The state alone cannot tell. Nothing is sent for a host with nothing
+    /// running, so a connection that died meanwhile (the screen went off, iOS
+    /// suspended the app) still reads "connected". A start then went out on the
+    /// dead connection and failed, and since a failed forward is not running,
+    /// nothing ever checked: every start failed until the app was closed.
+    func ensureLink() async {
+        while let running = linkCheck { await running.value }
+        await checkLink { true }
+        // A connect begun elsewhere (the sheet's Retry) is not repeated here,
+        // but what is started next needs its outcome.
+        let deadline = ContinuousClock.now + .seconds(30)
+        while connection.state == .connecting, ContinuousClock.now < deadline, !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(100))
         }
-        isCheckingLink = true
-        defer { isCheckingLink = false }
-        if await connection.verifyAlive(timeout: keepAlivePolicy.probeTimeout) { return }
-        guard needsItsConnection else { return }
-        await connection.connect()
-        if connection.state == .connected {
-            model.clearConnectionProblems()
+    }
+
+    /// One round trip on the connection, and a new connection if it gets no answer.
+    /// - Parameter stillWanted: asked after a failed round trip, which can take
+    ///   seconds: whether anything still needs the connection.
+    private func checkLink(reconnectIf stillWanted: @escaping @MainActor () -> Bool) async {
+        let check = Task { [weak self] in
+            guard let self else { return }
+            defer { linkCheck = nil }
+            switch connection.state {
+            case .connecting, .hostKeyChanged:
+                // Already being connected, or waiting for the user to look at a
+                // changed key. Neither is this check's to settle.
+                return
+            case .idle, .connected, .failed:
+                break
+            }
+            if await connection.verifyAlive(timeout: keepAlivePolicy.probeTimeout) { return }
+            guard stillWanted() else { return }
+            await connection.connect()
+            if connection.state == .connected {
+                model.clearConnectionProblems()
+            }
         }
+        linkCheck = check
+        await check.value
     }
 
     /// A running forward or an open browser: either goes dead with the connection.

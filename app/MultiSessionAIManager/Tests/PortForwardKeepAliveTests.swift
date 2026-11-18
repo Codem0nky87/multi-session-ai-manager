@@ -52,12 +52,16 @@ import UIKit
                 keepAlive: .init(interval: interval, probeTimeout: .seconds(1)))
         }
 
-        /// How many keep-alive round trips the host has seen.
-        var pings: Int { transport.commandsRun.filter { $0 == "true" }.count }
+        /// How many keep-alive round trips the host has seen since the forward
+        /// was started. Starting it checks the link once itself.
+        var pings: Int { roundTrips - roundTripsAtStart }
+        private var roundTrips: Int { transport.commandsRun.filter { $0 == "true" }.count }
+        private var roundTripsAtStart = 0
 
         func connectAndStart() async {
             await session.connection.connect()
             await session.model.start(forward)
+            roundTripsAtStart = roundTrips
         }
     }
 

@@ -225,6 +225,10 @@ final class SessionWebTunnelModel {
     /// shows up this way first, so whoever keeps the link alive checks it now
     /// rather than at its next beat.
     @ObservationIgnored var onConnectionProblem: (() -> Void)?
+    /// Run as the first part of every start: whoever owns the SSH connection makes
+    /// sure it still answers. A connection reads "connected" until something is
+    /// sent on it, and one that died while the app was suspended fails the start.
+    @ObservationIgnored var beforeStart: (@MainActor () async -> Void)?
 
     init(server: any SessionWebTunnelServing, probe: any TunnelTLSProbing = NIOTunnelTLSProbe()) {
         self.server = server
@@ -284,8 +288,14 @@ final class SessionWebTunnelModel {
             }
         }
         let server = self.server
+        let makeLinkReady = beforeStart
         let startupTask = Task {
-            try await server.start(
+            // Part of the start, so the forward shows as starting meanwhile:
+            // a link that stopped answering takes seconds to find out and
+            // replace, and a forward that looked idle would be started twice.
+            await makeLinkReady?()
+            try Task.checkCancellation()
+            return try await server.start(
                 tunnel: tunnel,
                 hopPassword: hopPassword,
                 onConnectionError: connectionErrorHandler
