@@ -114,6 +114,7 @@ struct RootView: View {
     @Bindable var terminalSettings: TerminalSettings
 
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.portForwardingManager) private var portForwarding
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var showingPicker = false
     @State private var showingSettings = false
@@ -402,6 +403,11 @@ struct RootView: View {
         }
         .onChange(of: tabStore.tabs.map(\.id)) { _, _ in
             Task { await tabs.retireSessions() }
+            // A host with no tab left has no browser space left to serve.
+            let open = Set(tabStore.tabs.map(\.hostID))
+            for (hostID, forwarding) in portForwarding?.sessions ?? [:] where !open.contains(hostID) {
+                Task { await forwarding.browse.stop() }
+            }
         }
         // Leaving a tab must not strand it in select mode: the terminal would
         // stay unscrollable and deaf to Herdr on a tab the user came back to.
@@ -856,6 +862,12 @@ struct HostTerminalView: View {
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
+                // The browser of a browser space, over the pane Herdr gave that space.
+                if session.status == .live, !session.browserSpaces.regions.isEmpty {
+                    BrowserSpaceOverlay(spaces: session.browserSpaces, host: session.connection.host,
+                                        cell: session.terminal.fontMetrics.boundingBox)
+                }
+
                 if session.terminal.isRefusingPictures {
                     PicturesNotSupportedNotice { session.terminal.dismissPictureNotice() }
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -874,6 +886,11 @@ struct HostTerminalView: View {
                         }
                     )
                 }
+            }
+            // A browser space is wherever the terminal shows its placeholder, so
+            // every repaint is looked at for one.
+            .onChange(of: session.terminal.renderGeneration, initial: true) { _, _ in
+                session.browserSpaces.show(BrowserSpaceLocator.regions(in: session.terminal.lines))
             }
             // The quick-key bar shows on iPhone AND iPad: TUIs bind actions to
             // Shift+arrows (Codex queued messages on Shift+Left) and neither
