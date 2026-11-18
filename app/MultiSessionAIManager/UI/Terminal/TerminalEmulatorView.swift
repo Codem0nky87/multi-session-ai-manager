@@ -29,6 +29,9 @@ struct TerminalEmulatorView: View {
     var onRemoteScroll: ((Bool, Int) -> Void)? = nil
     var onGridChange: ((Int, Int) -> Void)? = nil
     var forwardsPointerClicks = true
+    /// Asked before a tap is sent to the remote, with the cell that was tapped.
+    /// True means the app has taken the tap and the remote must not see it.
+    var interceptTap: ((_ column: Int, _ row: Int) -> Bool)? = nil
     /// Existing local terminals focus on appearance. Remote Herdr panes opt out so
     /// launching the shell never covers its workspace with the software keyboard.
     var automaticallyFocusesInput = true
@@ -499,6 +502,9 @@ struct TerminalEmulatorView: View {
             detectedLinkURL = linkURL
             return
         }
+
+        // Something the remote draws that the app answers itself: Herdr's "new".
+        if let interceptTap, inputEnabled, interceptTap(cell.col, cell.row) { return }
 
         if TerminalTouchPolicy.focusesKeyboard(isSelecting: selecting, inputEnabled: inputEnabled) {
             resolvedInputController.focus()

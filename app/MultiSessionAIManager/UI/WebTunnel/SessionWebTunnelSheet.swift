@@ -22,7 +22,6 @@ struct SessionWebTunnelSheet: View {
         nonmutating set { session.hopPasswords = newValue }
     }
     @State private var editorRequest: TunnelEditorRequest?
-    @State private var isBrowsing = false
     @State private var browserRequest: TunnelBrowserRequest?
     @State private var passwordPrompt: TunnelPasswordPrompt?
     /// The running forward whose address was just copied.
@@ -43,7 +42,6 @@ struct SessionWebTunnelSheet: View {
             List {
                 runningSection
                 connectionsSection
-                browseSection
 
                 Section {
                     Button {
@@ -80,10 +78,6 @@ struct SessionWebTunnelSheet: View {
                     save(saved, hopPassword: hopPassword)
                 }
                 .preferredColorScheme(.dark)
-            }
-            .fullScreenCover(isPresented: $isBrowsing) {
-                HostBrowserScreen(session: session)
-                    .preferredColorScheme(.dark)
             }
             .fullScreenCover(item: $browserRequest) { request in
                 SessionWebTunnelBrowserScreen(tunnel: request.tunnel, address: request.address)
@@ -204,21 +198,6 @@ struct SessionWebTunnelSheet: View {
             }
         }
         .disabled(openingTunnelID != nil)
-    }
-
-    // MARK: - Browsing
-
-    private var browseSection: some View {
-        Section {
-            Button {
-                isBrowsing = true
-            } label: {
-                Label("Browse Through \(session.host.name)", systemImage: "globe")
-            }
-            .accessibilityIdentifier("tunnel.browse")
-        } footer: {
-            Text("Opens the In App browser with every page fetched by \(session.host.name). Type an address as you would on that host: names are looked up there, so sites that exist only on its network work, without a forward for each.")
-        }
     }
 
     // MARK: - Connections

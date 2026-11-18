@@ -146,7 +146,8 @@ struct RootView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 0) {
-                HostTabStrip(store: tabStore, hosts: hostStore.hosts, attention: tabs.attention) { showingPicker = true }
+                HostTabStrip(store: tabStore, hosts: hostStore.hosts, attention: tabs.attention,
+                             onNewBrowserSpace: { openBrowserSpace(in: $0) }) { showingPicker = true }
                 // Copies the focused Herdr pane's text to the iPad pasteboard.
                 // Only shown with a live tab: it asks Herdr over that tab's own
                 // authenticated SSH connection.
@@ -335,6 +336,7 @@ struct RootView: View {
                         selection: selection,
                         theme: tab.themeID.map { TerminalTheme.byID($0) },
                         isCompact: isCompact,
+                        onNewBrowserSpace: { openBrowserSpace(in: tab) },
                         keyboard: keyboard
                     )
                     .padding(.horizontal, HerdrChromeMetrics.terminalEdgeInset)
@@ -699,6 +701,27 @@ struct RootView: View {
         }
     }
 
+    /// Opens a browser space in the tab's Herdr session, over the tab's own
+    /// SSH connection. The browser then appears where Herdr puts that space.
+    private func openBrowserSpace(in tab: HostTab) {
+        let session = tabs.session(for: tab)
+        guard let service = session.connection.provisioningCommandRunner else {
+            toastCenter.error("SSH connection not available")
+            return
+        }
+        guard let script = BrowserSpaceOpener.bundledPlaceholder() else {
+            toastCenter.error("This build is missing the browser space helper")
+            return
+        }
+        Task {
+            do {
+                try await BrowserSpaceOpener.open(using: service, sessionName: session.sessionName, script: script)
+            } catch {
+                toastCenter.error("Could not open a browser space: \(error.localizedDescription)")
+            }
+        }
+    }
+
     func title(for tab: HostTab) -> String {
         HostTabTitle.title(for: tab, hosts: hostStore.hosts)
     }
@@ -811,6 +834,8 @@ struct HostTerminalView: View {
     /// above the software keyboard, and the keyboard itself shrinks the grid
     /// (fewer rows while typing, full height when dismissed for scrolling).
     var isCompact = false
+    /// Opens a browser space in this tab's Herdr session.
+    var onNewBrowserSpace: () -> Void = {}
     /// Owned as @State so observation tracks its notification-driven updates;
     /// the value passed in only seeds a fresh instance (previews).
     @State var keyboard = KeyboardVisibilityModel()
@@ -826,6 +851,22 @@ struct HostTerminalView: View {
     /// The window's home-indicator inset, refreshed whenever this view's size
     /// changes (rotation, keyboard). See `KeyboardVisibilityModel.barBottomInset`.
     @State private var windowHomeInset: CGFloat = 0
+    /// The cell of Herdr's "new" that was tapped, while its choice is shown.
+    @State private var newSpaceTap: NewSpaceTap?
+
+    private struct NewSpaceTap: Identifiable {
+        let column: Int
+        let row: Int
+        var id: String { "\(column),\(row)" }
+    }
+
+    /// Where "new" is on screen, for the choice to point at.
+    private var newSpaceAnchor: CGRect {
+        guard let tap = newSpaceTap else { return .zero }
+        let cell = session.terminal.fontMetrics.boundingBox
+        return CGRect(x: CGFloat(tap.column) * cell.width, y: CGFloat(tap.row) * cell.height,
+                      width: cell.width * 3, height: cell.height)
+    }
 
     /// Space the bar must clear at the bottom: the docked keyboard while it is
     /// up (it covers the home indicator, so the larger figure wins), and the
@@ -852,6 +893,15 @@ struct HostTerminalView: View {
                     onInputBytes: { session.terminal.feedInputToPTY($0) },
                     onGridChange: { cols, rows in session.resize(cols: cols, rows: rows) },
                     forwardsPointerClicks: true,
+                    // Herdr's "new" creates a workspace. Here it first asks which
+                    // kind of space: Herdr's own, or a browser.
+                    interceptTap: { column, row in
+                        let lines = session.terminal.lines
+                        guard row < lines.count,
+                              TerminalNewSpaceButton.isHit(column: column, row: lines[row].cells) else { return false }
+                        newSpaceTap = NewSpaceTap(column: column, row: row)
+                        return true
+                    },
                     // Remote Herdr panes opt out so launching (or reconnecting) the
                     // session never covers its workspace with the software keyboard --
                     // and never fires the grid resize/SIGWINCH that raising it implies.
@@ -891,6 +941,28 @@ struct HostTerminalView: View {
             // every repaint is looked at for one.
             .onChange(of: session.terminal.renderGeneration, initial: true) { _, _ in
                 session.browserSpaces.show(BrowserSpaceLocator.regions(in: session.terminal.lines))
+            }
+            .popover(item: $newSpaceTap, attachmentAnchor: .rect(.rect(newSpaceAnchor)), arrowEdge: .leading) { tap in
+                VStack(alignment: .leading, spacing: 0) {
+                    Button("Workspace") {
+                        newSpaceTap = nil
+                        // Herdr's own "new": the tap it would have had.
+                        session.terminal.feedInputToPTY(
+                            TerminalMouse.sgr(.press, col: tap.column, row: tap.row)
+                            + TerminalMouse.sgr(.release, col: tap.column, row: tap.row))
+                        session.terminal.reassertFocus()
+                    }
+                    .accessibilityIdentifier("new-space.workspace")
+                    Divider()
+                    Button("Browser") {
+                        newSpaceTap = nil
+                        onNewBrowserSpace()
+                    }
+                    .accessibilityIdentifier("new-space.browser")
+                }
+                .buttonStyle(NewSpaceChoiceStyle())
+                .frame(minWidth: 200)
+                .presentationCompactAdaptation(.popover)
             }
             // The quick-key bar shows on iPhone AND iPad: TUIs bind actions to
             // Shift+arrows (Codex queued messages on Shift+Left) and neither
@@ -936,6 +1008,20 @@ struct HostTerminalView: View {
         .background(Color(session.terminal.colorMap.background).ignoresSafeArea())
         .clipped()
         .task { await session.ensureLive() }
+    }
+}
+
+/// A row of the choice behind Herdr's "new".
+private struct NewSpaceChoiceStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(Theme.body(16))
+            .foregroundStyle(Theme.textPrimary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, Theme.Space.md)
+            .padding(.vertical, 12)
+            .background(configuration.isPressed ? Theme.hairline : Color.clear)
+            .contentShape(Rectangle())
     }
 }
 

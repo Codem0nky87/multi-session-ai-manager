@@ -53,6 +53,8 @@ struct HostTabStrip: View {
     let hosts: [Host]
     /// What is waiting on each tab's host. Nil (previews, tests) shows no pills.
     var attention: HostAttentionCenter? = nil
+    /// Opens a browser space in a tab's Herdr session.
+    var onNewBrowserSpace: (HostTab) -> Void = { _ in }
     let onAdd: () -> Void
 
     var body: some View {
@@ -112,6 +114,13 @@ struct HostTabStrip: View {
                             }
                             Divider()
                         }
+                        // Also behind Herdr's own "new", which depends on what
+                        // Herdr draws; this entry does not.
+                        Button("New Browser Space") {
+                            store.select(tab.id)
+                            onNewBrowserSpace(tab)
+                        }
+                        Divider()
                         Menu("Theme") {
                             Button("Default (Global)") {
                                 store.setTheme(nil, for: tab.id)
