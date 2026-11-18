@@ -91,6 +91,10 @@ final class HostConnection {
         NIOSessionWebTunnelServer(service: service)
     }
 
+    func makeHostBrowseProxyServer() -> any HostBrowseProxyServing {
+        NIOHostBrowseProxyServer(service: service)
+    }
+
     struct PTYUnavailable: Error, Equatable {}
 
     /// Runs bounded, non-interactive commands on this host — used by

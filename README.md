@@ -73,6 +73,9 @@ turn terminal output into a stored transcript.
 - **Port forwarding + in-app browser** — forward a port on the host (optionally
   through a second SSH hop) to a loopback listener on the iPad and open it in an
   embedded web view. See [docs/port-forwarding.md](docs/port-forwarding.md).
+- **Browse through a host** — an In App browser whose pages are fetched by the
+  SSH host, so sites that exist only on its network open by their real names.
+  See [docs/port-forwarding.md](docs/port-forwarding.md#browse-through-this-host).
 - **Guided host setup** — a four-step sheet that tests the route to the host,
   installs or updates Herdr, manages its plugins, and checks native session
   restore for every supported AI agent detected in the host's login PATH. One
@@ -142,7 +145,7 @@ action — never a plain Retry.
 | [docs/host-setup.md](docs/host-setup.md) | Keys, host-key pinning, Herdr install, plugins, session-restore integrations |
 | [docs/terminal.md](docs/terminal.md) | Select mode, copy, pointer vs touch, and terminal geometry |
 | [docs/file-transfer.md](docs/file-transfer.md) | The two-way file bridge and the `herdr-file-viewer` seam |
-| [docs/port-forwarding.md](docs/port-forwarding.md) | Port forwards (up to five at once), second hops, and the in-app browser |
+| [docs/port-forwarding.md](docs/port-forwarding.md) | Port forwards (up to five at once), second hops, the in-app browser, and browsing through a host |
 | [docs/development.md](docs/development.md) | Project generation, tests, and TestFlight delivery |
 | [docs/security.md](docs/security.md) | Trust boundaries, secret storage, and what leaves the device |
 

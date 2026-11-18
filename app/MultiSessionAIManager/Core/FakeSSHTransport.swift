@@ -70,6 +70,12 @@ final class FakeSSHTransport: SSHTransport, @unchecked Sendable {
     private(set) var openedDirectTCPIPTargets: [DirectTCPIPTarget] = []
     private(set) var openedDirectTCPIPChannels: [FakeDirectTCPIPChannel] = []
     var directTCPIPError: Error?
+    /// Whether a refused channel is reported closed before its error is thrown,
+    /// as `NIOSSHTransport` does.
+    var directTCPIPClosesBeforeFailing = false
+    /// Runs before a direct TCP/IP channel is opened: lets a test hold the open,
+    /// as a host does with a destination that never answers.
+    var beforeDirectTCPIP: (@Sendable () async throws -> Void)?
     /// Simulates a remote PTY that reaches EOF before `openPTY` hands it back.
     var closeNextPTYBeforeReturning = false
 
@@ -200,7 +206,13 @@ final class FakeSSHTransport: SSHTransport, @unchecked Sendable {
         onClose: @escaping @Sendable () -> Void
     ) async throws -> any DirectTCPIPChannel {
         guard isConnected else { throw SSHTransportError.notConnected }
-        if let directTCPIPError { throw directTCPIPError }
+        try await beforeDirectTCPIP?()
+        if let directTCPIPError {
+            // The real transport reports "closed" for a channel the host refused,
+            // a few milliseconds before the error itself arrives.
+            if directTCPIPClosesBeforeFailing { onClose() }
+            throw directTCPIPError
+        }
         openedDirectTCPIPTargets.append(.init(host: targetHost, port: targetPort))
         let channel = FakeDirectTCPIPChannel(onOutput: onOutput, onClose: onClose)
         openedDirectTCPIPChannels.append(channel)

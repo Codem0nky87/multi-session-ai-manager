@@ -50,6 +50,11 @@ targets:
           - UIInterfaceOrientationLandscapeRight
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
+          # "Browse through this host" loads the pages of a host's own network in
+          # the In App browser, and many of those are plain http on a dotted
+          # name, which iOS otherwise refuses before the request is made. Web
+          # content only: the app's own connections stay under the default rules.
+          NSAllowsArbitraryLoadsInWebContent: true
         NSLocalNetworkUsageDescription: "AI Manager connects to Herdr servers and your machines on the local network."
         NSMicrophoneUsageDescription: "AI Manager uses the microphone for push-to-talk voice input into your terminal sessions."
         NSSpeechRecognitionUsageDescription: "AI Manager uses speech recognition to convert your voice into text for your terminal sessions."

@@ -13,6 +13,8 @@ final class PortForwardingSession {
     let host: Host
     let connection: HostConnection
     let model: SessionWebTunnelModel
+    /// Browsing through this host, over the same SSH connection as its forwards.
+    let browse: HostBrowseModel
     var tunnels: [SessionWebTunnel]
     /// Hop passwords live here so a running tunnel can be restarted after the
     /// sheet closes; they are never persisted.
@@ -46,6 +48,20 @@ final class PortForwardingSession {
         let connection = HostConnection(host: host, keyStore: keyStore, knownHosts: knownHosts, transport: transport)
         self.connection = connection
         self.model = model ?? SessionWebTunnelModel(server: connection.makeSessionWebTunnelServer())
+        self.browse = HostBrowseModel(server: connection.makeHostBrowseProxyServer()) { [connection] in
+            if connection.state != .connected { await connection.connect() }
+            switch connection.state {
+            case .connected:
+                return nil
+            case .failed(let message):
+                return "Could not connect to \(host.name): \(message)"
+            case .hostKeyChanged:
+                // Never settled from here: the host's own tab shows the key and asks.
+                return "\(host.name) presented a different host key. Open its tab to review the key first."
+            case .idle, .connecting:
+                return "Could not connect to \(host.name)."
+            }
+        }
         self.keepAlivePolicy = keepAlive
         self.model.onConnectionProblem = { [weak self] in
             Task { await self?.keepAlive() }
@@ -72,7 +88,7 @@ final class PortForwardingSession {
     /// the background, where nothing can be kept alive; the check runs at once on
     /// return instead.
     func keepAlive() async {
-        guard model.runningCount > 0, !isCheckingLink else { return }
+        guard needsItsConnection, !isCheckingLink else { return }
         switch connection.state {
         case .connecting, .hostKeyChanged:
             // Already being connected, or waiting for the user to look at a
@@ -84,11 +100,16 @@ final class PortForwardingSession {
         isCheckingLink = true
         defer { isCheckingLink = false }
         if await connection.verifyAlive(timeout: keepAlivePolicy.probeTimeout) { return }
-        guard model.runningCount > 0 else { return }
+        guard needsItsConnection else { return }
         await connection.connect()
         if connection.state == .connected {
             model.clearConnectionProblems()
         }
+    }
+
+    /// A running forward or an open browser: either goes dead with the connection.
+    private var needsItsConnection: Bool {
+        model.runningCount > 0 || browse.isActive
     }
 
     private func startKeepAlive() {
@@ -121,6 +142,7 @@ final class PortForwardingSession {
         keepAliveTask?.cancel()
         foregroundTask?.cancel()
         await model.stopAll()
+        await browse.stop()
         await connection.disconnect()
     }
 }
