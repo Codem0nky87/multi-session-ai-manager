@@ -47,4 +47,28 @@ import Testing
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("UI/WebTunnel/HostBrowserScreen.swift").path))
     }
+
+    @Test func theBrowsersBarHasAPlusThatOpensATab() throws {
+        let pane = try source("UI/Browser/HostBrowserPane.swift")
+        let button = try #require(pane.range(of: "accessibilityIdentifier(\"browser-space.new-tab\")"))
+        let before = pane[..<button.lowerBound]
+        let action = try #require(before.range(of: "tabs.add()", options: .backwards))
+        #expect(pane.distance(from: action.lowerBound, to: button.lowerBound) < 600, "The plus is what adds the tab")
+        #expect(pane.contains("Image(systemName: \"plus\")"))
+        #expect(pane.contains(".disabled(!tabs.canAdd)"))
+    }
+
+    @Test func theTabsShowOnceThereIsMoreThanOne() throws {
+        let pane = try source("UI/Browser/HostBrowserPane.swift")
+        #expect(pane.contains("if tabs.tabs.count > 1"))
+        #expect(pane.contains("tabs.select(tab.id)"))
+        #expect(pane.contains("tabs.close(tab.id)"))
+    }
+
+    @Test func theWebViewShownIsTheOneOfTheTabShown() throws {
+        // A representable is not made again for a new value by itself: without
+        // an identity the first tab's page stayed on screen for every tab.
+        #expect(try source("UI/Browser/HostBrowserPane.swift").contains(".id(ObjectIdentifier(webView))"))
+    }
 }
+

@@ -3,7 +3,7 @@ import Observation
 import SwiftUI
 import WebKit
 
-/// The web view of one browser space and what its pane shows about it.
+/// The web view of one tab of a browser space and what its pane shows about it.
 @MainActor
 @Observable
 final class HostBrowserPage: NSObject, WKNavigationDelegate, WKUIDelegate {
@@ -14,6 +14,8 @@ final class HostBrowserPage: NSObject, WKNavigationDelegate, WKUIDelegate {
     /// True once a page has been committed: until then there is nothing to show.
     private(set) var hasPage = false
     private(set) var currentAddress = ""
+    /// The page's own title, for its tab.
+    private(set) var title = ""
     private(set) var failure: HostBrowserFailure?
 
     @ObservationIgnored private var endpoint: HostBrowseModel.Endpoint?
@@ -21,6 +23,7 @@ final class HostBrowserPage: NSObject, WKNavigationDelegate, WKUIDelegate {
     @ObservationIgnored private weak var browse: HostBrowseModel?
     @ObservationIgnored private var exceptions = HostBrowseCertificateExceptions()
     @ObservationIgnored private var failedURL: URL?
+    @ObservationIgnored private var titleWatch: NSKeyValueObservation?
 
     /// The proxy settings every request of this browser goes through. No
     /// fallback: when the proxy is gone a page fails, it is not fetched directly
@@ -51,6 +54,10 @@ final class HostBrowserPage: NSObject, WKNavigationDelegate, WKUIDelegate {
         view.navigationDelegate = self
         view.uiDelegate = self
         view.allowsBackForwardNavigationGestures = true
+        // A page can change its title long after it has loaded.
+        titleWatch = view.observe(\.title) { [weak self] _, _ in
+            Task { @MainActor [weak self] in self?.refreshTitle() }
+        }
         let reopen = hasPage ? webView?.url : nil
         webView = view
         hasPage = false
@@ -94,6 +101,12 @@ final class HostBrowserPage: NSObject, WKNavigationDelegate, WKUIDelegate {
         canGoForward = webView?.canGoForward ?? false
         isLoading = webView?.isLoading ?? false
         if let url = webView?.url { currentAddress = url.absoluteString }
+        refreshTitle()
+    }
+
+    private func refreshTitle() {
+        let current = webView?.title ?? ""
+        if title != current { title = current }
     }
 
     private func failed(_ error: Error) {
@@ -142,7 +155,7 @@ final class HostBrowserPage: NSObject, WKNavigationDelegate, WKUIDelegate {
 
     // MARK: WKUIDelegate
 
-    /// A link that asks for a new window opens here: there is one page at a time.
+    /// A link that asks for a new window opens here, in the tab it was tapped in.
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                  for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
         if navigationAction.targetFrame == nil {

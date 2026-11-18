@@ -37,9 +37,10 @@ import UIKit
             tunnels: [], transport: FakeSSHTransport(),
             keepAlive: .init(interval: .seconds(3600), probeTimeout: .seconds(1)))
         let spaces = BrowserSpaceModel(hostID: forwarding.host.id, defaults: store())
-        spaces.remember(address: "http://grafana.internal:3000/", for: "7f3a2c")
-        let page = spaces.page(for: "7f3a2c")
-        let window = try window(HostBrowserPane(spaceID: "7f3a2c", page: page, forwarding: forwarding, spaces: spaces),
+        spaces.remember(.init(addresses: ["http://grafana.internal:3000/", "http://wiki.internal/"], selected: 0), for: "7f3a2c")
+        let tabs = spaces.tabs(for: "7f3a2c")
+        let page = tabs.selected.page
+        let window = try window(HostBrowserPane(spaceID: "7f3a2c", tabs: tabs, forwarding: forwarding, spaces: spaces),
                                 size: CGSize(width: 600, height: 400))
         defer { window.isHidden = true }
 
@@ -47,6 +48,18 @@ import UIKit
                 "The pane starts the host's proxy itself")
         #expect(await soon { page.isLoading || page.currentAddress.contains("grafana.internal") },
                 "The address the space showed last is opened without being typed again")
+
+        // The other tab opens what it showed last when it is shown, not before.
+        let other = tabs.tabs[1]
+        #expect(other.page.webView == nil && !other.page.isLoading)
+        tabs.select(other.id)
+        #expect(await soon { other.page.isLoading || other.page.currentAddress.contains("wiki.internal") })
+
+        // And "+" gives an empty page with nothing loading in it.
+        let added = try #require(tabs.add())
+        #expect(await soon { added.page.webView != nil })
+        #expect(!added.page.hasPage && !added.page.isLoading && added.page.currentAddress.isEmpty)
+        #expect(page.webView != nil, "The first tab's page is still there to go back to")
         await forwarding.shutdown()
     }
 

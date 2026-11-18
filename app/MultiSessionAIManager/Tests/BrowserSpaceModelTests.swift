@@ -126,30 +126,71 @@ import Testing
         #expect(model.page(for: "bbbbbb") !== page)
     }
 
-    @Test func aSpacesAddressOutlivesTheApp() {
+    @Test func aSpacesTabsOutliveTheApp() {
         let store = defaults()
-        BrowserSpaceModel(hostID: host, defaults: store).remember(address: "http://grafana.internal:3000/d/1", for: "7f3a2c")
+        let tabs = BrowserSpaceModel.SavedTabs(addresses: ["http://grafana.internal:3000/d/1", "http://wiki.internal/"], selected: 1)
+        BrowserSpaceModel(hostID: host, defaults: store).remember(tabs, for: "7f3a2c")
 
         let relaunched = BrowserSpaceModel(hostID: host, defaults: store)
-        #expect(relaunched.savedAddress(for: "7f3a2c") == "http://grafana.internal:3000/d/1")
-        #expect(relaunched.savedAddress(for: "bbbbbb") == nil)
-        #expect(BrowserSpaceModel(hostID: UUID(), defaults: store).savedAddress(for: "7f3a2c") == nil,
+        #expect(relaunched.savedTabs(for: "7f3a2c") == tabs)
+        #expect(relaunched.savedTabs(for: "bbbbbb") == nil)
+        #expect(BrowserSpaceModel(hostID: UUID(), defaults: store).savedTabs(for: "7f3a2c") == nil,
                 "Another host's spaces are its own")
+
+        let restored = relaunched.tabs(for: "7f3a2c")
+        #expect(restored.tabs.map(\.address) == tabs.addresses)
+        #expect(restored.selected === restored.tabs[1])
     }
 
-    @Test func onlyTheNewestAddressesAreKept() {
+    @Test func aSpaceRememberedBeforeThereWereTabsOpensAsOneTab() {
+        // What the build before tabs wrote: the space and its one address.
+        let store = defaults()
+        store.set([["7f3a2c", "http://grafana.internal:3000/"]], forKey: "msam.browser-spaces.\(host.uuidString.lowercased())")
+        let model = BrowserSpaceModel(hostID: host, defaults: store)
+        #expect(model.savedTabs(for: "7f3a2c") == .init(addresses: ["http://grafana.internal:3000/"], selected: 0))
+        #expect(model.tabs(for: "7f3a2c").tabs.map(\.address) == ["http://grafana.internal:3000/"])
+    }
+
+    @Test func aChangeOfTabsIsRememberedWithoutBeingAskedFor() throws {
+        let store = defaults()
+        let model = BrowserSpaceModel(hostID: host, defaults: store)
+        model.remember(.init(addresses: ["http://a/", "http://b/"], selected: 0), for: "7f3a2c")
+        let tabs = model.tabs(for: "7f3a2c")
+        tabs.select(tabs.tabs[1].id)
+        #expect(BrowserSpaceModel(hostID: host, defaults: store).savedTabs(for: "7f3a2c")?.selected == 1)
+        tabs.close(tabs.tabs[0].id)
+        #expect(BrowserSpaceModel(hostID: host, defaults: store).savedTabs(for: "7f3a2c")
+                == .init(addresses: ["http://b/"], selected: 0))
+    }
+
+    @Test func aSpaceWithNothingOpenIsNotRemembered() {
+        let store = defaults()
+        let model = BrowserSpaceModel(hostID: host, defaults: store)
+        model.remember(.init(addresses: ["http://a/"], selected: 0), for: "7f3a2c")
+        model.remember(.init(addresses: ["", ""], selected: 1), for: "7f3a2c")
+        #expect(BrowserSpaceModel(hostID: host, defaults: store).savedTabs(for: "7f3a2c") == nil)
+    }
+
+    @Test func aSpacesTabsAreTheSameOnesEveryTime() {
+        let model = BrowserSpaceModel(hostID: host, defaults: defaults())
+        #expect(model.tabs(for: "7f3a2c") === model.tabs(for: "7f3a2c"))
+        #expect(model.tabs(for: "7f3a2c") !== model.tabs(for: "bbbbbb"))
+        #expect(model.page(for: "7f3a2c") === model.tabs(for: "7f3a2c").selected.page)
+    }
+
+    @Test func onlyTheNewestSpacesAreKept() {
         let store = defaults()
         let model = BrowserSpaceModel(hostID: host, defaults: store)
         for index in 0..<(BrowserSpaceModel.savedLimit + 3) {
-            model.remember(address: "http://site\(index)/", for: String(format: "%06x", index))
+            model.remember(.init(addresses: ["http://site\(index)/"], selected: 0), for: String(format: "%06x", index))
         }
-        model.remember(address: "http://site3/again", for: "000003")   // used again: newest
+        model.remember(.init(addresses: ["http://site3/again"], selected: 0), for: "000003")   // used again: newest
 
         let relaunched = BrowserSpaceModel(hostID: host, defaults: store)
-        #expect(relaunched.savedAddress(for: "000000") == nil)
-        #expect(relaunched.savedAddress(for: "000002") == nil)
-        #expect(relaunched.savedAddress(for: "000003") == "http://site3/again")
-        #expect(relaunched.savedAddress(for: "000004") != nil)
-        #expect(relaunched.savedAddress(for: "00000e") == "http://site14/")
+        #expect(relaunched.savedTabs(for: "000000") == nil)
+        #expect(relaunched.savedTabs(for: "000002") == nil)
+        #expect(relaunched.savedTabs(for: "000003")?.addresses == ["http://site3/again"])
+        #expect(relaunched.savedTabs(for: "000004") != nil)
+        #expect(relaunched.savedTabs(for: "00000e")?.addresses == ["http://site14/"])
     }
 }

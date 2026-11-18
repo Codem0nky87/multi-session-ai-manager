@@ -1,8 +1,8 @@
 import Foundation
 import Observation
 
-/// The browser spaces of one host tab: which are on screen, their pages, and
-/// the address each showed last.
+/// The browser spaces of one host tab: which are on screen, their tabs, and
+/// what each tab showed last.
 @MainActor
 @Observable
 final class BrowserSpaceModel {
@@ -11,7 +11,7 @@ final class BrowserSpaceModel {
     /// The browser panes to draw now.
     private(set) var regions: [BrowserSpaceRegion] = []
 
-    @ObservationIgnored private var pages: [String: HostBrowserPage] = [:]
+    @ObservationIgnored private var spaces: [String: BrowserSpaceTabs] = [:]
     @ObservationIgnored private var leaving: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let key: String
@@ -89,30 +89,64 @@ final class BrowserSpaceModel {
         }
     }
 
-    /// The page of a space, kept while its space is off screen.
+    /// The tabs of a space, kept while its space is off screen. The first time
+    /// they are the ones the space had when the app last ran.
+    func tabs(for id: String) -> BrowserSpaceTabs {
+        if let tabs = spaces[id] { return tabs }
+        let saved = savedTabs(for: id)
+        let tabs = BrowserSpaceTabs(addresses: saved?.addresses ?? [], selected: saved?.selected ?? 0)
+        tabs.onChange = { [weak self, weak tabs] in
+            guard let self, let tabs else { return }
+            self.save(tabs, for: id)
+        }
+        spaces[id] = tabs
+        return tabs
+    }
+
+    /// The page a space shows.
     func page(for id: String) -> HostBrowserPage {
-        if let page = pages[id] { return page }
-        let page = HostBrowserPage()
-        pages[id] = page
-        return page
+        tabs(for: id).selected.page
     }
 
-    // MARK: Addresses, oldest first
+    // MARK: What each space had open, oldest space first
 
+    /// The tabs of one space as they are written down.
+    struct SavedTabs: Equatable {
+        /// One address per tab, in order; empty for a tab with nothing in it.
+        var addresses: [String]
+        var selected: Int
+    }
+
+    /// Entries are `[space, selected tab, address, address, ...]`. The build
+    /// before tabs wrote `[space, address]`, which is read as one tab.
     private var saved: [[String]] {
-        (defaults.array(forKey: key) as? [[String]] ?? []).filter { $0.count == 2 }
+        (defaults.array(forKey: key) as? [[String]] ?? []).filter { $0.count >= 2 }
     }
 
-    /// The address a space showed last, also after a relaunch.
-    func savedAddress(for id: String) -> String? {
-        saved.last { $0[0] == id }?[1]
+    /// What a space had open last, also after a relaunch.
+    func savedTabs(for id: String) -> SavedTabs? {
+        guard let entry = saved.last(where: { $0[0] == id }) else { return nil }
+        if entry.count == 2 { return SavedTabs(addresses: [entry[1]], selected: 0) }
+        guard let selected = Int(entry[1]) else { return nil }
+        return SavedTabs(addresses: Array(entry[2...]), selected: selected)
     }
 
-    func remember(address: String, for id: String) {
+    /// Writes down what a space's tabs are on now.
+    func save(_ tabs: BrowserSpaceTabs, for id: String) {
+        remember(SavedTabs(addresses: tabs.tabs.map(\.address), selected: tabs.selectedIndex), for: id)
+    }
+
+    func remember(_ tabs: SavedTabs, for id: String) {
         let entries = saved
+        let others = entries.filter { $0[0] != id }
+        // A space with nothing open has nothing to come back to.
+        guard tabs.addresses.contains(where: { !$0.isEmpty }) else {
+            if others.count != entries.count { defaults.set(others, forKey: key) }
+            return
+        }
+        let entry = [id, String(tabs.selected)] + tabs.addresses
         // Nothing to write when it is already the newest entry.
-        if let newest = entries.last, newest == [id, address] { return }
-        let updated = entries.filter { $0[0] != id } + [[id, address]]
-        defaults.set(Array(updated.suffix(Self.savedLimit)), forKey: key)
+        if entries.last == entry { return }
+        defaults.set(Array((others + [entry]).suffix(Self.savedLimit)), forKey: key)
     }
 }

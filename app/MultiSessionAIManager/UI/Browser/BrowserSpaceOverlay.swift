@@ -20,7 +20,7 @@ struct BrowserSpaceOverlay: View {
     var body: some View {
         BrowserSpacePaneLayout(regions: forwarding == nil ? [] : spaces.regions, cell: cell) { region in
             if let forwarding {
-                HostBrowserPane(spaceID: region.id, page: spaces.page(for: region.id),
+                HostBrowserPane(spaceID: region.id, tabs: spaces.tabs(for: region.id),
                                 forwarding: forwarding, spaces: spaces)
             }
         }
