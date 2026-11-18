@@ -114,6 +114,32 @@ The remote command is a controlled `ssh -M -S <control-path> -f -N -L …` with
 and cancel commands driving the same control socket. Every value derived from a
 tunnel definition or a runtime credential is single-quoted for the remote shell.
 
+### The helper on the first host
+
+That `ssh -f` is a helper: it goes into the background on the first host,
+listens on that host's loopback, and lives until it is told to exit. Stopping
+the forward tells it. Closing the app, updating it, or losing the connection
+does not, so a helper can be left behind. Two rules keep that from mattering:
+
+- **The helper's port belongs to the first host.** It is picked at random
+  between 20000 and 32000, and when ssh reports it taken another is tried, up
+  to three times. It is not the forward's local port: that is a port of this
+  device, and the same number may be in use over there. It used to be the same
+  number, and a helper left behind then made every later Start fail with
+  `bind [127.0.0.1]:<port>: Address already in use`.
+- **Every Start first removes the helpers left behind for the same forward.**
+  A helper's control path names its forward
+  (`/tmp/ai-manager-web-tunnel-<forward>-<start>.sock`), and `pkill -f` matches
+  the option sequence only a helper is started with, among the user's own
+  processes. Helpers from builds before this rule have no forward in their
+  path; those are matched by target and hop instead. Other forwards, and a
+  second device forwarding from the same host, are left alone.
+
+A helper of a forward that is never started again stays until its hop
+connection ends or the host restarts. To clear every helper by hand, run
+`pkill -f 'ai-manager-web-tunne[l]-'` on the first host (the brackets keep the
+command from matching itself).
+
 ### Hop credentials
 
 By default the hop uses whatever the **first host** already has — its key, its

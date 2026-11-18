@@ -8,14 +8,44 @@ import NIOConcurrencyHelpers
 /// Every value derived from a tunnel definition or runtime credential is
 /// single-quoted for the remote shell. Password mode creates a mode-700 temporary
 /// askpass helper on the first host and removes it on exit and listener shutdown.
+///
+/// The helper is an `ssh -f` on the first host: it goes into the background there
+/// and lives until it is told to exit. When the app is closed, updated or loses
+/// its connection without stopping the forward, nobody tells it, and it stays
+/// behind holding its port. So every start first removes the helpers left behind
+/// for the same forward, and the helper's port is one of the first host's own
+/// choosing rather than the port the forward has on this device.
 struct SessionWebTunnelRemoteForwardCommands: Equatable {
     static let readyMarker = "__AI_MANAGER_SSH_FORWARD_READY__"
+    static let controlPathPrefix = "/tmp/ai-manager-web-tunnel-"
 
     let start: String
     let stop: String
     let cancel: String
+    /// The command lines of the helpers `start` removes before it starts its
+    /// own, as extended regular expressions.
+    let leftBehindPatterns: [String]
+
+    /// Which forward a helper serves, as it appears in its control path.
+    static func tag(for tunnelID: UUID) -> String {
+        String(tunnelID.uuidString.replacingOccurrences(of: "-", with: "").lowercased().prefix(12))
+    }
+
+    /// A control socket for one start of one forward. Short on purpose: ssh adds
+    /// 17 characters of its own while it creates the socket, and a socket path
+    /// may be only 103 characters long on macOS.
+    static func controlPath(for tunnelID: UUID) -> String {
+        let start = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased().prefix(8)
+        return "\(controlPathPrefix)\(tag(for: tunnelID))-\(start).sock"
+    }
+
+    /// Whether ssh's complaint is about the port the helper was to listen on.
+    static func portWasTaken(_ output: String) -> Bool {
+        output.contains("Address already in use") || output.contains("cannot listen to port")
+    }
 
     init(
+        tunnelID: UUID,
         hop: SessionWebTunnelHop,
         targetHost: String,
         targetPort: Int,
@@ -118,7 +148,26 @@ struct SessionWebTunnelRemoteForwardCommands: Equatable {
             launch.append(sshLaunch)
         }
 
-        start = "\(setup); \(launch.joined(separator: " && "))"
+        // Helpers left behind, matched by their command line: the options every
+        // helper is started with, in the order they are given above, so that
+        // nothing else a user runs can look like one. A pattern cannot match the
+        // shell that carries it in its own command line either (pkill would
+        // kill that shell with the helpers): where a helper has a socket name,
+        // the pattern has the expression for one.
+        let leftBehind = [
+            // Of this forward, from any earlier start of it.
+            "-M -S \(Self.controlPathPrefix)\(Self.tag(for: tunnelID))-[0-9a-f]+[.]sock -f -N ",
+            // Of this forward as builds before this one started it: a control
+            // path that names no forward, so the forward is told by where it goes.
+            "-M -S \(Self.controlPathPrefix)[0-9A-F-]{36}[.]sock -f -N -p [0-9]+ -L 127[.]0[.]0[.]1:[0-9]+:"
+                + "\(Self.literal(targetHost)):\(targetPort) \(Self.literal(destination))$",
+        ]
+        leftBehindPatterns = leftBehind
+        let sweep = leftBehind
+            .map { "pkill -u \"$(id -u)\" -f -- \(Self.quote($0)) >/dev/null 2>&1" }
+            .joined(separator: "; ")
+
+        start = "\(setup); \(sweep); \(launch.joined(separator: " && "))"
         stop = "\(sshStop); \(removeTransientFiles)"
         cancel = [
             "umask 077",
@@ -131,6 +180,15 @@ struct SessionWebTunnelRemoteForwardCommands: Equatable {
     private static func quote(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
+
+    /// `value` as an extended regular expression that matches only itself.
+    private static func literal(_ value: String) -> String {
+        value.map { character -> String in
+            if character.isLetter || character.isNumber || "-_:@/, ".contains(character) { return String(character) }
+            // A bracket makes anything literal except these two.
+            return character == "^" || character == "\\" ? "\\\(character)" : "[\(character)]"
+        }.joined()
+    }
 }
 
 /// Loopback-only TCP listener. Each accepted WebKit socket is paired with one
@@ -138,18 +196,30 @@ struct SessionWebTunnelRemoteForwardCommands: Equatable {
 final class NIOSessionWebTunnelServer: SessionWebTunnelServing, @unchecked Sendable {
     private let service: SSHService
     private let group: EventLoopGroup
-    private let remoteForwardControlPath: @Sendable () -> String
+    private let remoteForwardControlPath: @Sendable (UUID) -> String
+    private let remoteForwardPort: @Sendable () -> Int
 
+    /// How often a hop helper is started again on another port when the one it
+    /// was given turns out to be taken on the first host.
+    static let remoteForwardPortAttempts = 3
+
+    /// - Parameters:
+    ///   - remoteForwardControlPath: the control socket for one start of the forward with this id.
+    ///   - remoteForwardPort: a port for the hop helper on the first host's loopback.
+    ///     Below every system's range for outgoing connections and above the
+    ///     ports services usually claim, so one picked at random is almost always free.
     init(
         service: SSHService,
         group: EventLoopGroup = MultiThreadedEventLoopGroup.singleton,
-        remoteForwardControlPath: @escaping @Sendable () -> String = {
-            "/tmp/ai-manager-web-tunnel-\(UUID().uuidString).sock"
-        }
+        remoteForwardControlPath: @escaping @Sendable (UUID) -> String = {
+            SessionWebTunnelRemoteForwardCommands.controlPath(for: $0)
+        },
+        remoteForwardPort: @escaping @Sendable () -> Int = { Int.random(in: 20_000...32_000) }
     ) {
         self.service = service
         self.group = group
         self.remoteForwardControlPath = remoteForwardControlPath
+        self.remoteForwardPort = remoteForwardPort
     }
 
     func start(
@@ -215,46 +285,64 @@ final class NIOSessionWebTunnelServer: SessionWebTunnelServing, @unchecked Senda
 
         let remoteForwardCommands: SessionWebTunnelRemoteForwardCommands?
         if let hop = tunnel.hop {
-            let commands = SessionWebTunnelRemoteForwardCommands(
-                hop: hop,
-                targetHost: tunnel.targetHost,
-                targetPort: tunnel.targetPort,
-                remoteForwardPort: localPort,
-                controlPath: remoteForwardControlPath(),
-                hopPassword: hopPassword
-            )
-            let cancellationCleanup = RemoteForwardStartupCleanup(
-                serverChannel: serverChannel,
-                tracker: tracker,
-                service: service,
-                cleanupCommand: commands.cancel
-            )
-            let failureCleanup = RemoteForwardStartupCleanup(
-                serverChannel: serverChannel,
-                tracker: tracker,
-                service: service,
-                cleanupCommand: commands.stop
-            )
-            do {
-                let output = try await withTaskCancellationHandler {
-                    try Task.checkCancellation()
-                    // A concurrent reconnect (metrics bar, sheet re-entry) can
-                    // briefly drop the client; settle and retry once before
-                    // declaring the connection dead.
-                    let output: String
-                    do {
-                        output = try await service.runCommand(commands.start)
-                    } catch SSHTransportError.notConnected {
-                        try await Task.sleep(nanoseconds: 1_500_000_000)
+            var started: (commands: SessionWebTunnelRemoteForwardCommands, port: Int)?
+            for attempt in 1...Self.remoteForwardPortAttempts {
+                // A port of the first host's own. The forward's port on this
+                // device says nothing about what is free over there: the same
+                // number may belong to a service of that host, or to a helper
+                // that an earlier run of the app left behind.
+                let port = remoteForwardPort()
+                let commands = SessionWebTunnelRemoteForwardCommands(
+                    tunnelID: tunnel.id,
+                    hop: hop,
+                    targetHost: tunnel.targetHost,
+                    targetPort: tunnel.targetPort,
+                    remoteForwardPort: port,
+                    controlPath: remoteForwardControlPath(tunnel.id),
+                    hopPassword: hopPassword
+                )
+                let cancellationCleanup = RemoteForwardStartupCleanup(
+                    serverChannel: serverChannel,
+                    tracker: tracker,
+                    service: service,
+                    cleanupCommand: commands.cancel
+                )
+                let failureCleanup = RemoteForwardStartupCleanup(
+                    serverChannel: serverChannel,
+                    tracker: tracker,
+                    service: service,
+                    cleanupCommand: commands.stop
+                )
+                do {
+                    let output = try await withTaskCancellationHandler {
                         try Task.checkCancellation()
-                        output = try await service.runCommand(commands.start)
+                        // A concurrent reconnect (metrics bar, sheet re-entry) can
+                        // briefly drop the client; settle and retry once before
+                        // declaring the connection dead.
+                        let output: String
+                        do {
+                            output = try await service.runCommand(commands.start)
+                        } catch SSHTransportError.notConnected {
+                            try await Task.sleep(nanoseconds: 1_500_000_000)
+                            try Task.checkCancellation()
+                            output = try await service.runCommand(commands.start)
+                        }
+                        try Task.checkCancellation()
+                        return output
+                    } onCancel: {
+                        cancellationCleanup.schedule()
                     }
-                    try Task.checkCancellation()
-                    return output
-                } onCancel: {
-                    cancellationCleanup.schedule()
-                }
-                guard output.contains(SessionWebTunnelRemoteForwardCommands.readyMarker) else {
+                    if output.contains(SessionWebTunnelRemoteForwardCommands.readyMarker) {
+                        started = (commands, port)
+                        break
+                    }
+                    if SessionWebTunnelRemoteForwardCommands.portWasTaken(output),
+                       attempt < Self.remoteForwardPortAttempts {
+                        // Something on the first host has that port. Clear away
+                        // what this attempt wrote there and take another.
+                        _ = try? await service.runCommand(commands.stop)
+                        continue
+                    }
                     let detail = Self.diagnosticSuffix(
                         output,
                         hopPassword: hopPassword
@@ -268,38 +356,44 @@ final class NIOSessionWebTunnelServer: SessionWebTunnelServing, @unchecked Senda
                         "Could not start SSH hop \(hop.username)@\(hop.host):\(hop.port)."
                         + advice
                     )
-                }
-            } catch {
-                if error is CancellationError {
-                    await cancellationCleanup.run()
-                    throw error
-                }
-                await failureCleanup.run()
-                // A nil client means the host connection itself is gone —
-                // blaming the hop password there only misleads the user.
-                if error as? SSHTransportError == .notConnected {
+                } catch {
+                    if error is CancellationError {
+                        await cancellationCleanup.run()
+                        throw error
+                    }
+                    await failureCleanup.run()
+                    // A nil client means the host connection itself is gone —
+                    // blaming the hop password there only misleads the user.
+                    if error as? SSHTransportError == .notConnected {
+                        throw SessionWebTunnelError.couldNotStart(
+                            "The SSH connection to the first host is not established. "
+                            + "Reconnect the host and start the tunnel again."
+                        )
+                    }
+                    // The inner error already carries ssh's own diagnosis (or the
+                    // right guidance); re-wrapping it here only buries the real
+                    // complaint under a password accusation.
+                    if let tunnelError = error as? SessionWebTunnelError {
+                        throw tunnelError
+                    }
                     throw SessionWebTunnelError.couldNotStart(
-                        "The SSH connection to the first host is not established. "
-                        + "Reconnect the host and start the tunnel again."
+                        "Could not start SSH hop \(hop.username)@\(hop.host):\(hop.port). "
+                        + Self.authenticationGuidance(hopPassword: hopPassword)
+                        + Self.diagnosticSuffix(
+                            error.localizedDescription,
+                            hopPassword: hopPassword
+                        )
                     )
                 }
-                // The inner error already carries ssh's own diagnosis (or the
-                // right guidance); re-wrapping it here only buries the real
-                // complaint under a password accusation.
-                if let tunnelError = error as? SessionWebTunnelError {
-                    throw tunnelError
-                }
+            }
+            // The loop leaves only with a started helper or by throwing.
+            guard let started else {
                 throw SessionWebTunnelError.couldNotStart(
-                    "Could not start SSH hop \(hop.username)@\(hop.host):\(hop.port). "
-                    + Self.authenticationGuidance(hopPassword: hopPassword)
-                    + Self.diagnosticSuffix(
-                        error.localizedDescription,
-                        hopPassword: hopPassword
-                    )
+                    "Could not start SSH hop \(hop.username)@\(hop.host):\(hop.port)."
                 )
             }
-            destination.set(host: "127.0.0.1", port: localPort)
-            remoteForwardCommands = commands
+            destination.set(host: "127.0.0.1", port: started.port)
+            remoteForwardCommands = started.commands
         } else {
             destination.set(host: tunnel.targetHost, port: tunnel.targetPort)
             remoteForwardCommands = nil

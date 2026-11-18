@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import NIOConcurrencyHelpers
 import Testing
 @testable import MultiSessionAIManager
 
@@ -215,7 +216,8 @@ struct NIOSessionWebTunnelServerTests {
         let controlPath = "/tmp/ai-manager-web-tunnel-test.sock"
         let server = NIOSessionWebTunnelServer(
             service: service,
-            remoteForwardControlPath: { controlPath }
+            remoteForwardControlPath: { _ in controlPath },
+            remoteForwardPort: { 28_443 }
         )
         let tunnel = SessionWebTunnel(
             label: "Chained dashboard",
@@ -243,7 +245,7 @@ struct NIOSessionWebTunnelServerTests {
             !transport.openedDirectTCPIPTargets.isEmpty
         }
         #expect(transport.openedDirectTCPIPTargets == [
-            .init(host: "127.0.0.1", port: listener.localPort)
+            .init(host: "127.0.0.1", port: 28_443)
         ])
 
         Darwin.close(socket)
@@ -262,7 +264,8 @@ struct NIOSessionWebTunnelServerTests {
         let controlPath = "/tmp/ai-manager-password-tunnel-test.sock"
         let server = NIOSessionWebTunnelServer(
             service: service,
-            remoteForwardControlPath: { controlPath }
+            remoteForwardControlPath: { _ in controlPath },
+            remoteForwardPort: { 28_443 }
         )
         let tunnel = SessionWebTunnel(
             label: "Password dashboard",
@@ -295,7 +298,7 @@ struct NIOSessionWebTunnelServerTests {
             !transport.openedDirectTCPIPTargets.isEmpty
         }
         #expect(transport.openedDirectTCPIPTargets == [
-            .init(host: "127.0.0.1", port: listener.localPort)
+            .init(host: "127.0.0.1", port: 28_443)
         ])
 
         Darwin.close(socket)
@@ -363,6 +366,7 @@ struct NIOSessionWebTunnelServerTests {
         // firewall between them drops it silently and the forward goes dead.
         for password in [nil, "secret"] as [String?] {
             let commands = SessionWebTunnelRemoteForwardCommands(
+                tunnelID: UUID(),
                 hop: .init(username: "root", host: "jump"), targetHost: "target", targetPort: 3389,
                 remoteForwardPort: 13389, controlPath: "/tmp/keepalive.sock", hopPassword: password)
             #expect(commands.start.contains("-o 'ServerAliveInterval=30'"))
@@ -372,6 +376,7 @@ struct NIOSessionWebTunnelServerTests {
 
     @Test func remoteForwardCommandsShellQuoteGeneratedValues() {
         let commands = SessionWebTunnelRemoteForwardCommands(
+            tunnelID: UUID(),
             hop: .init(username: "ro'ot", host: "jump';echo unsafe", port: 2222),
             targetHost: "target';echo unsafe",
             targetPort: 8443,
@@ -390,6 +395,7 @@ struct NIOSessionWebTunnelServerTests {
 
     @Test func passwordRemoteForwardUsesTemporaryAskpassAndCleansItUp() {
         let commands = SessionWebTunnelRemoteForwardCommands(
+            tunnelID: UUID(),
             hop: .init(username: "root", host: "jump", port: 2222),
             targetHost: "target",
             targetPort: 8443,
@@ -423,6 +429,7 @@ struct NIOSessionWebTunnelServerTests {
 
     @Test func noPasswordRemoteForwardKeepsNonInteractiveKeyAuthentication() {
         let commands = SessionWebTunnelRemoteForwardCommands(
+            tunnelID: UUID(),
             hop: .init(username: "root", host: "jump"),
             targetHost: "target",
             targetPort: 8443,
@@ -444,7 +451,7 @@ struct NIOSessionWebTunnelServerTests {
         let controlPath = "/tmp/failed-password-forward.sock"
         let server = NIOSessionWebTunnelServer(
             service: service,
-            remoteForwardControlPath: { controlPath }
+            remoteForwardControlPath: { _ in controlPath }
         )
         let tunnel = SessionWebTunnel(
             label: "Password dashboard",
@@ -513,7 +520,7 @@ struct NIOSessionWebTunnelServerTests {
         )
         let server = NIOSessionWebTunnelServer(
             service: service,
-            remoteForwardControlPath: {
+            remoteForwardControlPath: { _ in
                 "/tmp/redacted-password-forward.sock"
             }
         )
@@ -563,7 +570,7 @@ struct NIOSessionWebTunnelServerTests {
         let controlPath = "/tmp/cancelled-password-forward.sock"
         let server = NIOSessionWebTunnelServer(
             service: service,
-            remoteForwardControlPath: { controlPath }
+            remoteForwardControlPath: { _ in controlPath }
         )
         let model = SessionWebTunnelModel(server: server)
         let tunnel = SessionWebTunnel(
@@ -597,6 +604,172 @@ struct NIOSessionWebTunnelServerTests {
         await startTask.value
         #expect(model.status(for: tunnel.id) == .idle)
         #expect(transport.commandsRun.count == connectedCommandCount + 2)
+    }
+
+    // MARK: - A helper left behind on the first host
+
+    /// What ssh says, on the first host, when the helper's port is taken there.
+    private static let portTaken = """
+        bind [127.0.0.1]:18443: Address already in use\r
+        channel_setup_fwd_listener_tcpip: cannot listen to port: 18443\r
+        Could not request local forwarding.\r
+        ssh exited with status 255
+        """
+
+    private func qasProxy() -> SessionWebTunnel {
+        SessionWebTunnel(label: "QAS Proxy", targetHost: "10.200.109.26", targetPort: 8443,
+                         hop: .init(username: "root", host: "10.200.107.247"))
+    }
+
+    @Test func theHopHelperListensOnAPortOfTheFirstHostNotOnThisDevicesPort() async throws {
+        // The forward's port on this device was also asked for on the first host.
+        // A helper that an earlier run of the app left behind still held it there,
+        // and every Start failed with "bind [127.0.0.1]:18443: Address already in use".
+        let (service, transport) = try await connectedSSHService()
+        transport.defaultCommandResponse = SessionWebTunnelRemoteForwardCommands.readyMarker
+        let server = NIOSessionWebTunnelServer(service: service, remoteForwardPort: { 28_443 })
+
+        let listener = try await server.start(tunnel: qasProxy()) { _ in }
+
+        let start = try #require(transport.commandsRun.last)
+        #expect(start.contains("127.0.0.1:28443:10.200.109.26:8443"))
+        #expect(!start.contains("127.0.0.1:\(listener.localPort):"))
+        let socket = try connectLoopback(port: listener.localPort)
+        try await waitUntil { !transport.openedDirectTCPIPTargets.isEmpty }
+        #expect(transport.openedDirectTCPIPTargets == [.init(host: "127.0.0.1", port: 28_443)])
+        Darwin.close(socket)
+        await listener.stop()
+    }
+
+    @Test func aHelperPortThatIsTakenOnTheFirstHostIsReplacedByAnother() async throws {
+        let (service, transport) = try await connectedSSHService()
+        let ports = NIOLockedValueBox([28_443, 28_444, 28_445])
+        transport.beforeCommand = { [unowned transport] command in
+            transport.defaultCommandResponse = command.contains("127.0.0.1:28443:")
+                ? Self.portTaken : SessionWebTunnelRemoteForwardCommands.readyMarker
+        }
+        let server = NIOSessionWebTunnelServer(
+            service: service, remoteForwardPort: { ports.withLockedValue { $0.removeFirst() } })
+
+        let listener = try await server.start(tunnel: qasProxy()) { _ in }
+
+        let starts = transport.commandsRun.filter { $0.contains(" -L ") }
+        #expect(starts.count == 2)
+        #expect(starts.last?.contains("127.0.0.1:28444:10.200.109.26:8443") == true)
+        let socket = try connectLoopback(port: listener.localPort)
+        try await waitUntil { !transport.openedDirectTCPIPTargets.isEmpty }
+        #expect(transport.openedDirectTCPIPTargets == [.init(host: "127.0.0.1", port: 28_444)])
+        Darwin.close(socket)
+        await listener.stop()
+    }
+
+    @Test func whenEveryHelperPortIsTakenTheUserReadsWhatSshSaid() async throws {
+        let (service, transport) = try await connectedSSHService()
+        transport.defaultCommandResponse = Self.portTaken
+        let ports = NIOLockedValueBox([28_443, 28_444, 28_445, 28_446])
+        let server = NIOSessionWebTunnelServer(
+            service: service, remoteForwardPort: { ports.withLockedValue { $0.removeFirst() } })
+        let forward = qasProxy()
+
+        await #expect {
+            _ = try await server.start(tunnel: forward) { _ in }
+        } throws: { error in
+            "\(error.localizedDescription)".contains("Address already in use")
+        }
+        // No more attempts than that, and a different port each time.
+        #expect(transport.commandsRun.filter { $0.contains(" -L ") }.count == 3)
+        #expect(ports.withLockedValue { $0 } == [28_446])
+    }
+
+    @Test func aFailureThatIsNotAboutThePortIsNotRetried() async throws {
+        let (service, transport) = try await connectedSSHService()
+        transport.defaultCommandResponse =
+            "root@10.200.107.247: Permission denied (publickey,password).\r\nssh exited with status 255"
+        let server = NIOSessionWebTunnelServer(service: service, remoteForwardPort: { 28_443 })
+        let forward = qasProxy()
+
+        await #expect(throws: SessionWebTunnelError.self) {
+            _ = try await server.start(tunnel: forward) { _ in }
+        }
+        #expect(transport.commandsRun.filter { $0.contains(" -L ") }.count == 1)
+    }
+
+    /// The helper commands for the QAS proxy forward, with a known forward id.
+    private func qasCommands(_ forward: UUID) -> SessionWebTunnelRemoteForwardCommands {
+        SessionWebTunnelRemoteForwardCommands(
+            tunnelID: forward, hop: .init(username: "root", host: "10.200.107.247"),
+            targetHost: "10.200.109.26", targetPort: 8443, remoteForwardPort: 28_443,
+            controlPath: SessionWebTunnelRemoteForwardCommands.controlPath(for: forward))
+    }
+
+    @Test func startingFirstRemovesTheHelpersLeftBehindForTheSameForward() throws {
+        let forward = try #require(UUID(uuidString: "3F2504E0-4F89-11D3-9A0C-0305E82C3301"))
+        let commands = qasCommands(forward)
+
+        #expect(commands.leftBehindPatterns == [
+            // Of this forward, whichever start of it left them.
+            "-M -S /tmp/ai-manager-web-tunnel-3f2504e04f89-[0-9a-f]+[.]sock -f -N ",
+            // Of this forward as older builds started it: no forward in the
+            // control path, so it is known by where it goes.
+            "-M -S /tmp/ai-manager-web-tunnel-[0-9A-F-]{36}[.]sock -f -N -p [0-9]+ "
+                + "-L 127[.]0[.]0[.]1:[0-9]+:10[.]200[.]109[.]26:8443 root@10[.]200[.]107[.]247$",
+        ])
+        // Each is handed to pkill, for this user's processes only, before the
+        // new helper is started: after it, the new helper would go with them.
+        let launch = try #require(commands.start.range(of: " -M -S '"))
+        for pattern in commands.leftBehindPatterns {
+            let sweep = try #require(commands.start.range(of: #"pkill -u "$(id -u)" -f -- '\#(pattern)'"#))
+            #expect(sweep.upperBound < launch.lowerBound)
+        }
+        // Stopping a forward stops its own helper and no other.
+        #expect(!commands.stop.contains("pkill"))
+        #expect(!commands.cancel.contains("pkill"))
+    }
+
+    @Test func theSweepMatchesHelpersAndNothingThatOnlyMentionsOne() throws {
+        let forward = UUID()
+        let commands = qasCommands(forward)
+        let tag = SessionWebTunnelRemoteForwardCommands.tag(for: forward)
+        let patterns = try commands.leftBehindPatterns.map { try Regex($0) }
+        func matched(_ commandLine: String) -> Bool { patterns.contains { commandLine.firstMatch(of: $0) != nil } }
+        let options = "ssh -o BatchMode=yes -o ExitOnForwardFailure=yes"
+
+        // An earlier start of this forward, and one from a build before this one.
+        #expect(matched("\(options) -M -S /tmp/ai-manager-web-tunnel-\(tag)-0a1b2c3d.sock -f -N -p 22 -L 127.0.0.1:28443:10.200.109.26:8443 root@10.200.107.247"))
+        #expect(matched("\(options) -M -S /tmp/ai-manager-web-tunnel-3F2504E0-4F89-11D3-9A0C-0305E82C3301.sock -f -N -p 22 -L 127.0.0.1:18443:10.200.109.26:8443 root@10.200.107.247"))
+
+        // pkill -f reads whole command lines, and the shell that runs the start
+        // command has the patterns in its own. Matching it would kill the start.
+        #expect(!matched(commands.start))
+        // Another forward of the same user: to another target, or with another id.
+        #expect(!matched("\(options) -M -S /tmp/ai-manager-web-tunnel-3F2504E0-4F89-11D3-9A0C-0305E82C3301.sock -f -N -p 22 -L 127.0.0.1:13389:10.200.109.26:3389 root@10.200.107.247"))
+        #expect(!matched("\(options) -M -S /tmp/ai-manager-web-tunnel-aaaaaaaaaaaa-0a1b2c3d.sock -f -N -p 22 -L 127.0.0.1:28443:10.200.109.26:8443 root@10.200.107.247"))
+        // The command that tells a helper to exit, and a user looking at its socket.
+        #expect(!matched("ssh -S /tmp/ai-manager-web-tunnel-\(tag)-0a1b2c3d.sock -p 22 -O exit root@10.200.107.247"))
+        #expect(!matched("ls -l /tmp/ai-manager-web-tunnel-\(tag)-0a1b2c3d.sock"))
+    }
+
+    @Test func aHelpersControlPathNamesItsForwardAndFitsASocketPath() throws {
+        let forward = try #require(UUID(uuidString: "3F2504E0-4F89-11D3-9A0C-0305E82C3301"))
+        let first = SessionWebTunnelRemoteForwardCommands.controlPath(for: forward)
+        let second = SessionWebTunnelRemoteForwardCommands.controlPath(for: forward)
+
+        #expect(first.hasPrefix("/tmp/ai-manager-web-tunnel-3f2504e04f89-"))
+        #expect(first.hasSuffix(".sock"))
+        #expect(first != second, "Each start has a socket of its own")
+        // ssh appends 17 characters while it creates the socket, and macOS allows 103.
+        #expect(first.count + 17 <= 103)
+    }
+
+    @Test func aTargetWithRegexCharactersCannotWidenTheSweep() {
+        let commands = SessionWebTunnelRemoteForwardCommands(
+            tunnelID: UUID(), hop: .init(username: "root", host: "jump.*"),
+            targetHost: "target|sshd", targetPort: 8443, remoteForwardPort: 28_443,
+            controlPath: "/tmp/x.sock")
+
+        // Each character that means something to a regular expression is made
+        // literal, so the pattern can match no process but the one it names.
+        #expect(commands.start.contains(":target[|]sshd:8443 root@jump[.][*]$'"))
     }
 }
 
