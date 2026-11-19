@@ -133,9 +133,15 @@ packages:
     # re-exports the SPI symbols Citadel needs (NIOSSHTransportProtection, etc.).
     # We must point the swift-nio-ssh package at the SAME fork + tag Citadel
     # pins, otherwise SPM substitutes apple/swift-nio-ssh and Citadel fails to
-    # compile. apple's upstream does NOT have a 0.3.4 tag.
+    # compile. apple's upstream does NOT have these tags.
+    #
+    # Not older than 0.3.7: before it the library trapped
+    # (ChildChannelStateMachine.sendChannelWindowAdjust) when data arrived on a
+    # channel the app had just closed, which is a forwarded connection or a page
+    # given up mid-download. That took the whole app down; see
+    # Tests/SSHChannelClosedMidTransferTests.swift. Citadel accepts 0.3.4 ..< 0.4.0.
     url: https://github.com/Wellz26/swift-nio-ssh.git
-    exactVersion: 0.3.4
+    exactVersion: 0.3.7
   Citadel:
     url: https://github.com/orlandos-nl/Citadel.git
     from: 0.12.1

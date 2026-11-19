@@ -87,8 +87,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/Wellz26/swift-nio-ssh.git",
       "state" : {
-        "revision" : "b93961a2988607a756cbc21a811f406f27aa9ab6",
-        "version" : "0.3.4"
+        "revision" : "d88989f3d3bb1dfb2a38ce4af598afbf7fc3095c",
+        "version" : "0.3.7"
       }
     },
     {
