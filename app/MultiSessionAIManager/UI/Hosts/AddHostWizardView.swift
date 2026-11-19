@@ -140,7 +140,15 @@ struct AddHostWizardView: View {
                 if !model.herdrReady {
                     Text("Verify Herdr first, then install the host service for agents, updates, and hardware metrics.")
                         .foregroundStyle(Theme.textSecondary)
+                } else if model.needsPython, let python = model.python {
+                    pythonStatus(python, model)
+                    Text("Host service: waiting for Python")
+                        .foregroundStyle(Theme.textSecondary)
                 } else {
+                    if case .ready(let version)? = model.python?.state {
+                        Label("Python \(version) is ready", systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(Theme.success)
+                    }
                     switch model.metricsState {
                     case .idle:
                         Text("Host service: ready to install")
@@ -170,6 +178,38 @@ struct AddHostWizardView: View {
                 }
             }
         }
+    }
+
+    /// The step a Windows host has before its services: Python, which they run on.
+    @ViewBuilder
+    private func pythonStatus(_ python: WindowsPythonInstaller, _ model: AddHostProvisioningModel) -> some View {
+        switch python.state {
+        case .idle, .probing:
+            progress("Checking for Python…")
+        case .ready:
+            EmptyView()
+        case .installing(let plan):
+            progress("Installing Python. This can take a few minutes…")
+            if let value = plan.command { command(value) }
+        case .absent(let plan):
+            problem(plan.explanation)
+            pythonActions(plan, model)
+        case .failed(let message, let plan):
+            problem(message)
+            if let plan { pythonActions(plan, model) } else { retryDiscovery(model) }
+        }
+    }
+
+    @ViewBuilder
+    private func pythonActions(_ plan: WindowsPythonPlan, _ model: AddHostProvisioningModel) -> some View {
+        if let value = plan.command {
+            command(value)
+            NeonButton(title: "Install Python", systemImage: "arrow.down.circle", enabled: !isWorking) {
+                run { await model.installPython() }
+            }
+            .accessibilityIdentifier("host.setup.install-python")
+        }
+        retryDiscovery(model)
     }
 
     @ViewBuilder

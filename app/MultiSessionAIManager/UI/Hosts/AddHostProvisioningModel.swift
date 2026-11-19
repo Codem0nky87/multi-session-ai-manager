@@ -2,6 +2,8 @@ import Foundation
 import Observation
 
 /// Step 2's dependencies: verified Herdr, then metrics and the updater service.
+/// On Windows, Python comes before the services: they are written in it and
+/// Windows does not come with it.
 /// Discovery is read-only; mutations are separate, explicit wizard actions.
 @MainActor @Observable
 final class AddHostProvisioningModel {
@@ -16,6 +18,8 @@ final class AddHostProvisioningModel {
     let herdr: HerdrInstaller
     let updater: AgentUpdaterInstaller
     let integrations: HerdrIntegrationManager
+    /// Python on a Windows host; nil for every other kind of host, which has it.
+    private(set) var python: WindowsPythonInstaller?
     private(set) var metricsState: MetricsState = .idle
     private(set) var isBusy = false
     private var updaterSkipped = false
@@ -35,6 +39,11 @@ final class AddHostProvisioningModel {
         default:
             return false
         }
+    }
+
+    /// True while a Windows host has no Python for the services to run on.
+    var needsPython: Bool {
+        python.map { !$0.isReady } ?? false
     }
 
     var updaterSetup: HostAgentUpdaterSetup {
@@ -71,6 +80,23 @@ final class AddHostProvisioningModel {
         if connection.state != .connected { await connection.connect() }
         guard connection.state == .connected, !Task.isCancelled else { return }
         await herdr.probe()
+        guard !Task.isCancelled else { return }
+        await probePython()
+    }
+
+    private func probePython() async {
+        guard connection.provisioningCommandRunner?.isWindows == true else { return }
+        let python = self.python ?? WindowsPythonInstaller(connection: connection)
+        self.python = python
+        await python.probe()
+    }
+
+    func installPython() async {
+        guard !isBusy, !Task.isCancelled, connection.state == .connected,
+              let python, python.canInstall else { return }
+        isBusy = true
+        defer { isBusy = false }
+        await python.install()
     }
 
     func installHerdr() async {
@@ -92,6 +118,12 @@ final class AddHostProvisioningModel {
         defer { isBusy = false }
 
         updaterSkipped = false
+
+        if service.isWindows, python?.isReady != true {
+            // It may have been installed at the host itself since it was last looked for.
+            await probePython()
+            guard !needsPython, !Task.isCancelled else { return }
+        }
 
         if metricsState != .ready {
             metricsState = .installing

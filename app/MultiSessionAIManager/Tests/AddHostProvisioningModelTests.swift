@@ -177,6 +177,82 @@ struct AddHostProvisioningModelTests {
         #expect(!model.canContinue)
     }
 
+    // MARK: Windows: Python comes first
+
+    @Test func aWindowsHostWithoutPythonListsThatStepBeforeAnyService() async throws {
+        let (model, transport) = try await windowsFixture()
+        stub(transport, ["herdr 0.9.5", pythonAbsent])
+        await model.discover()
+        #expect(model.herdrReady)
+        #expect(model.python?.state == .absent(.init(command: WindowsPythonInstaller.machineCommand,
+                                                    explanation: WindowsPythonInstaller.machineExplanation)))
+        #expect(model.needsPython)
+        // Asking for the services finds Python still missing and uploads nothing.
+        stub(transport, [pythonAbsent])
+        await model.installServices()
+        #expect(transport.writtenFiles.isEmpty)
+        #expect(model.metricsState == .idle)
+        #expect(!model.canContinue)
+    }
+
+    @Test func onceWindowsHasPythonTheServicesInstall() async throws {
+        let (model, transport) = try await windowsFixture()
+        stub(transport, ["herdr 0.9.5", pythonAbsent])
+        await model.discover()
+        stub(transport, ["Successfully installed", pythonPresent])
+        await model.installPython()
+        #expect(model.python?.state == .ready(version: "3.14.0"))
+        #expect(!model.needsPython)
+        stub(transport, installedOnWindows + [windowsContext, "present", windowsVerification])
+        await model.installServices()
+        #expect(model.canContinue)
+        #expect(transport.writtenFiles.keys.contains { $0.hasSuffix("/msam-host-agent.py") })
+    }
+
+    @Test func pythonInstalledAtTheHostItselfIsFoundWhenTheServicesAreAskedFor() async throws {
+        let (model, transport) = try await windowsFixture()
+        stub(transport, ["herdr 0.9.5", pythonAbsent])
+        await model.discover()
+        stub(transport, [pythonPresent] + installedOnWindows + [windowsContext, "present", windowsVerification])
+        await model.installServices()
+        #expect(model.python?.state == .ready(version: "3.14.0"))
+        #expect(model.canContinue)
+    }
+
+    @Test func aWindowsHostThatHasPythonIsNotAskedToInstallIt() async throws {
+        let (model, transport) = try await windowsFixture()
+        stub(transport, ["herdr 0.9.5", pythonPresent])
+        await model.discover()
+        #expect(!model.needsPython)
+        let before = transport.commandsRun
+        await model.installPython()
+        #expect(transport.commandsRun == before)
+    }
+
+    @Test func anotherKindOfHostIsNeverAskedAboutPython() async throws {
+        let (model, transport) = try await fixture()
+        stub(transport, ["herdr 0.8.2"])
+        await model.discover()
+        #expect(model.python == nil)
+        #expect(!model.needsPython)
+    }
+
+    private let pythonAbsent = "MSAM_PYTHON=\nMSAM_WINDOWS=server\nMSAM_STORE=no\nMSAM_WINGET=yes"
+    private let pythonPresent = "MSAM_PYTHON=3.14.0\nMSAM_WINDOWS=server\nMSAM_STORE=no\nMSAM_WINGET=yes"
+    private let windowsContext = "MSAM_HOME=C:\\Users\\Administrator\nMSAM_OS=Windows_NT\nMSAM_UID=0"
+    private let windowsVerification = "MSAM_VERIFY_BEGIN\nprotocol=1\nservice=active\nwritable=yes\nselftest=yes\nplatform=Windows_NT\nlinger=n/a\nMSAM_VERIFY_END"
+
+    private var installedOnWindows: [String] {
+        ["MSAM_HOME=C:\\Users\\Administrator", "prepared",
+         #"MSAM_HOST_STATUS={"installed":true,"running":true,"disabled":false,"version":"1.2.0","metrics":true,"updates":true}"#,
+         "cleaned"]
+    }
+
+    private func windowsFixture() async throws -> (AddHostProvisioningModel, FakeSSHTransport) {
+        let (connection, transport) = try await WindowsHostFixture.connected()
+        return (AddHostProvisioningModel(connection: connection), transport)
+    }
+
     private let context = "MSAM_HOME=/home/alice\nMSAM_OS=Linux\nMSAM_UID=1000"
 
     private var installedMetrics: [String] {
