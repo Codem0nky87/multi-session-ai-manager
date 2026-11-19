@@ -56,6 +56,10 @@ Uploads are capped at **100 MB**.
 
 There is no push channel, so the iPad watches a queue and pulls what appears.
 
+This direction is for Linux and macOS hosts. `msam-send` and the watch are
+Unix shell, so on a Windows host **Send files here** is unavailable and the
+app does not start the watch.
+
 ### Setting it up
 
 1. **Host Setup → Plugins** → install **`smarzban/herdr-file-viewer`**.

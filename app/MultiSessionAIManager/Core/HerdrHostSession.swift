@@ -295,6 +295,11 @@ final class HerdrHostSession {
     /// Open (or reopen) the outbox watch. Safe to call repeatedly.
     func ensureWatching() async {
         guard status == .live, let service = connection.provisioningCommandRunner else { return }
+        // The watch is a Unix shell script, and nothing on a Windows host
+        // queues a file for it (setting that up is refused there). Sent to
+        // Windows it does harm: cmd.exe runs its first line as its own
+        // `mkdir` and leaves folders named "-p" and "$HOME" in the profile.
+        guard !service.isWindows else { return }
         guard watchChannel?.isOpen != true else { return }
         if let watchTask {
             await watchTask.value

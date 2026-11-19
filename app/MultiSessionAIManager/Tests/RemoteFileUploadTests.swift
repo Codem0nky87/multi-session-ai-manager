@@ -527,8 +527,7 @@ import UIKit
 /// was written to, as Windows names it.
 @Suite @MainActor struct HerdrHostSessionWindowsFileSendTests {
 
-    @Test func aLiveWindowsTabUploadsThenTypesTheWindowsPath() async throws {
-        let transport = FakeSSHTransport()
+    private func makeLiveSession(transport: FakeSSHTransport) async throws -> HerdrHostSession {
         transport.commandResponses["echo %OS% $env:OS"] = "Windows_NT"
         transport.commandResponses[RemoteFileUpload.windowsPrepareCommand] = "MSAM_HOME=C:\\Users\\alice\r\n"
         let keyStore = KeyStore(backing: InMemoryKeychain())
@@ -545,6 +544,12 @@ import UIKit
         )
         await session.start()
         #expect(session.status == .live)
+        return session
+    }
+
+    @Test func aLiveWindowsTabUploadsThenTypesTheWindowsPath() async throws {
+        let transport = FakeSSHTransport()
+        let session = try await makeLiveSession(transport: transport)
 
         let path = try await session.sendFile(Data([0x89, 0x50, 0x4E, 0x47]), fileExtension: "png")
 
@@ -552,5 +557,20 @@ import UIKit
         #expect(transport.writtenFiles[path.replacingOccurrences(of: "\\", with: "/")] != nil)
         let typed = String(decoding: try #require(transport.openedPTYs.last).sent, as: UTF8.self)
         #expect(typed.hasSuffix(path + " "))
+    }
+
+    @Test func aWindowsHostIsNeverSentTheUnixWatchForFilesComingBack() async throws {
+        // That watch is a Unix shell script, sent as it stands. A Windows host
+        // has nothing that queues a file for it, and cmd.exe runs the script's
+        // first line, `mkdir -p "$HOME/.msam"`, as its own `mkdir`: that leaves
+        // folders named "-p" and "$HOME" in the account's profile.
+        let transport = FakeSSHTransport()
+        let session = try await makeLiveSession(transport: transport)
+
+        await session.ensureWatching()
+
+        let watch = RemoteFileDownload.watchCommand(identity: session.watchIdentity)
+        #expect(!transport.openedPTYs.contains { $0.command == watch })
+        #expect(transport.openedPTYs.count == 1)
     }
 }
