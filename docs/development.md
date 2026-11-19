@@ -562,6 +562,15 @@ older collector still decodes.
 and builds for the simulator with signing disabled, on push to `main` and on
 every pull request.
 
+Two jobs run on a Windows machine, because nothing else here can run a Windows
+host's scripts: `windows-metrics` exercises the PowerShell collector, and
+`windows-browser-space` runs the browser space's placeholder in a real
+pseudo-console (`tests/test_msam_browser_space_windows.py`).
+
+A push to a branch named `ci/…` runs the same jobs without a pull request. That
+is the way to try a Windows script before it reaches `main`: push the work to
+`ci/<name>`, read the Windows jobs, delete the branch.
+
 ## Conventions
 
 - Swift 6, `@MainActor` by default. Framework completion handlers that can fire

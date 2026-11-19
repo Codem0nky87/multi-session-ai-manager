@@ -1,5 +1,5 @@
 name: ci
-on: { push: { branches: [main] }, pull_request: {} }
+on: { push: { branches: [main, 'ci/**'] }, pull_request: {} }
 jobs:
   windows-metrics:
     runs-on: windows-latest
@@ -8,6 +8,15 @@ jobs:
       - name: Exercise Windows collector and JSON payloads
         shell: powershell
         run: ./tests/test_msam_metrics_windows.ps1
+  windows-browser-space:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run the browser space placeholder in a Windows pseudo-console
+        shell: powershell
+        run: |
+          python -m pip install --quiet pywinpty pyte
+          python -B -m unittest discover -s tests -p "test_msam_browser_space_windows.py" -v
   app:
     runs-on: macos-15
     env:

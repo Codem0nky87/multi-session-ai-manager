@@ -62,7 +62,8 @@ and the page is fully visible there.
 - **"new" is recognised by its text.** With the sidebar collapsed, or a Herdr
   that words the label differently, a tap on it goes straight to Herdr. The tab
   menu entry always works.
-- **Unix hosts only.**
+- **On a Windows host the pane's shell stays underneath.** See
+  [On a Windows host](#on-a-windows-host).
 
 ## How it works
 
@@ -84,7 +85,9 @@ real item to Herdr's list. It does this instead:
    connection and in the tab's own Herdr session:
    `herdr workspace create --label Browser --focus`, then the placeholder is
    written to `~/.local/share/msam/browser-space.sh` and made the new pane's
-   process with `herdr pane run <pane> exec sh …`.
+   process with `herdr pane run <pane> exec sh …`. A Windows host is sent the
+   same two Herdr commands and a placeholder of its own
+   ([below](#on-a-windows-host)).
 2. **The placeholder** (`Resources/msam-browser-space.sh`, plain `sh`) fills
    its pane with `░` and writes `[[AIM-BROWSER <id> <cols>x<rows>]]` at the top
    left: which space this is, and how big its pane is. It repaints when the
@@ -105,6 +108,38 @@ real item to Herdr's list. It does this instead:
    before it is sent to Herdr. It is taken only when the tapped row's sidebar
    part reads `new` … `menu` and the tap is on `new`; choosing Workspace then
    sends Herdr the tap it would have had.
+
+### On a Windows host
+
+Herdr gives a pane a Windows pseudo-console there, and the pane's shell is
+PowerShell, not `sh`. From the app a browser space is opened and used the same
+way; what differs is on the host.
+
+- **The placeholder is `Resources/msam-browser-space.ps1`**, written for
+  Windows PowerShell 5.1, which every Windows has. It is sent over SFTP to
+  `.local\share\msam\browser-space.ps1` under the account's profile, and it
+  is sent before the space is made: a host that cannot take it is not left
+  with an empty "Browser" space.
+- **One line typed into the new pane starts it:**
+  `powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File C:/Users/alice/.local/share/msam/browser-space.ps1 7f3a2c`.
+  The line reads the same in PowerShell 7, Windows PowerShell and cmd,
+  whichever the pane runs. The path has forward slashes, and is in quotes when
+  the profile's name has a space in it.
+- **It fills the pane through the console's screen buffer**, the way
+  `Clear-Host` clears one, so the last cell is filled without the pane
+  scrolling. Windows sends no signal when a console changes size; the
+  placeholder looks ten times a second and paints again when the size is
+  another.
+- **Ctrl-C, and anything else typed at the pane, is thrown away.** Windows has
+  no `exec`, so the pane's shell waits underneath the placeholder. Both end
+  when Herdr closes the pane. Were the placeholder ended on its own, the space
+  would be a plain shell again, and nothing typed at the browser space
+  meanwhile would be run by it.
+
+`tests/test_msam_browser_space_windows.py` types that line into Windows
+PowerShell, PowerShell 7 and cmd in a real pseudo-console and reads the screen
+back the way the app does. It needs Windows, so CI runs it
+(`windows-browser-space`).
 
 ### The keyboard and a change of size
 
