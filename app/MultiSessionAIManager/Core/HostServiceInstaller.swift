@@ -16,6 +16,24 @@ enum HostServiceInstaller {
         /// updater protocol, and content digests for the remaining scripts).
         /// Absent from agents older than 1.1.0.
         let components: [String: String]?
+        /// How long the host took over its last reading, in seconds. Absent
+        /// from agents older than 1.2.1.
+        let sampleSeconds: Double?
+
+        /// What the Host Service sheet says about metrics.
+        var metricsSummary: String {
+            guard metrics == true else { return "Unavailable" }
+            // A slow reading is why the numbers move slowly: on Windows each
+            // one starts a PowerShell.
+            guard let sampleSeconds, sampleSeconds >= 3 else { return "Collecting" }
+            return "Collecting, a reading takes \(Int(sampleSeconds.rounded())) s"
+        }
+
+        /// Why there are no readings, in the host's own words.
+        var metricsProblem: String? {
+            guard metrics != true, let error, !error.isEmpty else { return nil }
+            return error
+        }
 
         var setupState: HostAgentUpdaterSetup {
             installed && running && !disabled && updates == true ? .ready : .unchecked

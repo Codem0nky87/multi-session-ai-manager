@@ -16,7 +16,7 @@ import threading
 import time
 import urllib.parse
 
-VERSION = '1.2.0'
+VERSION = '1.2.1'
 ROOT = Path(__file__).resolve().parent
 HOME = Path(os.environ.get('MSAM_HOST_HOME', str(Path.home())))
 STATE = HOME / '.local/state/msam-host-agent'
@@ -37,6 +37,15 @@ ATTENTION_LIMIT = 20
 # An unchanged summary is repeated this often, so a reader can tell a quiet
 # host from a dead stream.
 ATTENTION_HEARTBEAT = 15
+# Windows refuses to replace a file another program has open, and to open one
+# that is being replaced. Both pass within a moment.
+REPLACE_TRIES, REPLACE_PAUSE = 40, 0.05
+READ_TRIES, READ_PAUSE = 5, 0.02
+# How long a metrics stream waits out a service that looks stopped or a reading
+# that failed, before it gives up and says so.
+STREAM_PATIENCE = 20
+# How long the Windows service waits before it starts its work again.
+SERVICE_RETRY = 5
 
 # Per-component versions for the service status. Scripts that declare one
 # report it verbatim; the rest report a short content digest so the app can
@@ -86,14 +95,30 @@ def atomic_json(path, value):
     temp = path.with_name(path.name + '.' + str(os.getpid()) + '.tmp')
     temp.write_text(json.dumps(value, allow_nan=False) + '\n')
     temp.chmod(0o600)
-    os.replace(temp, path)
+    for attempt in range(REPLACE_TRIES):
+        try:
+            os.replace(temp, path)
+            return
+        except PermissionError:
+            # A reader has the file open (Windows). It lets go within a moment.
+            if attempt == REPLACE_TRIES - 1:
+                with contextlib.suppress(OSError):
+                    temp.unlink()
+                raise
+            time.sleep(REPLACE_PAUSE)
 
 
 def read_json(path, fallback=None):
-    try:
-        return json.loads(path.read_text())
-    except (OSError, ValueError):
-        return fallback
+    for attempt in range(READ_TRIES):
+        try:
+            return json.loads(path.read_text())
+        except PermissionError:
+            # The file is being replaced at this instant (Windows).
+            if attempt < READ_TRIES - 1:
+                time.sleep(READ_PAUSE)
+        except (OSError, ValueError):
+            break
+    return fallback
 
 
 def load_module(name, filename):
@@ -394,57 +419,90 @@ def serve():
     os.environ.update(environment())
     STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
     module = load_module('metrics', 'msam-metrics.py')
+
+    def report(reading):
+        detail = {'version': VERSION, 'components': COMPONENT_VERSIONS,
+                  'pid': os.getpid(), 'heartbeat': time.time(),
+                  'updates': not (STATE / 'updater-error.json').exists(),
+                  'agents': not read_json(STATE / 'agents.json', {}).get('error'), **reading}
+        # A status that cannot be written now is written on the next round.
+        # The service must not stop over it: nothing would start it again.
+        with contextlib.suppress(OSError):
+            atomic_json(STATE / 'status.json', detail)
+
     with singleton(STATE / 'daemon.lock'):
         threading.Thread(target=background_updates, daemon=True).start()
         threading.Thread(target=background_inventory, daemon=True).start()
         threading.Thread(target=background_provider_pulse, daemon=True).start()
+        reading = {'metrics': False}
         try:
             while not STOP.is_set():
                 started = time.monotonic()
-                detail = {'version': VERSION, 'components': COMPONENT_VERSIONS,
-                          'pid': os.getpid(), 'heartbeat': time.time(),
-                          'metrics': False, 'updates': not (STATE / 'updater-error.json').exists(),
-                          'agents': not read_json(STATE / 'agents.json', {}).get('error')}
+                # Said before a reading as well as after it. A reading can take
+                # many seconds (on Windows each one starts a PowerShell), and
+                # the service counts as running only while its heartbeat is
+                # recent: stamped once a round, a slow reading made a running
+                # service look stopped.
+                report(reading)
                 try:
                     atomic_json(STATE / 'metrics.json', sample_metrics(module))
-                    detail['metrics'] = True
+                    reading = {'metrics': True}
                 except Exception as error:
-                    detail['error'] = str(error)
-                atomic_json(STATE / 'status.json', detail)
+                    reading = {'metrics': False, 'error': str(error)}
+                reading['sampleSeconds'] = round(time.monotonic() - started, 1)
+                report(reading)
                 STOP.wait(max(0.1, 2 - (time.monotonic() - started)))
         finally:
-            atomic_json(STATE / 'status.json', {'version': VERSION, 'components': COMPONENT_VERSIONS,
-                                                'heartbeat': 0, 'pid': os.getpid(), 'metrics': False})
+            with contextlib.suppress(OSError):
+                atomic_json(STATE / 'status.json', {'version': VERSION, 'components': COMPONENT_VERSIONS,
+                                                    'heartbeat': 0, 'pid': os.getpid(), 'metrics': False})
 
 
 def serve_as_service():
     """`serve` for the Windows service, which has nowhere to print.
 
-    What stopped it is left where the installer looks when the service does
-    not come up.
+    What stopped the work is left where the installer looks when the service
+    does not come up, and the work is started again: Windows restarts a
+    service that crashes, not one that stops by itself.
     """
     note = STATE / 'service-error.json'
     note.unlink(missing_ok=True)
-    try:
-        serve()
-    except Exception as error:
-        with contextlib.suppress(OSError):
-            atomic_json(note, {'message': str(error), 'at': time.time()})
-        raise
+    while True:
+        try:
+            return serve()
+        except Exception as error:
+            with contextlib.suppress(OSError):
+                atomic_json(note, {'message': str(error), 'at': time.time()})
+        if STOP.wait(SERVICE_RETRY):
+            return
 
 
 def stream_metrics(loop):
-    last = None
+    """Prints each new reading. The app shows the last one it was sent and
+    nothing else, so a stream that ends is a display that has stopped: it rides
+    out a service that is being replaced, a reading that failed and a file it
+    could not open just then, and ends only when that lasts."""
+    last = troubled = None
     while True:
-        current = status()
-        if not current['running']:
-            raise RuntimeError('The MSAM host service is stopped. Start it from Manage Hosts.')
-        if not current.get('metrics'):
-            raise RuntimeError(current.get('error', 'The host service has no current metrics.'))
-        path = STATE / 'metrics.json'
-        stamp = path.stat().st_mtime_ns
-        if stamp != last:
-            print(path.read_text().strip(), flush=True)
+        text = None
+        try:
+            current = status()
+            if not current['running']:
+                raise RuntimeError('The MSAM host service is stopped. Start it from Manage Hosts.')
+            if not current.get('metrics'):
+                raise RuntimeError(current.get('error', 'The host service has no current metrics.'))
+            path = STATE / 'metrics.json'
+            stamp = path.stat().st_mtime_ns
+            if stamp != last:
+                text = path.read_text().strip()
+            troubled = None
+        except (RuntimeError, OSError):
+            now = time.monotonic()
+            troubled = now if troubled is None else troubled
+            if not loop or now - troubled >= STREAM_PATIENCE:
+                raise
+        if text is not None:
+            print(text, flush=True)
             last = stamp
         if not loop:
             return

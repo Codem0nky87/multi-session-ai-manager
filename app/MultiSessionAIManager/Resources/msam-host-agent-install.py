@@ -146,11 +146,23 @@ def build_mac_launcher(release):
         temporary.unlink(missing_ok=True)
 
 
+def read_status():
+    """What the service last said. On Windows the file cannot be opened at the
+    instant the service replaces it; that passes within a moment, and must not
+    read as a service that has stopped."""
+    for attempt in range(5):
+        try:
+            return json.loads((STATE / 'status.json').read_text())
+        except PermissionError:
+            if attempt < 4:
+                time.sleep(0.02)
+        except (OSError, ValueError):
+            break
+    return {}
+
+
 def get_status():
-    try:
-        value = json.loads((STATE / 'status.json').read_text())
-    except (OSError, ValueError):
-        value = {}
+    value = read_status()
     value['disabled'] = (STATE / 'disabled').exists()
     value['installed'] = (BASE / 'current/msam-host-agent.py').is_file() and not value['disabled']
     value['running'] = value['installed'] and value.get('heartbeat', 0) > time.time() - 15

@@ -65,8 +65,12 @@ struct HostServiceSheet: View {
                             }
                         }
                         if status.running {
-                            LabeledContent("Metrics", value: status.metrics == true ? "Collecting" : "Unavailable")
+                            LabeledContent("Metrics", value: status.metricsSummary)
                                 .accessibilityIdentifier("host.service.metrics")
+                            if let problem = status.metricsProblem {
+                                Text(problem).font(.footnote).foregroundStyle(.red).textSelection(.enabled)
+                                    .accessibilityIdentifier("host.service.metrics.problem")
+                            }
                             LabeledContent("Agent updates", value: status.updates == true ? "Ready" : "Unavailable")
                         }
                     } else {

@@ -417,8 +417,10 @@ removes one per-user service for shared hardware metrics, Herdr agent inventory,
 and durable agent updates. Linux uses `msam-host-agent.service` under the user's
 systemd manager with linger enabled. macOS uses the logged-in user's
 `com.codem0nky87.msam-host-agent` LaunchAgent; that account must remain logged in.
-Windows uses the native `MSAMHostAgent` Windows service under the account that
-owns the agents. Python 3.9 or newer and Herdr must be installed on the host.
+Windows uses the native `MSAMHostAgent` Windows service, which runs as SYSTEM
+and works in the profile of the account that owns the agents (see
+[host-setup.md](host-setup.md#windows-hosts)). Python 3.9 or newer and Herdr
+must be installed on the host.
 
 The app stages a complete checksummed bundle, validates it before activation,
 and keeps releases under `~/.local/libexec/msam-host-agent/releases`. The
@@ -435,6 +437,32 @@ Older app builds still use the old collector installer, so update the app when
 migrating hosts. Metrics channels briefly reconnect during maintenance; terminal
 sessions continue running. Logs and snapshots live in
 `~/.local/state/msam-host-agent`.
+
+The service and the app's streams meet in those snapshot files: the service
+replaces `status.json` and `metrics.json` every round, and a stream reads them
+twice a second. Three rules keep that from stopping the display:
+
+- **A refused replace or read is tried again.** Windows will not replace a file
+  another program has open, nor open one that is being replaced. Both pass
+  within a moment, so the writer and the readers each wait for the other. A
+  status that still cannot be written is written on the next round; the
+  service never stops over it.
+- **The heartbeat does not wait for a reading.** The service is "running" while
+  its heartbeat is under 15 seconds old, and it stamps one before a reading as
+  well as after. On Windows every reading starts a PowerShell and takes
+  seconds; stamped once a round, that made a running service look stopped.
+- **A stream rides out 20 seconds of trouble** (a service being replaced, a
+  reading that failed, a file it could not open) before it ends and says why.
+  The app shows the last reading it was sent, so a stream that ends is a
+  display that has stopped.
+
+The Windows service also starts its work again five seconds after it falls
+over, and leaves the reason in `service-error.json`. Windows restarts a service
+that crashes, not one that stops by itself.
+
+**Host Service** shows what the service last said: *Metrics* reads
+"Collecting", with "a reading takes N s" when one takes three seconds or more,
+or "Unavailable" with the host's own reason underneath.
 
 Read-only checks on Linux and macOS:
 

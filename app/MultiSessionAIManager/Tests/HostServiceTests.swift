@@ -23,6 +23,36 @@ import Testing
         #expect(legacy.components == nil)
     }
 
+    @Test func theSheetSaysWhenAReadingTakesLong() throws {
+        // On Windows every reading starts a PowerShell. How long that takes is
+        // why the numbers move slowly, and nobody is at the host to time it.
+        let slow = try HostServiceInstaller.parseStatus(
+            #"MSAM_HOST_STATUS={"installed":true,"running":true,"disabled":false,"version":"1.2.1","metrics":true,"sampleSeconds":9.2}"#)
+        #expect(slow.sampleSeconds == 9.2)
+        #expect(slow.metricsSummary == "Collecting, a reading takes 9 s")
+        let quick = try HostServiceInstaller.parseStatus(
+            #"MSAM_HOST_STATUS={"installed":true,"running":true,"disabled":false,"version":"1.2.1","metrics":true,"sampleSeconds":0.4}"#)
+        #expect(quick.metricsSummary == "Collecting")
+        // Agents older than 1.2.1 do not say.
+        let older = try HostServiceInstaller.parseStatus(ready)
+        #expect(older.sampleSeconds == nil)
+        #expect(older.metricsSummary == "Collecting")
+    }
+
+    @Test func aServiceWithoutReadingsSaysWhyInTheHostsWords() throws {
+        let failed = try HostServiceInstaller.parseStatus(
+            #"MSAM_HOST_STATUS={"installed":true,"running":true,"disabled":false,"version":"1.2.1","metrics":false,"sampleSeconds":15.0,"error":"powershell.exe timed out after 15 seconds"}"#)
+        #expect(failed.metricsSummary == "Unavailable")
+        #expect(failed.metricsProblem == "powershell.exe timed out after 15 seconds")
+        // A reason left over from an earlier reading is not shown beside good ones.
+        let recovered = try HostServiceInstaller.parseStatus(
+            #"MSAM_HOST_STATUS={"installed":true,"running":true,"disabled":false,"version":"1.2.1","metrics":true,"error":"earlier"}"#)
+        #expect(recovered.metricsProblem == nil)
+        let silent = try HostServiceInstaller.parseStatus(
+            #"MSAM_HOST_STATUS={"installed":true,"running":true,"disabled":false,"version":"1.2.1","metrics":false}"#)
+        #expect(silent.metricsProblem == nil)
+    }
+
     @Test func manifestComparisonIdentifiesOutdatedHostScripts() throws {
         let expected = ["msam-metrics.py": "hash_v2", "msam-host-agent.py": "hash_v1"]
         let matching = ["msam-metrics.py": "hash_v2", "msam-host-agent.py": "hash_v1"]

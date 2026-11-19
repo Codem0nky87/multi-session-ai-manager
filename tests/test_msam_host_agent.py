@@ -1177,17 +1177,326 @@ class SetupDiagnosisTests(unittest.TestCase):
 
     def test_a_service_that_stops_leaves_a_note_of_why(self):
         # A Windows service has nowhere to print.
+        self.agent.STOP = FakeStop(rounds=1)
         with patch.object(self.agent, 'serve', side_effect=RuntimeError('The host worker is already running.')):
-            with self.assertRaises(RuntimeError):
-                self.agent.serve_as_service()
+            self.agent.serve_as_service()
         note = json.loads((self.agent.STATE / 'service-error.json').read_text())
         self.assertEqual(note['message'], 'The host worker is already running.')
+
+    def test_a_status_caught_while_it_is_being_replaced_is_not_taken_for_a_stopped_service(self):
+        # The app reinstalls a service it finds stopped. On Windows a status
+        # read at the instant it is replaced is refused, which must not read
+        # as "stopped".
+        self.installer.BASE = self.home / '.local/libexec/msam-host-agent'
+        current = self.installer.BASE / 'current'
+        current.mkdir(parents=True)
+        (current / 'msam-host-agent.py').write_text('')
+        (self.installer.STATE / 'status.json').write_text(json.dumps({'heartbeat': time.time(), 'metrics': True}))
+        real, refusals = Path.read_text, [REFUSED]
+
+        def read(path, *args, **kwargs):
+            if path.name == 'status.json' and refusals:
+                raise refusals.pop()
+            return real(path, *args, **kwargs)
+
+        with patch.object(Path, 'read_text', read), patch.object(self.installer.time, 'sleep'):
+            status = self.installer.get_status()
+        self.assertTrue(status['running'])
+        self.assertTrue(status['metrics'])
 
     def test_a_service_that_starts_takes_back_the_note_of_its_last_failure(self):
         (self.agent.STATE / 'service-error.json').write_text(json.dumps({'message': 'earlier'}))
         with patch.object(self.agent, 'serve'):
             self.agent.serve_as_service()
         self.assertFalse((self.agent.STATE / 'service-error.json').exists())
+
+
+class FakeStop:
+    """The service's stop signal, for a loop that should run a set number of
+    rounds and never really wait."""
+
+    def __init__(self, rounds):
+        self.rounds, self.waits = rounds, 0
+
+    def is_set(self):
+        return self.waits >= self.rounds
+
+    def wait(self, _timeout=None):
+        self.waits += 1
+        return self.is_set()
+
+    def set(self):
+        self.waits = self.rounds
+
+
+REFUSED = PermissionError(13, 'Access is denied')
+
+
+class SharedFileTests(unittest.TestCase):
+    """The service and the app's streams meet in a handful of small files. On
+    Windows a file cannot be replaced while another program has it open, and
+    cannot always be opened while it is being replaced: each side has to give
+    the other a moment."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.agent = module('msam-host-agent.py')
+        self.path = Path(self.temp.name) / 'status.json'
+
+    def test_a_file_a_reader_has_open_is_replaced_once_the_reader_lets_go(self):
+        real, refusals = os.replace, [REFUSED] * 3
+
+        def replace(source, target):
+            if refusals:
+                raise refusals.pop()
+            real(source, target)
+
+        with patch.object(self.agent.os, 'replace', side_effect=replace), patch.object(self.agent.time, 'sleep'):
+            self.agent.atomic_json(self.path, {'heartbeat': 1})
+        self.assertEqual(json.loads(self.path.read_text()), {'heartbeat': 1})
+        self.assertEqual(refusals, [])
+
+    def test_a_file_that_is_never_let_go_is_reported_and_leaves_nothing_behind(self):
+        self.path.write_text('{"heartbeat": 1}')
+        with patch.object(self.agent.os, 'replace', side_effect=REFUSED), patch.object(self.agent.time, 'sleep'):
+            with self.assertRaises(PermissionError):
+                self.agent.atomic_json(self.path, {'heartbeat': 2})
+        self.assertEqual([entry.name for entry in self.path.parent.iterdir()], ['status.json'])
+        self.assertEqual(json.loads(self.path.read_text()), {'heartbeat': 1})
+
+    def test_a_file_caught_while_it_is_being_replaced_is_read_on_the_next_try(self):
+        self.path.write_text('{"heartbeat": 7}')
+        real, tries = Path.read_text, []
+
+        def read(path, *args, **kwargs):
+            tries.append(path)
+            if len(tries) == 1:
+                raise REFUSED
+            return real(path, *args, **kwargs)
+
+        with patch.object(Path, 'read_text', read), patch.object(self.agent.time, 'sleep'):
+            self.assertEqual(self.agent.read_json(self.path, {}), {'heartbeat': 7})
+
+    def test_a_file_that_is_not_there_is_not_waited_for(self):
+        with patch.object(self.agent.time, 'sleep') as sleep:
+            self.assertEqual(self.agent.read_json(self.path, {'none': True}), {'none': True})
+        sleep.assert_not_called()
+
+
+class ServiceLoopTests(unittest.TestCase):
+    """What the service writes while it runs, and what it takes to stop it."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.agent = module('msam-host-agent.py')
+        self.agent.HOME = Path(self.temp.name)
+        self.agent.STATE = self.agent.HOME / '.local/state/msam-host-agent'
+        self.agent.UPDATER_STATE = self.agent.HOME / '.local/state/msam-agent-updater'
+        for name in ('background_updates', 'background_inventory', 'background_provider_pulse'):
+            patcher = patch.object(self.agent, name, lambda: None)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        patcher = patch.object(self.agent, 'load_module', return_value=object())
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def serve(self, rounds, sample):
+        self.agent.STOP = FakeStop(rounds)
+        with patch.dict(os.environ), patch.object(self.agent, 'sample_metrics', side_effect=sample):
+            self.agent.serve()
+
+    def test_the_service_keeps_running_when_a_status_could_not_be_written(self):
+        # The app's stream reads status.json twice a second. On Windows the
+        # write that meets a read is refused; that used to end the service,
+        # and Windows does not restart a service that stops by itself.
+        real, refused, readings = self.agent.atomic_json, [], []
+
+        def write(path, value):
+            if path.name == 'status.json' and not refused:
+                refused.append(path)
+                raise REFUSED
+            real(path, value)
+
+        def sample(_module):
+            readings.append(1)
+            return {'cpu': {}}
+
+        with patch.object(self.agent, 'atomic_json', side_effect=write):
+            try:
+                self.serve(rounds=3, sample=sample)
+            except PermissionError as error:
+                self.fail('The service stopped: ' + str(error))
+        self.assertEqual(len(refused), 1)
+        self.assertEqual(len(readings), 3)
+
+    def test_a_slow_reading_does_not_make_the_service_look_stopped(self):
+        # On Windows every reading starts a PowerShell, which takes seconds.
+        # A status is "running" while its heartbeat is under 15 seconds old.
+        clock, seen = [1_000.0], []
+
+        def sample(_module):
+            clock[0] += 9
+            seen.append(self.agent.status()['running'])
+            return {'cpu': {}}
+
+        with patch.object(self.agent.time, 'time', side_effect=lambda: clock[0]):
+            self.serve(rounds=3, sample=sample)
+        self.assertEqual(seen, [True, True, True])
+
+    def test_the_status_says_how_long_a_reading_takes(self):
+        clock, statuses, real = [50.0], [], self.agent.atomic_json
+
+        def sample(_module):
+            clock[0] += 9
+            return {'cpu': {}}
+
+        def write(path, value):
+            if path.name == 'status.json':
+                statuses.append(dict(value))
+            real(path, value)
+
+        with patch.object(self.agent.time, 'monotonic', side_effect=lambda: clock[0]), \
+             patch.object(self.agent, 'atomic_json', side_effect=write):
+            self.serve(rounds=2, sample=sample)
+        self.assertIn(9.0, [status.get('sampleSeconds') for status in statuses])
+
+    def test_a_reading_that_failed_is_still_said_while_the_next_one_is_taken(self):
+        statuses, real, outcomes = [], self.agent.atomic_json, [RuntimeError('powershell.exe timed out'), {'cpu': {}}]
+
+        def sample(_module):
+            outcome = outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        def write(path, value):
+            if path.name == 'status.json':
+                statuses.append(dict(value))
+            real(path, value)
+
+        with patch.object(self.agent, 'atomic_json', side_effect=write):
+            self.serve(rounds=2, sample=sample)
+        # after the failed reading, and again before the second one is back
+        failed = [status for status in statuses if status.get('error') == 'powershell.exe timed out']
+        self.assertGreaterEqual(len(failed), 2, statuses)
+        self.assertTrue(all(status['metrics'] is False for status in failed))
+        self.assertTrue(any(status['metrics'] is True and 'error' not in status for status in statuses))
+
+    def test_a_service_that_falls_over_notes_why_and_starts_again(self):
+        self.agent.STATE.mkdir(parents=True)
+        self.agent.STOP = FakeStop(rounds=10)
+        with patch.object(self.agent, 'serve', side_effect=[RuntimeError('the disk is full'), None]) as serve:
+            self.agent.serve_as_service()
+        self.assertEqual(serve.call_count, 2)
+        note = json.loads((self.agent.STATE / 'service-error.json').read_text())
+        self.assertEqual(note['message'], 'the disk is full')
+
+    def test_a_service_told_to_stop_does_not_start_again(self):
+        self.agent.STATE.mkdir(parents=True)
+        self.agent.STOP = FakeStop(rounds=1)
+        with patch.object(self.agent, 'serve', side_effect=RuntimeError('the disk is full')) as serve:
+            self.agent.serve_as_service()
+        self.assertEqual(serve.call_count, 1)
+
+
+class MetricsStreamTests(unittest.TestCase):
+    """The app shows the last reading it was sent and nothing else, so a stream
+    that ends is a display that has stopped. It must not end over a moment."""
+
+    HEALTHY = {'running': True, 'metrics': True}
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.agent = module('msam-host-agent.py')
+        self.agent.STATE = Path(self.temp.name)
+        self.readings = 0
+        self.reading()
+
+    def reading(self):
+        self.readings += 1
+        path = self.agent.STATE / 'metrics.json'
+        path.write_text(json.dumps({'reading': self.readings}) + '\n')
+        os.utime(path, ns=(self.readings * 10**9, self.readings * 10**9))
+
+    def stream(self, answers, loop=True):
+        """Runs the stream against one status per look; a fresh reading lands
+        between looks. Returns what was printed and what ended the stream."""
+        answers, clock, printed = list(answers), [0.0], []
+
+        def status():
+            if not answers:
+                raise KeyboardInterrupt
+            answer = answers.pop(0)
+            if isinstance(answer, Exception):
+                raise answer
+            return dict(answer)
+
+        def sleep(seconds):
+            clock[0] += seconds
+            self.reading()
+
+        with patch.object(self.agent, 'status', side_effect=status), \
+             patch.object(self.agent.time, 'sleep', side_effect=sleep), \
+             patch.object(self.agent.time, 'monotonic', side_effect=lambda: clock[0]), \
+             patch('builtins.print', side_effect=lambda *args, **kwargs: printed.append(json.loads(args[0]))):
+            try:
+                self.agent.stream_metrics(loop)
+            except (KeyboardInterrupt, RuntimeError) as error:
+                return printed, error
+        return printed, None
+
+    def test_each_new_reading_is_printed_once(self):
+        printed, ended = self.stream([self.HEALTHY] * 3)
+        self.assertEqual(printed, [{'reading': 1}, {'reading': 2}, {'reading': 3}])
+        self.assertIsInstance(ended, KeyboardInterrupt)
+
+    def test_the_stream_rides_out_a_moment_when_the_service_looks_stopped(self):
+        # The app replacing the service, or a status read while being written.
+        printed, ended = self.stream([self.HEALTHY, {'running': False}, {'running': False}, self.HEALTHY])
+        self.assertIsInstance(ended, KeyboardInterrupt, ended)
+        self.assertEqual(printed[0], {'reading': 1})
+        self.assertEqual(printed[-1], {'reading': 4})
+
+    def test_the_stream_rides_out_a_reading_that_failed(self):
+        failed = {'running': True, 'metrics': False, 'error': 'powershell.exe timed out'}
+        printed, ended = self.stream([self.HEALTHY, failed, self.HEALTHY])
+        self.assertIsInstance(ended, KeyboardInterrupt, ended)
+        self.assertEqual(printed[-1], {'reading': 3})
+
+    def test_the_stream_ends_when_the_service_stays_stopped(self):
+        looks = int(self.agent.STREAM_PATIENCE / 0.5) + 5
+        printed, ended = self.stream([self.HEALTHY] + [{'running': False}] * looks)
+        self.assertIsInstance(ended, RuntimeError)
+        self.assertIn('stopped', str(ended))
+        self.assertEqual(printed, [{'reading': 1}])
+
+    def test_the_stream_ends_with_the_reason_when_readings_keep_failing(self):
+        failed = {'running': True, 'metrics': False, 'error': 'powershell.exe timed out'}
+        looks = int(self.agent.STREAM_PATIENCE / 0.5) + 5
+        _printed, ended = self.stream([failed] * looks)
+        self.assertIsInstance(ended, RuntimeError)
+        self.assertEqual(str(ended), 'powershell.exe timed out')
+
+    def test_one_reading_without_a_stream_is_refused_at_once_when_the_service_is_stopped(self):
+        printed, ended = self.stream([{'running': False}], loop=False)
+        self.assertIsInstance(ended, RuntimeError)
+        self.assertEqual(printed, [])
+
+    def test_a_reading_that_cannot_be_opened_just_now_is_printed_on_the_next_look(self):
+        real, refusals = Path.read_text, [REFUSED]
+
+        def read(path, *args, **kwargs):
+            if path.name == 'metrics.json' and refusals:
+                raise refusals.pop()
+            return real(path, *args, **kwargs)
+
+        with patch.object(Path, 'read_text', read):
+            printed, ended = self.stream([self.HEALTHY] * 3)
+        self.assertIsInstance(ended, KeyboardInterrupt, ended)
+        self.assertEqual(printed[-1], {'reading': 3})
 
 
 if __name__ == '__main__':
