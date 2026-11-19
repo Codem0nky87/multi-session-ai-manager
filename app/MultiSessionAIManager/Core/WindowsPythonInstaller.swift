@@ -62,10 +62,11 @@ final class WindowsPythonInstaller {
         "Python 3 is not installed on this host, and the host has no winget to install it with. "
         + "At the host, install Python 3.14 from python.org for all users and add it to PATH, then check again."
 
-    /// Reports the Python the host service would use, and what the host could
-    /// install one with. It looks for Python the way `HostServiceInstaller.python`
-    /// runs it. Windows keeps a `python.exe` that only points at the Store; it
-    /// prints no version, so it is not taken for Python.
+    /// Reports the Python the host service would use and, only when there is
+    /// none, what the host could install one with: those questions are the slow
+    /// ones. It looks for Python the way `HostServiceInstaller.python` runs it.
+    /// Windows keeps a `python.exe` that only points at the Store; it prints no
+    /// version, so it is not taken for Python.
     nonisolated static let probeScript = """
         $ErrorActionPreference='SilentlyContinue'
         $version=''
@@ -73,6 +74,7 @@ final class WindowsPythonInstaller {
         $found=if ($py) { & $py.Source -3 --version 2>$null } elseif (Get-Command python.exe) { & python.exe --version 2>$null }
         if ("$found" -match 'Python (\\d+\\.\\d+\\.\\d+)') { $version=$Matches[1] }
         'MSAM_PYTHON='+$version
+        if ($version) { exit 0 }
         'MSAM_WINDOWS='+$(if ((Get-CimInstance Win32_OperatingSystem).ProductType -eq 1) { 'client' } else { 'server' })
         'MSAM_STORE='+$(if (Get-AppxPackage -Name Microsoft.WindowsStore) { 'yes' } else { 'no' })
         'MSAM_WINGET='+$(if (Get-Command winget.exe) { 'yes' } else { 'no' })
@@ -124,6 +126,17 @@ final class WindowsPythonInstaller {
     var isReady: Bool {
         if case .ready = state { return true }
         return false
+    }
+
+    /// True when the host has said that it has no Python the services can run on.
+    /// A host that could not be asked is not held up for it: setting up the
+    /// services says so itself when Python is missing.
+    var isMissing: Bool {
+        switch state {
+        case .absent, .installing: true
+        case .failed(_, let plan): plan != nil
+        case .idle, .probing, .ready: false
+        }
     }
 
     /// The plan on offer, if there is one to act on.

@@ -34,6 +34,14 @@ struct WindowsPythonInstallerTests {
         #expect(WindowsPythonInstaller.Probe(version: "2.7.18", isServer: true, hasStore: false, hasWinget: true).usableVersion == nil)
     }
 
+    @Test func aHostThatHasPythonIsAskedNothingElse() throws {
+        // What it could install Python with takes the longest to find out and is not needed.
+        let script = WindowsPythonInstaller.probeScript
+        let answered = try #require(script.range(of: "if ($version) { exit 0 }"))
+        let slower = try #require(script.range(of: "Get-CimInstance"))
+        #expect(answered.lowerBound < slower.lowerBound)
+    }
+
     // MARK: How to install it
 
     @Test func aClientWithTheStoreInstallsFromTheStore() {
@@ -131,6 +139,17 @@ struct WindowsPythonInstallerTests {
         #expect(message.contains("No package found matching input criteria."))
         // The command stays on screen: it can still be run at the host itself.
         #expect(plan?.command == WindowsPythonInstaller.machineCommand)
+    }
+
+    @Test func aHostThatCouldNotBeAskedIsNotSaidToLackPython() async throws {
+        let (installer, transport) = try await fixture()
+        transport.structuredCommandResults = [.failure(.timedOut)]
+        await installer.probe()
+        #expect(!installer.isReady)
+        #expect(!installer.isMissing)
+        stub(transport, [absentOnServer])
+        await installer.probe()
+        #expect(installer.isMissing)
     }
 
     @Test func nothingIsRunWhenTheHostHasNoWayToInstall() async throws {

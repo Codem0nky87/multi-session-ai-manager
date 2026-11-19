@@ -417,6 +417,22 @@ def serve():
                                                 'heartbeat': 0, 'pid': os.getpid(), 'metrics': False})
 
 
+def serve_as_service():
+    """`serve` for the Windows service, which has nowhere to print.
+
+    What stopped it is left where the installer looks when the service does
+    not come up.
+    """
+    note = STATE / 'service-error.json'
+    note.unlink(missing_ok=True)
+    try:
+        serve()
+    except Exception as error:
+        with contextlib.suppress(OSError):
+            atomic_json(note, {'message': str(error), 'at': time.time()})
+        raise
+
+
 def stream_metrics(loop):
     last = None
     while True:
@@ -554,7 +570,7 @@ def main():
             signal.signal(sig, lambda *_: STOP.set())
         serve()
     elif options.command == 'windows-service':
-        load_module('windows_service', 'msam-host-service-windows.py').run(serve, STOP)
+        load_module('windows_service', 'msam-host-service-windows.py').run(serve_as_service, STOP)
     elif options.command == 'status':
         print('MSAM_HOST_STATUS=' + json.dumps(status()))
     elif options.command == 'metrics':

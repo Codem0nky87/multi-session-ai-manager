@@ -219,6 +219,19 @@ struct AddHostProvisioningModelTests {
         #expect(model.canContinue)
     }
 
+    @Test func aWindowsHostThatCannotBeAskedAboutPythonIsNotHeldUp() async throws {
+        // The services' own setup says so when Python is missing.
+        let (model, transport) = try await windowsFixture()
+        transport.structuredCommandResults = [result("herdr 0.9.5"), .failure(.timedOut)]
+        await model.discover()
+        #expect(model.herdrReady)
+        #expect(!model.needsPython)
+        transport.structuredCommandResults = [.failure(.timedOut)]
+            + (installedOnWindows + [windowsContext, "present", windowsVerification]).map { result($0) }
+        await model.installServices()
+        #expect(model.canContinue)
+    }
+
     @Test func aWindowsHostThatHasPythonIsNotAskedToInstallIt() async throws {
         let (model, transport) = try await windowsFixture()
         stub(transport, ["herdr 0.9.5", pythonPresent])

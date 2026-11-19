@@ -1135,5 +1135,60 @@ class SystemAccountTests(unittest.TestCase):
             self.assertEqual(self.agent.account_path(), 'C:\\Users\\alice\\tools')
 
 
+class SetupDiagnosisTests(unittest.TestCase):
+    """Setup runs on a host nobody is looking at. What went wrong has to reach
+    the app in the one message it shows."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.home = Path(self.temp.name)
+        self.installer = module('msam-host-agent-install.py')
+        self.agent = module('msam-host-agent.py')
+        for mod in (self.installer, self.agent):
+            mod.HOME = self.home
+            mod.STATE = self.home / '.local/state/msam-host-agent'
+        self.installer.STATE.mkdir(parents=True)
+
+    def test_a_refused_command_is_reported_with_what_it_said(self):
+        # sc.exe explains itself on its standard output, not its error output.
+        refused = subprocess.CalledProcessError(1053, ['sc.exe', 'start', 'MSAMHostAgent'],
+                                                '[SC] StartService FAILED 1053:\n\nThe service did not respond in time.\n', '')
+        said = self.installer.describe(refused)
+        self.assertIn('FAILED 1053', said)
+        self.assertIn('did not respond in time', said)
+
+    def test_a_refused_command_that_said_nothing_is_still_named(self):
+        said = self.installer.describe(subprocess.CalledProcessError(5, ['sc.exe', 'start', 'MSAMHostAgent'], '', ''))
+        self.assertIn('sc.exe', said)
+        self.assertIn('5', said)
+
+    def test_an_agent_that_runs_without_metrics_says_why(self):
+        status = {'running': True, 'metrics': False, 'error': 'powershell.exe was not found'}
+        with patch.object(self.installer, 'get_status', return_value=status), patch.object(self.installer.time, 'sleep'):
+            with self.assertRaisesRegex(RuntimeError, 'did not become healthy.*powershell.exe was not found'):
+                self.installer.wait_healthy()
+
+    def test_an_agent_that_stopped_says_what_stopped_it(self):
+        (self.installer.STATE / 'service-error.json').write_text(json.dumps({'message': 'No module named winreg'}))
+        with patch.object(self.installer, 'get_status', return_value={'running': False}), patch.object(self.installer.time, 'sleep'):
+            with self.assertRaisesRegex(RuntimeError, 'did not become healthy.*No module named winreg'):
+                self.installer.wait_healthy()
+
+    def test_a_service_that_stops_leaves_a_note_of_why(self):
+        # A Windows service has nowhere to print.
+        with patch.object(self.agent, 'serve', side_effect=RuntimeError('The host worker is already running.')):
+            with self.assertRaises(RuntimeError):
+                self.agent.serve_as_service()
+        note = json.loads((self.agent.STATE / 'service-error.json').read_text())
+        self.assertEqual(note['message'], 'The host worker is already running.')
+
+    def test_a_service_that_starts_takes_back_the_note_of_its_last_failure(self):
+        (self.agent.STATE / 'service-error.json').write_text(json.dumps({'message': 'earlier'}))
+        with patch.object(self.agent, 'serve'):
+            self.agent.serve_as_service()
+        self.assertFalse((self.agent.STATE / 'service-error.json').exists())
+
+
 if __name__ == '__main__':
     unittest.main()

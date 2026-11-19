@@ -371,12 +371,19 @@ def write_launchers():
 
 
 def wait_healthy():
+    value = {}
     for _ in range(40):
         value = get_status()
         if value.get('running') and value.get('metrics'):
             return value
         time.sleep(.5)
-    raise RuntimeError('The host agent did not become healthy. Check its service log.')
+    # Nobody is at the host: say what the agent itself gave as the reason.
+    try:
+        stopped = json.loads((STATE / 'service-error.json').read_text()).get('message')
+    except (OSError, ValueError):
+        stopped = None
+    reason = value.get('error') or stopped
+    raise RuntimeError('The host agent did not become healthy. ' + (str(reason) if reason else 'Check its service log.'))
 
 
 def install(stage):
@@ -497,6 +504,15 @@ def perform(args):
     return get_status()
 
 
+def describe(error):
+    """What the app is told about a failure."""
+    if isinstance(error, subprocess.CalledProcessError):
+        # Some tools, sc.exe among them, explain themselves on standard output.
+        said = ' '.join(((error.stderr or '') + ' ' + (error.stdout or '')).split())
+        return said or str(error)
+    return str(error)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('action', choices=['install', 'status', 'start', 'stop', 'restart', 'remove'])
@@ -514,6 +530,5 @@ if __name__ == '__main__':
     try:
         main()
     except Exception as error:
-        detail = error.stderr if isinstance(error, subprocess.CalledProcessError) else str(error)
-        print(detail, file=sys.stderr)
+        print(describe(error), file=sys.stderr)
         sys.exit(1)

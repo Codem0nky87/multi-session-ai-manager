@@ -148,6 +148,9 @@ struct AddHostWizardView: View {
                     if case .ready(let version)? = model.python?.state {
                         Label("Python \(version) is ready", systemImage: "checkmark.circle.fill")
                             .foregroundStyle(Theme.success)
+                    } else if case .failed(let message, .none)? = model.python?.state {
+                        // Not a reason to stop: the services say so if Python is missing.
+                        problem("Python could not be checked for: \(message)")
                     }
                     switch model.metricsState {
                     case .idle:

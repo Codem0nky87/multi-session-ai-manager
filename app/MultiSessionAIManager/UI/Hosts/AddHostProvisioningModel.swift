@@ -43,7 +43,7 @@ final class AddHostProvisioningModel {
 
     /// True while a Windows host has no Python for the services to run on.
     var needsPython: Bool {
-        python.map { !$0.isReady } ?? false
+        python?.isMissing ?? false
     }
 
     var updaterSetup: HostAgentUpdaterSetup {
