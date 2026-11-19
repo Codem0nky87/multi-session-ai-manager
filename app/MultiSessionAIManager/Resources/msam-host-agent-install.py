@@ -229,8 +229,8 @@ def write_service():
         service_path().write_bytes(plistlib.dumps(definition))
         service_path().chmod(0o600)
     elif os.name == 'nt':
-        # Registration must use the SSH user's account, never LocalSystem.
-        # A one-time account credential is required by SCM for a new service.
+        # A service that runs as SYSTEM and works in this account's profile.
+        # Windows wants no password for SYSTEM, so no one has to be at the host.
         bridge = BASE / 'current/msam-host-service-windows.py'
         run([sys.executable, str(bridge), 'configure', str(HOME)], timeout=30)
     else:

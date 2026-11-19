@@ -53,6 +53,49 @@ The add-host wizard has four steps:
 connection and the next attempt checks the current endpoint again. Cancelling
 the wizard cancels outstanding setup work and closes its SSH connection.
 
+### Windows hosts
+
+A Windows host needs OpenSSH Server, and an account to connect as that is in
+the Administrators group. Step 2 sets up two things on it.
+
+**Python.** The host services are written in Python, and Windows does not come
+with it. When a Windows host has no Python 3.9 or newer, step 2 lists
+installing it first, shows the command, and runs it when you tap
+**Install Python**:
+
+| Host | Command |
+|---|---|
+| A client edition with the Microsoft Store | `winget install 9NQ7512CXL7T` (the Python install manager from the Store), then `py install default` |
+| A server, or a client without the Store | `winget install --id Python.Python.3.14 --scope machine` |
+| No `winget` | None: install Python 3.14 from python.org at the host, for all users and on PATH, then **Check Again** |
+
+Both commands carry the switches that stop `winget` from asking questions,
+since nobody is at the host to answer. If a command fails it stays on screen,
+so it can be run at the host itself; **Check Again** then finds the Python it
+installed.
+
+**The host service.** It is a Windows service named `MSAMHostAgent` that runs
+as SYSTEM, starts with the machine and is restarted after a crash. SYSTEM is
+the one account Windows starts a service under without being given a
+password, so the wizard creates the service itself and nothing has to be typed
+at the host.
+
+Everything the service does is for the account you connect as: its Herdr
+sessions, its agent tools, its sign-ins. Setup writes that account down in
+`.local\state\msam-host-agent\account.json` under its profile, and the service
+takes on that profile when it starts, in place of SYSTEM's own. Files it
+creates there belong to SYSTEM; the account can use them as it uses the rest
+of its profile.
+
+Creating a service takes an administrator. When the account you connect as is
+not one, setup says so and changes nothing. See
+[the security model](security.md#on-windows-the-host-service-runs-as-system)
+for what running as SYSTEM means.
+
+A host set up by a build before 2026-11-19 has the service under the account
+itself, created by hand with that account's password. It keeps working and is
+left as it is.
+
 ## Installing AI agent CLIs
 
 In **Manage Hosts → Edit host → AI Agent CLIs**, select **Manage AI agent CLIs**.

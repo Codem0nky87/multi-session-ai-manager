@@ -158,7 +158,8 @@ struct AddHostWizardView: View {
                         Label("Host service and metrics installed", systemImage: "checkmark.circle.fill")
                             .foregroundStyle(Theme.success)
                     case .failed(let message):
-                        problem("Host service: \(message)")
+                        // The message says which part of setup it is about.
+                        problem(message)
                     }
                     updaterStatus(model.updater)
                     if let warning = HostAgentUpdaterPresentation.warning(for: model.updaterSetup),

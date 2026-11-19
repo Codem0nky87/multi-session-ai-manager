@@ -209,8 +209,9 @@ mutation.
 
 `AgentUpdaterInstaller` provisions
 `com.codem0nky87.msam-host-agent` as an Aqua per-user LaunchAgent on macOS,
-`msam-host-agent.service` as a systemd user unit on Linux, or native
-`MSAMHostAgent` under the agent account on Windows. The service owns one metrics
+`msam-host-agent.service` as a systemd user unit on Linux, or the Windows
+service `MSAMHostAgent`, which runs as SYSTEM (no password to ask for) and works
+in the agent account's profile. The service owns one metrics
 collector, inventory, and a durable update worker (`msam-agent-updater.sh` on
 POSIX, `msam-agent-updater-windows.py` on Windows). Metrics readers use SSH exec
 streams so terminal wrapping and console escapes cannot corrupt JSON. It verifies

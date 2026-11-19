@@ -6,6 +6,7 @@ import errno
 import http.server
 import importlib.util
 import json
+import ntpath
 import os
 from pathlib import Path
 import signal
@@ -110,18 +111,60 @@ def updater_command(*args):
     return ['/bin/sh', str(ROOT / 'msam-agent-updater.sh'), *args]
 
 
+def account():
+    """The Windows account whose agents this is for, as setup wrote it down."""
+    return read_json(STATE / 'account.json', {}) or {}
+
+
+def adopt_account():
+    """Makes this process, and all it starts, work in the account's profile.
+
+    The Windows service runs as SYSTEM, whose profile is not the account's:
+    npm would install the agents' tools where nobody finds them, and Herdr
+    would look for SYSTEM's sessions. Windows locates a profile through these
+    variables, so they are set to the account's.
+    """
+    home = str(HOME)
+    drive, tail = ntpath.splitdrive(home)
+    profile = {'APPDATA': ntpath.join(home, 'AppData', 'Roaming'),
+               'LOCALAPPDATA': ntpath.join(home, 'AppData', 'Local')}
+    # Where setup found them, which need not be under the home.
+    recorded = account().get('environment') or {}
+    profile.update({name: recorded[name] for name in ('APPDATA', 'LOCALAPPDATA', 'USERNAME', 'USERDOMAIN')
+                    if isinstance(recorded.get(name), str) and recorded[name]})
+    profile.update(USERPROFILE=home, HOMEDRIVE=drive, HOMEPATH=tail or '\\')
+    os.environ.update(profile)
+    temp = ntpath.join(profile['LOCALAPPDATA'], 'Temp')
+    if os.path.isdir(temp):
+        os.environ['TEMP'] = os.environ['TMP'] = temp
+
+
+def registry_path(sid):
+    """The PATH an account keeps in its registry; this process's own without a SID.
+
+    Another account's registry is only loaded while that account is logged on.
+    """
+    import winreg
+    root, key = (winreg.HKEY_USERS, sid + '\\Environment') if sid else (winreg.HKEY_CURRENT_USER, 'Environment')
+    try:
+        with winreg.OpenKey(root, key) as handle:
+            return winreg.QueryValueEx(handle, 'Path')[0]
+    except OSError:
+        return None
+
+
+def account_path():
+    """The account's own PATH: as it is now, or else as it was at setup."""
+    known = account()
+    return registry_path(known.get('sid')) or known.get('path') or ''
+
+
 def environment():
     env = dict(os.environ, HOME=str(HOME), MSAM_AGENT_UPDATER_STATE_DIR=str(UPDATER_STATE))
     extra = [HOME / '.local/bin', HOME / '.gemini/antigravity-cli/bin']
     if os.name == 'nt':
         extra += [HOME / 'AppData/Roaming/npm', HOME / '.herdr/bin', HOME / '.herdr/current']
-        import winreg
-        try:
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, 'Environment') as key:
-                user_path = winreg.QueryValueEx(key, 'Path')[0]
-                env['PATH'] = os.path.expandvars(user_path) + os.pathsep + env.get('PATH', '')
-        except OSError:
-            pass
+        env['PATH'] = os.path.expandvars(account_path()) + os.pathsep + env.get('PATH', '')
     else:
         extra += [Path('/opt/homebrew/bin'), Path('/usr/local/bin'), Path('/usr/bin'), Path('/bin')]
     env['PATH'] = os.pathsep.join(map(str, extra)) + os.pathsep + env.get('PATH', '')
@@ -503,6 +546,8 @@ def main():
         HOME = Path(options.home)
         STATE = HOME / '.local/state/msam-host-agent'
         UPDATER_STATE = HOME / '.local/state/msam-agent-updater'
+    if options.command == 'windows-service':
+        adopt_account()
     os.environ.update(environment())
     if options.command == 'serve':
         for sig in (signal.SIGTERM, signal.SIGINT):

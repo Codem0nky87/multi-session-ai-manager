@@ -54,6 +54,25 @@ a host you own — but it is still the most dangerous thing in the app. Hence:
 
 You can always copy the command and run it yourself instead.
 
+## On Windows the host service runs as SYSTEM
+
+On macOS and Linux the host service runs as the account you connect as and can
+do nothing that account cannot. On Windows it is a service that runs as SYSTEM,
+because that is the one account Windows starts a service under without a
+password, and so the one the app can set up without anyone at the host.
+
+SYSTEM has full control of the machine, and the service:
+
+- runs the scripts the app installs under the account's profile
+  (`.local\libexec\msam-host-agent`);
+- updates the account's agent tools with `npm install -g` when you queue an
+  update, which runs those packages' install scripts.
+
+Both therefore run with SYSTEM's rights on a Windows host, and anything able to
+write to that profile can make the service run code of its own as SYSTEM. This
+is why setup refuses an account that is not an administrator: for an
+administrator, SYSTEM is no more than the account could already reach.
+
 ## Installing plugins is the same class of action
 
 The plugin manager can install any Herdr plugin by `owner/repo`, and its

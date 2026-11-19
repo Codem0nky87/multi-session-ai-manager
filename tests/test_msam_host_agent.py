@@ -956,5 +956,184 @@ class WindowsUpdaterTests(unittest.TestCase):
             command.assert_not_called()
 
 
+class FakeWindows:
+    """Answers `sc.exe`, `whoami` and the service query the way Windows does."""
+
+    def __init__(self, service_account=None):
+        self.service_account = service_account
+        self.calls = []
+
+    def __call__(self, args, **kwargs):
+        args = [str(arg) for arg in args]
+        self.calls.append(args)
+        code, out, err = 0, '', ''
+        tool = Path(args[0]).name.lower()
+        if tool == 'sc.exe':
+            verb = args[1].lower()
+            if verb == 'create':
+                self.service_account = args[args.index('obj=') + 1]
+            elif self.service_account is None:
+                code, out = 1060, '[SC] OpenService FAILED 1060'
+            elif verb == 'delete':
+                self.service_account = None
+        elif tool == 'powershell.exe':
+            if self.service_account is not None:
+                out = json.dumps({'StartName': self.service_account})
+        elif tool == 'whoami':
+            out = '"host\\alice","S-1-5-21-1-2-3-1001"\n' if '/user' in args else 'host\\alice\n'
+        if kwargs.get('check') and code:
+            raise subprocess.CalledProcessError(code, args, out, err)
+        return subprocess.CompletedProcess(args, code, out, err)
+
+    def ran(self, *prefix):
+        return [call for call in self.calls if [part.lower() for part in call[:len(prefix)]] == [part.lower() for part in prefix]]
+
+    @staticmethod
+    def setting(call, name):
+        return call[call.index(name) + 1]
+
+
+class WindowsServiceTests(unittest.TestCase):
+    """The host agent on Windows is a service that runs as SYSTEM. Windows asks
+    for no password for that account, so the app can set the service up itself."""
+
+    HOME = 'C:\\Users\\alice'
+    ACCOUNT = {'USERPROFILE': 'C:\\Users\\alice', 'APPDATA': 'D:\\Roaming\\alice',
+               'LOCALAPPDATA': 'C:\\Users\\alice\\AppData\\Local', 'HOMEDRIVE': 'C:', 'HOMEPATH': '\\Users\\alice',
+               'USERNAME': 'alice', 'USERDOMAIN': 'HOST'}
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.bridge = module('msam-host-service-windows.py')
+        self.bridge.api = lambda: None
+        self.bridge.is_administrator = lambda: True
+        self.bridge.user_path = lambda: '%USERPROFILE%\\.cargo\\bin;C:\\Users\\alice\\tools'
+        self.bridge.state_directory = lambda home: Path(self.temp.name)
+
+    def configure(self, windows):
+        with patch.object(self.bridge.subprocess, 'run', side_effect=windows), \
+                patch.object(self.bridge.subprocess, 'check_output', side_effect=lambda args, **kw: windows(args, **kw).stdout), \
+                patch.dict(self.bridge.os.environ, self.ACCOUNT), \
+                patch.object(self.bridge.getpass, 'getpass', side_effect=AssertionError('no password may be asked for')):
+            self.bridge.configure(self.HOME)
+
+    def test_a_host_without_the_service_gets_one_that_runs_as_system_and_is_asked_for_nothing(self):
+        windows = FakeWindows()
+        self.configure(windows)
+        create = windows.ran('sc.exe', 'create')[0]
+        self.assertEqual(create[2], 'MSAMHostAgent')
+        self.assertEqual(windows.setting(create, 'obj='), 'LocalSystem')
+        self.assertEqual(windows.setting(create, 'start='), 'auto')
+        command = windows.setting(create, 'binPath=')
+        self.assertIn('msam-host-agent.py', command)
+        self.assertTrue(command.endswith('--home C:\\Users\\alice windows-service'), command)
+        self.assertNotIn('password=', [part.lower() for part in create])
+
+    def test_the_service_comes_back_after_a_crash(self):
+        windows = FakeWindows()
+        self.configure(windows)
+        failure = windows.ran('sc.exe', 'failure')[0]
+        self.assertIn('restart', windows.setting(failure, 'actions='))
+
+    def test_a_host_that_has_the_service_is_pointed_at_the_new_files(self):
+        windows = FakeWindows(service_account='LocalSystem')
+        self.configure(windows)
+        self.assertFalse(windows.ran('sc.exe', 'create'))
+        config = windows.ran('sc.exe', 'config')[0]
+        self.assertTrue(windows.setting(config, 'binPath=').endswith('windows-service'))
+
+    def test_a_service_an_earlier_build_put_under_the_account_stays_under_it(self):
+        # Changing its account would throw away a password only its owner can give again.
+        windows = FakeWindows(service_account='HOST\\alice')
+        self.configure(windows)
+        self.assertFalse(windows.ran('sc.exe', 'create'))
+        config = windows.ran('sc.exe', 'config')[0]
+        self.assertNotIn('obj=', config)
+
+    def test_a_service_under_someone_elses_account_is_refused(self):
+        windows = FakeWindows(service_account='HOST\\bob')
+        with self.assertRaisesRegex(RuntimeError, 'host\\\\bob'):
+            self.configure(windows)
+        self.assertFalse(windows.ran('sc.exe', 'config'))
+
+    def test_an_account_that_is_not_an_administrator_is_told_so_before_anything_is_tried(self):
+        self.bridge.is_administrator = lambda: False
+        windows = FakeWindows()
+        with self.assertRaisesRegex(RuntimeError, '[Aa]dministrator'):
+            self.configure(windows)
+        self.assertFalse(windows.ran('sc.exe'))
+
+    def test_the_account_is_written_down_for_the_service_to_work_in(self):
+        self.configure(FakeWindows())
+        account = json.loads((Path(self.temp.name) / 'account.json').read_text())
+        self.assertEqual(account['sid'], 'S-1-5-21-1-2-3-1001')
+        self.assertEqual(account['environment']['APPDATA'], 'D:\\Roaming\\alice')
+        self.assertEqual(account['environment']['USERNAME'], 'alice')
+        self.assertEqual(account['path'], '%USERPROFILE%\\.cargo\\bin;C:\\Users\\alice\\tools')
+
+    def test_a_failure_is_reported_as_a_sentence_not_as_a_traceback(self):
+        result = subprocess.run([sys.executable, str(RESOURCES / 'msam-host-service-windows.py'), 'configure', self.HOME],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertNotIn('Traceback', result.stderr)
+        self.assertIn('only available on Windows', result.stderr)
+
+
+class SystemAccountTests(unittest.TestCase):
+    """As SYSTEM the service has a profile of its own. Everything it does is for
+    the account that owns the agents, so it works in that account's instead."""
+
+    SYSTEM = {'USERPROFILE': 'C:\\WINDOWS\\system32\\config\\systemprofile',
+              'APPDATA': 'C:\\WINDOWS\\system32\\config\\systemprofile\\AppData\\Roaming',
+              'LOCALAPPDATA': 'C:\\WINDOWS\\system32\\config\\systemprofile\\AppData\\Local',
+              'USERNAME': 'HOST$', 'TEMP': 'C:\\WINDOWS\\TEMP'}
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.agent = module('msam-host-agent.py')
+        self.agent.HOME = 'C:\\Users\\alice'
+        self.agent.STATE = Path(self.temp.name)
+
+    def record(self, **account):
+        (self.agent.STATE / 'account.json').write_text(json.dumps(account))
+
+    def test_the_service_takes_on_the_accounts_profile(self):
+        self.record(sid='S-1-5-21-1-2-3-1001', environment={
+            'USERPROFILE': 'C:\\Users\\alice', 'APPDATA': 'D:\\Roaming\\alice',
+            'LOCALAPPDATA': 'C:\\Users\\alice\\AppData\\Local', 'HOMEDRIVE': 'C:', 'HOMEPATH': '\\Users\\alice',
+            'USERNAME': 'alice', 'USERDOMAIN': 'HOST'})
+        with patch.dict(self.agent.os.environ, self.SYSTEM):
+            self.agent.adopt_account()
+            adopted = dict(self.agent.os.environ)
+        self.assertEqual(adopted['USERPROFILE'], 'C:\\Users\\alice')
+        # npm installs the agents' tools under APPDATA: in SYSTEM's they would be nobody's.
+        self.assertEqual(adopted['APPDATA'], 'D:\\Roaming\\alice')
+        self.assertEqual(adopted['LOCALAPPDATA'], 'C:\\Users\\alice\\AppData\\Local')
+        self.assertEqual(adopted['USERNAME'], 'alice')
+        self.assertEqual((adopted['HOMEDRIVE'], adopted['HOMEPATH']), ('C:', '\\Users\\alice'))
+
+    def test_without_a_record_the_profile_is_worked_out_from_the_home(self):
+        with patch.dict(self.agent.os.environ, self.SYSTEM):
+            self.agent.adopt_account()
+            adopted = dict(self.agent.os.environ)
+        self.assertEqual(adopted['USERPROFILE'], 'C:\\Users\\alice')
+        self.assertEqual(adopted['APPDATA'], 'C:\\Users\\alice\\AppData\\Roaming')
+        self.assertEqual(adopted['LOCALAPPDATA'], 'C:\\Users\\alice\\AppData\\Local')
+        self.assertEqual((adopted['HOMEDRIVE'], adopted['HOMEPATH']), ('C:', '\\Users\\alice'))
+
+    def test_the_accounts_own_path_is_read_from_its_registry_when_that_is_loaded(self):
+        self.record(sid='S-1-5-21-1-2-3-1001', path='C:\\old')
+        with patch.object(self.agent, 'registry_path', side_effect=lambda sid: 'C:\\now' if sid == 'S-1-5-21-1-2-3-1001' else None):
+            self.assertEqual(self.agent.account_path(), 'C:\\now')
+
+    def test_the_path_written_down_at_setup_stands_in_while_the_account_is_logged_off(self):
+        # An account's registry is only loaded while it is logged on.
+        self.record(sid='S-1-5-21-1-2-3-1001', path='C:\\Users\\alice\\tools')
+        with patch.object(self.agent, 'registry_path', return_value=None):
+            self.assertEqual(self.agent.account_path(), 'C:\\Users\\alice\\tools')
+
+
 if __name__ == '__main__':
     unittest.main()
