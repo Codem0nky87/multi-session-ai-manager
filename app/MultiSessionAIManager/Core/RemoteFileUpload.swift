@@ -31,6 +31,28 @@ enum RemoteFileUpload {
     static let prepareCommand =
         "mkdir -p \"$HOME/\(relativeDirectory)\" && printf %s \"$HOME\""
 
+    /// The same two facts from a Windows host, asked in PowerShell.
+    ///
+    /// A command sent to a Windows host runs as a Windows PowerShell script,
+    /// and to that the line above is not a script at all: `&&` is a syntax
+    /// error there, so not one statement runs and nothing is printed.
+    /// `USERPROFILE` rather than `$HOME`, which a domain can point at a
+    /// network drive. A failure is caught and said on stdout, because what
+    /// PowerShell writes to stderr over SSH arrives wrapped in XML.
+    static let windowsPrepareScript = """
+        try {
+          [void][System.IO.Directory]::CreateDirectory((Join-Path $env:USERPROFILE '.msam\\uploads'))
+          'MSAM_HOME='+$env:USERPROFILE
+        } catch {
+          $reason=$_.Exception
+          while ($reason.InnerException) { $reason=$reason.InnerException }
+          'MSAM_FAILED='+$reason.Message
+        }
+        exit 0
+        """
+
+    static let windowsPrepareCommand = WindowsShell.command(windowsPrepareScript)
+
     static let prepareTimeout = Duration.seconds(20)
     static let prepareOutputLimit = 4096
 
@@ -98,12 +120,35 @@ enum RemoteFileUpload {
     /// done with the file, and sending Enter would submit a bare path as a
     /// prompt on its own.
     static func paneInsertion(for path: String) -> String {
-        path + " "
+        guard isWindowsPath(path) else { return path + " " }
+        // A Windows profile is often "C:\Users\Jane Smith". In quotes, as a
+        // Windows terminal types a dragged file, it stays one word; a Windows
+        // path cannot itself contain a quote.
+        let plain = path.unicodeScalars.allSatisfy {
+            CharacterSet.alphanumerics.contains($0) || "\\:._-".unicodeScalars.contains($0)
+        }
+        return (plain ? path : "\"\(path)\"") + " "
+    }
+
+    /// A folder on a drive, as Windows names one: `C:\Users\alice`.
+    static func isWindowsPath(_ path: String) -> Bool {
+        let start = Array(path.unicodeScalars.prefix(3))
+        return start.count == 3 && start[0].isASCII && start[0].properties.isAlphabetic
+            && start[1] == ":" && start[2] == "\\"
+    }
+
+    /// `path(home:filename:)` for a Windows profile, in Windows' own form:
+    /// that is what the pane's shell and the agents in it expect to be given.
+    static func windowsPath(home: String, filename: String) -> String {
+        let base = home.hasSuffix("\\") ? String(home.dropLast()) : home
+        let folder = relativeDirectory.replacingOccurrences(of: "/", with: "\\")
+        return "\(base)\\\(folder)\\\(filename)"
     }
 
     // MARK: - Upload
 
-    /// Upload `data` and return the absolute remote path it landed on.
+    /// Upload `data` and return the absolute remote path it landed on, in the
+    /// host's own form: `/home/alice/…` or `C:\Users\alice\…`.
     static func upload(
         _ data: Data,
         fileExtension: String,
@@ -115,33 +160,61 @@ enum RemoteFileUpload {
             throw Failure.tooLarge(byteCount: data.count)
         }
 
-        let reportedHome: String
-        do {
-            let result = try await service.run(
-                prepareCommand,
-                timeout: prepareTimeout,
-                outputLimit: prepareOutputLimit
-            )
-            reportedHome = result.stdoutString.trimmingCharacters(in: .whitespacesAndNewlines)
-        } catch {
-            throw Failure.uploadFailed("could not prepare the upload directory: \(error)")
-        }
-
-        // No fallback to "~" or ".": those would write the file somewhere the
-        // typed absolute path does not point at, which reads as success and
-        // hands the agent a path to nothing.
-        guard reportedHome.hasPrefix("/") else { throw Failure.homeUnresolved }
-
-        let target = path(
-            home: reportedHome,
-            filename: filename(at: date, fileExtension: fileExtension)
-        )
+        let home = try await preparedHome(using: service)
+        let name = filename(at: date, fileExtension: fileExtension)
+        // What is typed, and what the transfer is given. They differ only on
+        // Windows, where SFTP takes the same file under forward slashes.
+        let typed = service.isWindows
+            ? windowsPath(home: home, filename: name)
+            : path(home: home, filename: name)
+        let target = service.isWindows ? typed.replacingOccurrences(of: "\\", with: "/") : typed
         do {
             try await service.writeFile(data, to: target)
         } catch {
             throw Failure.uploadFailed("\(error)")
         }
-        return target
+        return typed
+    }
+
+    /// Make the upload directory and learn the home it is under.
+    private static func preparedHome(using service: SSHService) async throws -> String {
+        let windows = service.isWindows
+        let result: SSHCommandResult
+        do {
+            result = try await service.run(
+                windows ? windowsPrepareCommand : prepareCommand,
+                timeout: prepareTimeout,
+                outputLimit: prepareOutputLimit
+            )
+        } catch {
+            throw Failure.uploadFailed("could not prepare the upload directory: \(error)")
+        }
+
+        let home: String
+        if windows {
+            let lines = result.stdoutString.split(whereSeparator: \.isNewline)
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+            if let failed = lines.last(where: { $0.hasPrefix("MSAM_FAILED=") }) {
+                throw Failure.uploadFailed("could not prepare the upload directory: \(failed.dropFirst(12))")
+            }
+            home = lines.last(where: { $0.hasPrefix("MSAM_HOME=") }).map { String($0.dropFirst(10)) } ?? ""
+        } else {
+            home = result.stdoutString.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        // No fallback to "~" or ".": those would write the file somewhere the
+        // typed absolute path does not point at, which reads as success and
+        // hands the agent a path to nothing.
+        guard windows ? isWindowsPath(home) : home.hasPrefix("/") else {
+            // When the question itself failed, what the host printed is the
+            // only clue there will be.
+            let said = result.stderrString.trimmingCharacters(in: .whitespacesAndNewlines)
+            if result.exitStatus != 0, !said.isEmpty {
+                throw Failure.uploadFailed("could not prepare the upload directory: \(said.suffix(300))")
+            }
+            throw Failure.homeUnresolved
+        }
+        return home
     }
 
     // MARK: - Normalisation

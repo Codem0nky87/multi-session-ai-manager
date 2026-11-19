@@ -386,3 +386,171 @@ import UIKit
         #expect(path.hasSuffix(".pdf"))
     }
 }
+
+/// A Windows host is asked in PowerShell, names its folders with a drive and
+/// backslashes, and takes a file over SFTP under forward slashes.
+@Suite @MainActor struct RemoteFileUploadWindowsTests {
+
+    /// 2026-08-23 13:45:02.118 UTC
+    private let instant = Date(timeIntervalSince1970: 1_787_492_702.118)
+
+    /// A Windows host that answers the upload's own question with `answer`, and
+    /// every other command with nothing.
+    private func makeService(answering answer: String?) async throws -> (SSHService, FakeSSHTransport) {
+        let transport = FakeSSHTransport()
+        transport.commandResponses["echo %OS% $env:OS"] = "Windows_NT"
+        if let answer {
+            transport.commandResponses[RemoteFileUpload.windowsPrepareCommand] = answer
+        }
+        let service = SSHService(
+            host: Host(name: "w", address: "192.0.2.30", port: 22,
+                       username: "alice", keyID: "k", defaultWorkdir: ""),
+            transport: transport,
+            knownHosts: KnownHostsStore(defaults: UserDefaults(suiteName: "msam.win.\(UUID())")!)
+        )
+        try await service.connect(key: SSHKeyMaterial(ed25519Seed: Data(repeating: 7, count: 32))) { _, _ in true }
+        return (service, transport)
+    }
+
+    @Test func aWindowsHostIsAskedInPowerShellAndTheFileLandsInItsProfile() async throws {
+        // The Unix question (`mkdir -p … && printf …`) is not even a script to
+        // Windows PowerShell: `&&` stops it before a line runs, so the host
+        // said nothing and the upload reported "no home directory".
+        let (service, transport) = try await makeService(answering: "MSAM_HOME=C:\\Users\\alice\r\n")
+        let bytes = Data([0x89, 0x50, 0x4E, 0x47])
+
+        let path = try await RemoteFileUpload.upload(bytes, fileExtension: "png", using: service, at: instant)
+
+        #expect(path == "C:\\Users\\alice\\.msam\\uploads\\msam-20260823-134502-118.png")
+        // SFTP on Windows is given the same file under forward slashes, the
+        // form the host service's own files are written with.
+        #expect(transport.writtenFiles == ["C:/Users/alice/.msam/uploads/msam-20260823-134502-118.png": bytes])
+    }
+
+    @Test func theQuestionAWindowsHostIsAskedIsOneItsPowerShellCanRead() throws {
+        let script = try #require(WindowsHostFixture.script(RemoteFileUpload.windowsPrepareCommand))
+        // Windows PowerShell 5.1 has no `&&` and no `printf`.
+        #expect(!script.contains("&&"))
+        #expect(!script.contains("printf"))
+        // The account's own profile, not `$HOME`, which a domain can point at
+        // a network drive.
+        #expect(script.contains("$env:USERPROFILE"))
+        #expect(script.contains("'.msam\\uploads'"))
+    }
+
+    @Test func whatIsTypedIsThePathWindowsItselfWouldGive() {
+        #expect(RemoteFileUpload.paneInsertion(for: "C:\\Users\\alice\\.msam\\uploads\\a.png")
+            == "C:\\Users\\alice\\.msam\\uploads\\a.png ")
+    }
+
+    @Test func aProfileWithASpaceInItsNameIsTypedInQuotes() {
+        // "C:\Users\Jane Smith" is an ordinary Windows profile. Unquoted, the
+        // path would reach an agent as two words; this is how a Windows
+        // terminal types a dragged file.
+        #expect(RemoteFileUpload.paneInsertion(for: "C:\\Users\\Jane Smith\\.msam\\uploads\\a.png")
+            == "\"C:\\Users\\Jane Smith\\.msam\\uploads\\a.png\" ")
+        #expect(RemoteFileUpload.paneInsertion(for: "C:\\Users\\R&D\\.msam\\uploads\\a.png")
+            == "\"C:\\Users\\R&D\\.msam\\uploads\\a.png\" ")
+    }
+
+    @Test func aUnixPathIsTypedAsItAlwaysWas() {
+        #expect(RemoteFileUpload.paneInsertion(for: "/home/a b/.msam/uploads/a.png")
+            == "/home/a b/.msam/uploads/a.png ")
+    }
+
+    @Test func aWindowsHostThatCouldNotMakeTheFolderSaysWhy() async throws {
+        let (service, transport) = try await makeService(
+            answering: "MSAM_FAILED=Access to the path 'C:\\Users\\alice\\.msam' is denied.\r\n"
+        )
+
+        await #expect(throws: RemoteFileUpload.Failure.uploadFailed(
+            "could not prepare the upload directory: Access to the path 'C:\\Users\\alice\\.msam' is denied."
+        )) {
+            try await RemoteFileUpload.upload(Data([1]), fileExtension: "png", using: service, at: instant)
+        }
+        #expect(transport.writtenFiles.isEmpty)
+    }
+
+    @Test func aWindowsHostThatSaysNothingIsNotGuessedAt() async throws {
+        let (service, transport) = try await makeService(answering: nil)
+
+        await #expect(throws: RemoteFileUpload.Failure.homeUnresolved) {
+            try await RemoteFileUpload.upload(Data([1]), fileExtension: "png", using: service, at: instant)
+        }
+        #expect(transport.writtenFiles.isEmpty)
+    }
+
+    @Test(arguments: ["MSAM_HOME=", "MSAM_HOME=\\\\server\\share\\alice", "MSAM_HOME=/home/alice", "MSAM_HOME=C:", "C:\\Users\\alice"])
+    func onlyAFolderOnADriveIsTakenForAWindowsProfile(answer: String) async throws {
+        let (service, transport) = try await makeService(answering: answer)
+
+        await #expect(throws: RemoteFileUpload.Failure.homeUnresolved) {
+            try await RemoteFileUpload.upload(Data([1]), fileExtension: "png", using: service, at: instant)
+        }
+        #expect(transport.writtenFiles.isEmpty)
+    }
+
+    @Test func aProfileAtTheRootOfADriveDoesNotDoubleTheSeparator() async throws {
+        let (service, transport) = try await makeService(answering: "MSAM_HOME=D:\\\r\n")
+
+        let path = try await RemoteFileUpload.upload(Data([1]), fileExtension: "pdf", using: service, at: instant)
+
+        #expect(path == "D:\\.msam\\uploads\\msam-20260823-134502-118.pdf")
+        #expect(transport.writtenFiles.keys.first == "D:/.msam/uploads/msam-20260823-134502-118.pdf")
+    }
+
+    @Test func aHostThatAnswersWithAnErrorInsteadOfAHomeHasItsWordsPassedOn() async throws {
+        // Whatever kind of host it is: when the question itself fails, what
+        // the host printed is the only clue there will be.
+        let transport = FakeSSHTransport()
+        let service = SSHService(
+            host: Host(name: "h", address: "192.0.2.10", port: 22,
+                       username: "alice", keyID: "k", defaultWorkdir: "/home/alice"),
+            transport: transport,
+            knownHosts: KnownHostsStore(defaults: UserDefaults(suiteName: "msam.win.\(UUID())")!)
+        )
+        try await service.connect(key: SSHKeyMaterial(ed25519Seed: Data(repeating: 7, count: 32))) { _, _ in true }
+        transport.structuredCommandResults = [.success(.init(
+            exitStatus: 1, stdout: Data(), stderr: Data("mkdir: cannot create directory: Read-only file system\n".utf8)
+        ))]
+
+        await #expect(throws: RemoteFileUpload.Failure.uploadFailed(
+            "could not prepare the upload directory: mkdir: cannot create directory: Read-only file system"
+        )) {
+            try await RemoteFileUpload.upload(Data([1]), fileExtension: "png", using: service, at: instant)
+        }
+        #expect(transport.writtenFiles.isEmpty)
+    }
+}
+
+/// The whole trip on a Windows host: what the tab types is the path the file
+/// was written to, as Windows names it.
+@Suite @MainActor struct HerdrHostSessionWindowsFileSendTests {
+
+    @Test func aLiveWindowsTabUploadsThenTypesTheWindowsPath() async throws {
+        let transport = FakeSSHTransport()
+        transport.commandResponses["echo %OS% $env:OS"] = "Windows_NT"
+        transport.commandResponses[RemoteFileUpload.windowsPrepareCommand] = "MSAM_HOME=C:\\Users\\alice\r\n"
+        let keyStore = KeyStore(backing: InMemoryKeychain())
+        let keyID = try keyStore.generateEd25519(label: "windows-upload")
+        let session = HerdrHostSession(
+            connection: HostConnection(
+                host: Host(name: "win", address: "192.0.2.30",
+                           username: "alice", keyID: keyID, defaultWorkdir: ""),
+                keyStore: keyStore,
+                knownHosts: KnownHostsStore(defaults: UserDefaults(suiteName: "msam.win.\(UUID())")!),
+                transport: transport
+            ),
+            sessionName: nil
+        )
+        await session.start()
+        #expect(session.status == .live)
+
+        let path = try await session.sendFile(Data([0x89, 0x50, 0x4E, 0x47]), fileExtension: "png")
+
+        #expect(path.hasPrefix("C:\\Users\\alice\\.msam\\uploads\\msam-"))
+        #expect(transport.writtenFiles[path.replacingOccurrences(of: "\\", with: "/")] != nil)
+        let typed = String(decoding: try #require(transport.openedPTYs.last).sent, as: UTF8.self)
+        #expect(typed.hasSuffix(path + " "))
+    }
+}

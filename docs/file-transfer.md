@@ -24,8 +24,18 @@ The file is written to `~/.msam/uploads/` on the host, named for the timestamp,
 and its **absolute path is typed into the pane**.
 
 ```
-~/.msam/uploads/2026-08-23-160245.png
+~/.msam/uploads/msam-20260823-160245-118.png
 ```
+
+On a Windows host the folder is `.msam\uploads` in the profile of the account
+you connect as, and the path is typed the way Windows writes it:
+
+```
+C:\Users\alice\.msam\uploads\msam-20260823-160245-118.png
+```
+
+A profile such as `C:\Users\Jane Smith` puts a space in that path, so it is
+typed in double quotes, as a Windows terminal types a file dragged into it.
 
 Two details matter:
 
