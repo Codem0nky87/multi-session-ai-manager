@@ -76,6 +76,9 @@ final class FakeSSHTransport: SSHTransport, @unchecked Sendable {
     /// Runs before a direct TCP/IP channel is opened: lets a test hold the open,
     /// as a host does with a destination that never answers.
     var beforeDirectTCPIP: (@Sendable () async throws -> Void)?
+    /// Called with each direct TCP/IP channel as it opens, so a test can play
+    /// whatever the host would have reached (see `FakeDirectTCPIPChannel.onSend`).
+    var onDirectTCPIPOpened: (@Sendable (DirectTCPIPTarget, FakeDirectTCPIPChannel) -> Void)?
     /// Simulates a remote PTY that reaches EOF before `openPTY` hands it back.
     var closeNextPTYBeforeReturning = false
 
@@ -216,6 +219,7 @@ final class FakeSSHTransport: SSHTransport, @unchecked Sendable {
         openedDirectTCPIPTargets.append(.init(host: targetHost, port: targetPort))
         let channel = FakeDirectTCPIPChannel(onOutput: onOutput, onClose: onClose)
         openedDirectTCPIPChannels.append(channel)
+        onDirectTCPIPOpened?(.init(host: targetHost, port: targetPort), channel)
         return channel
     }
 
@@ -234,6 +238,7 @@ final class FakeDirectTCPIPChannel: DirectTCPIPChannel, @unchecked Sendable {
     private let lock = NSLock()
     private var _sent = Data()
     private var _closed = false
+    private var _onSend: (@Sendable (Data) -> Void)?
     private let onOutput: @Sendable (Data) -> Void
     private let onClose: @Sendable () -> Void
 
@@ -248,8 +253,19 @@ final class FakeDirectTCPIPChannel: DirectTCPIPChannel, @unchecked Sendable {
     var sent: Data { lock.withLock { _sent } }
     var closed: Bool { lock.withLock { _closed } }
 
+    /// Given everything sent on the channel, as it is sent: a test that plays
+    /// the far end answers with `emit`.
+    var onSend: (@Sendable (Data) -> Void)? {
+        get { lock.withLock { _onSend } }
+        set { lock.withLock { _onSend = newValue } }
+    }
+
     func send(_ data: Data) {
-        lock.withLock { _sent.append(data) }
+        let farEnd = lock.withLock {
+            _sent.append(data)
+            return _onSend
+        }
+        farEnd?(data)
     }
 
     func close() {

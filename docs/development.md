@@ -51,6 +51,24 @@ xcodebuild -scheme MultiSessionAIManager \
 The unit suite is hermetic — it uses `FakeSSHTransport`, `FakeFileTransfer`, and
 `FakeKeyInstaller`, and touches no network and no real host.
 
+### Signing in to a site, with a real web view
+
+`HostBrowserSignInLiveTests` loads pages in a real web view, through the app's
+real proxy, from a site inside the test that checks a Windows sign-in (NTLM)
+the way a Windows server does. It is skipped unless asked for:
+
+```sh
+TEST_RUNNER_MSAM_WEBKIT_IT=1 xcodebuild test -project MultiSessionAIManager.xcodeproj \
+  -scheme MultiSessionAIManager -destination "platform=iOS Simulator,name=iPad Pro 13-inch (M5)" \
+  -only-testing:MultiSessionAIManagerTests/HostBrowserSignInLiveTests
+```
+
+It needs WebKit's own processes. On a simulator without a screen, on a machine
+busy with other builds, those are sometimes suspended or killed mid-page, and
+the suite then fails for reasons that are not the app's. Run it on a quiet
+machine before shipping a change to the sign-in. A failure says what the tab
+and the site were doing when it gave up.
+
 ### File transfers without SFTP
 
 Linux/macOS uploads, downloads, and file-size queries use bounded SSH exec.

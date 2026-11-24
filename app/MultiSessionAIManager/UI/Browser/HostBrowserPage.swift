@@ -17,6 +17,8 @@ final class HostBrowserPage: NSObject, WKNavigationDelegate, WKUIDelegate {
     /// The page's own title, for its tab.
     private(set) var title = ""
     private(set) var failure: HostBrowserFailure?
+    /// The sign-in a site of this page is waiting for, to be asked over the page.
+    private(set) var signInRequest: HostBrowserSignInRequest?
 
     @ObservationIgnored private var endpoint: HostBrowseModel.Endpoint?
     @ObservationIgnored private var hostName = ""
@@ -24,6 +26,7 @@ final class HostBrowserPage: NSObject, WKNavigationDelegate, WKUIDelegate {
     @ObservationIgnored private var exceptions = HostBrowseCertificateExceptions()
     @ObservationIgnored private var failedURL: URL?
     @ObservationIgnored private var titleWatch: NSKeyValueObservation?
+    @ObservationIgnored private var signIns = HostBrowserSignIns()
 
     /// The proxy settings every request of this browser goes through. No
     /// fallback: when the proxy is gone a page fails, it is not fetched directly
@@ -59,6 +62,8 @@ final class HostBrowserPage: NSObject, WKNavigationDelegate, WKUIDelegate {
             Task { @MainActor [weak self] in self?.refreshTitle() }
         }
         let reopen = hasPage ? webView?.url : nil
+        // What the old web view was asked is not this one's to answer.
+        abandonSignIns()
         webView = view
         hasPage = false
         failure = nil
@@ -68,6 +73,7 @@ final class HostBrowserPage: NSObject, WKNavigationDelegate, WKUIDelegate {
 
     func load(_ url: URL) {
         failure = nil
+        abandonSignIns()
         browse?.clearRefusal()
         guard let webView else { return }
         webView.load(URLRequest(url: url))
@@ -77,6 +83,7 @@ final class HostBrowserPage: NSObject, WKNavigationDelegate, WKUIDelegate {
 
     func reload() {
         failure = nil
+        abandonSignIns()
         browse?.clearRefusal()
         if let failedURL, webView?.url == nil || !hasPage {
             webView?.load(URLRequest(url: failedURL))
@@ -85,9 +92,42 @@ final class HostBrowserPage: NSObject, WKNavigationDelegate, WKUIDelegate {
         }
     }
 
-    func stopLoading() { webView?.stopLoading() }
-    func goBack() { failure = nil; webView?.goBack() }
-    func goForward() { failure = nil; webView?.goForward() }
+    func stopLoading() {
+        abandonSignIns()
+        webView?.stopLoading()
+    }
+
+    func goBack() {
+        failure = nil
+        abandonSignIns()
+        webView?.goBack()
+    }
+
+    func goForward() {
+        failure = nil
+        abandonSignIns()
+        webView?.goForward()
+    }
+
+    /// The user's answer to the sign-in that is shown. It is kept until the app
+    /// closes, for this host's browser only, so the rest of the site and its
+    /// later pages do not ask again. Nothing is written to the device.
+    func answerSignIn(user: String, password: String) {
+        signIns.answer(.credentials(user: user, password: password))
+        signInRequest = signIns.current
+    }
+
+    /// The user would rather not sign in: the site shows what it shows a stranger.
+    func declineSignIn() {
+        signIns.answer(.nothing)
+        signInRequest = signIns.current
+    }
+
+    /// The page the sign-ins were asked for is being left.
+    private func abandonSignIns() {
+        signIns.abandonAll()
+        signInRequest = nil
+    }
 
     /// The user accepts the certificate of the site that just failed.
     func visitAnyway() {
@@ -121,6 +161,8 @@ final class HostBrowserPage: NSObject, WKNavigationDelegate, WKUIDelegate {
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         failure = nil
+        // A sign-in still waiting now belongs to the page this one replaces.
+        abandonSignIns()
         refresh()
     }
 
@@ -148,8 +190,34 @@ final class HostBrowserPage: NSObject, WKNavigationDelegate, WKUIDelegate {
            exceptions.allows(authenticationMethod: space.authenticationMethod, host: space.host, port: space.port,
                              hasServerTrust: true) {
             completionHandler(.useCredential, URLCredential(trust: trust))
-        } else {
+            return
+        }
+        switch HostBrowserChallenge.of(method: space.authenticationMethod, isProxy: space.isProxy(),
+                                       failures: challenge.previousFailureCount) {
+        case .ask(let kind):
+            // A web view that has been replaced has nobody left to ask.
+            guard webView === self.webView else {
+                completionHandler(.cancelAuthenticationChallenge, nil)
+                return
+            }
+            signIns.ask(host: space.host, port: space.port, usesTLS: space.protocol == "https", kind: kind,
+                        failures: challenge.previousFailureCount, user: challenge.proposedCredential?.user ?? "") { reply in
+                switch reply {
+                case .credentials(let user, let password):
+                    // For the session: WebKit keeps it in memory for this host's
+                    // browser and answers the site's other connections with it.
+                    completionHandler(.useCredential, URLCredential(user: user, password: password, persistence: .forSession))
+                case .nothing:
+                    completionHandler(.cancelAuthenticationChallenge, nil)
+                }
+            }
+            signInRequest = signIns.current
+        case .tryTheNextOffer:
+            completionHandler(.rejectProtectionSpace, nil)
+        case .leaveAlone:
             completionHandler(.performDefaultHandling, nil)
+        case .giveUp:
+            completionHandler(.cancelAuthenticationChallenge, nil)
         }
     }
 

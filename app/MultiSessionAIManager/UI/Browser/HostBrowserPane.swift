@@ -198,6 +198,12 @@ struct HostBrowserPane: View {
                         }
                     }
                 }
+                if let request = page.signInRequest {
+                    Theme.bg.opacity(0.94)
+                    HostBrowserSignInCard(request: request,
+                                          signIn: { page.answerSignIn(user: $0, password: $1) },
+                                          cancel: { page.declineSignIn() })
+                }
             }
         }
     }

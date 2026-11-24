@@ -50,6 +50,28 @@ on-screen keyboard makes the terminal shorter, as it does when typing into the
 terminal, so Herdr lays the screen out once for the space above the keyboard
 and the page is fully visible there.
 
+### Signing in to a site
+
+A site that wants a user name and password before it shows a page (an internal
+console that wants a Windows account, a tool behind HTTP Basic) is asked about
+over the page: **Sign in to** the site, a name, a password, **Sign In** or
+**Cancel**.
+
+- **A Windows account** (NTLM, which IIS calls Windows Authentication) is
+  written `DOMAIN\name` for a domain account, or just the name for one of the
+  server's own. The password answers the server's challenge; it is not sent.
+- **HTTP Basic and Digest** are asked for the same way. Basic sends the
+  password as typed, so on a site without HTTPS the question says that it
+  travels without encryption.
+- **The sign-in lasts until the app closes**, for that host's browser spaces
+  only: the site's other pages and the host's other tabs do not ask again.
+  Nothing is written to the device, so after a restart a site asks once more.
+- **A password the site turns down is asked for again**, with the name left in
+  place. It is never sent a second time on its own: one wrong password is one
+  refused sign-in at the server.
+- **Cancel** shows what the site shows someone who has not signed in.
+- Leaving the page, stopping it or closing its tab withdraws the question.
+
 ## Limits
 
 - **Other terminals see a placeholder.** A desktop terminal attached to the
@@ -64,6 +86,9 @@ and the page is fully visible there.
   menu entry always works.
 - **On a Windows host the pane's shell stays underneath.** See
   [On a Windows host](#on-a-windows-host).
+- **No Kerberos.** A site that accepts only Kerberos ("Negotiate" and nothing
+  else) cannot be signed in to: the device has no ticket for it. A site that
+  offers NTLM next to it, as IIS does unless told otherwise, can.
 
 ## How it works
 
@@ -209,6 +234,22 @@ browser space  ──SOCKS5──▶ proxy on 127.0.0.1 ──direct-tcpip──
   in that browser space, until its tab is closed.
 - **A changed host key is never accepted from here.** The browser says to open
   the host's tab, which shows the key and asks.
+- **A site's password is the user's to give.** The browser answers a site that
+  asks for a sign-in only with what the user typed for it
+  (`Core/HostBrowserSignIn.swift`): never with the host's SSH credentials, and
+  never with what another host's browser was given. It is held in memory by
+  that host's web data store (`URLCredential.Persistence.forSession`) and is
+  gone when the app closes.
+- **A refused sign-in is never repeated unasked.** Left to the system after a
+  site has said no, the refused answer is sent again, and again when that is
+  refused: about 1 600 refused sign-ins in twelve seconds against a test site,
+  which locks a Windows account out. So once a site has refused, the browser
+  either asks the user or ends the request (`HostBrowserChallenge`).
+  `Tests/HostBrowserSignInLiveTests.swift` holds a real web view against a
+  site that checks a Windows sign-in the way a Windows server does
+  (`Tests/SignInTestSite.swift`) and counts the refusals. It is opt-in, see
+  [development.md](development.md#tests); `HostBrowserSignInPageTests` covers
+  what the page does with each challenge in every run.
 
 ### When a page does not load
 
