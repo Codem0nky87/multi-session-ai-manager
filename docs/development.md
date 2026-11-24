@@ -68,11 +68,15 @@ TEST_RUNNER_MSAM_WEBKIT_IT=1 xcodebuild test -project MultiSessionAIManager.xcod
   -only-testing:MultiSessionAIManagerTests/HostBrowserSignInLiveTests
 ```
 
-It needs WebKit's own processes. On a simulator without a screen, on a machine
-busy with other builds, those are sometimes suspended or killed mid-page, and
-the suite then fails for reasons that are not the app's. Run it on a quiet
-machine before shipping a change to the sign-in. A failure says what the tab
-and the site were doing when it gave up.
+`HostBrowserLocalhostLiveTests` is asked for the same way: `localhost` typed
+into a browser space, and a redirect to it, opened on the host.
+
+These load real pages in WebKit's own processes and wait for them. Hold the
+machine awake while they run (`caffeinate -s -i xcodebuild …`): a Mac that goes
+to sleep in the middle of a run, as an unattended one set to sleep after a
+minute does, freezes a page half loaded and the test gives up on it. That
+looked like WebKit failing until the sleeps were found in `pmset -g log`. A
+failure says what the tab and the site were doing when it gave up.
 
 ### File transfers without SFTP
 

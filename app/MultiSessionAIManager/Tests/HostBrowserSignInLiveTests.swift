@@ -9,15 +9,16 @@ import WebKit
 /// handshake itself works, and that one wrong password is one refused sign-in.
 ///
 /// Opt-in: set `MSAM_WEBKIT_IT=1` (as `TEST_RUNNER_MSAM_WEBKIT_IT=1` for
-/// `xcodebuild`). It needs WebKit's own processes, and on a simulator without a
-/// screen, on a machine that is busy with something else, those are sometimes
-/// suspended or killed in the middle of a page: on 2026-11-20 a run of these
-/// failed that way, while 480 sign-ins on a quiet machine four days later all
-/// went through. A test that fails for that says nothing about the app, so
-/// this suite is not part of every run. What the page does with a challenge is
-/// tested without WebKit's processes in `HostBrowserSignInPageTests`. Run this
-/// suite before shipping a change to the sign-in, and read a failure's own
-/// words: it says what the tab and the site were doing.
+/// `xcodebuild`). It loads real pages in WebKit's own processes and waits for
+/// them, which takes half a minute, and it is only as steady as the machine it
+/// runs on: on 2026-11-20 a run of these failed in ways that looked like
+/// WebKit's doing, and the cause, found four days later, was the build machine
+/// going to sleep every half minute in the middle of the run (`pmset -g log`).
+/// Held awake (`caffeinate -s`), 480 sign-ins in a row went through. What the
+/// page does with a challenge is tested without WebKit's processes in
+/// `HostBrowserSignInPageTests`. Run this suite before shipping a change to
+/// the sign-in, and read a failure's own words: it says what the tab and the
+/// site were doing.
 @Suite(.serialized, .enabled(if: ProcessInfo.processInfo.environment["MSAM_WEBKIT_IT"] == "1"))
 @MainActor struct HostBrowserSignInLiveTests {
     private final class NoProxy: HostBrowseProxyServing {
