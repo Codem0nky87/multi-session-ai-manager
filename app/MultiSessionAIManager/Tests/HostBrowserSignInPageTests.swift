@@ -183,6 +183,16 @@ func removeTestBrowserData(of hostID: UUID) async {
         await tab.close()
     }
 
+    @Test func aSignInOnTheHostsOwnLoopbackIsAskedForAsLocalhost() async throws {
+        let tab = Tab()
+
+        // The web view knows that site by its stand-in address.
+        try tab.isAsked(NSURLAuthenticationMethodHTTPBasic, by: HostBrowserAddress.hostItself, port: 8443)
+
+        #expect(tab.page?.signInRequest?.title == "Sign in to localhost:8443")
+        await tab.close()
+    }
+
     @Test func kerberosIsPassedOverAtOnceSoTheWindowsSignInComesUp() async throws {
         let tab = Tab()
 

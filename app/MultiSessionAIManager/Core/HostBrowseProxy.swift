@@ -405,7 +405,11 @@ private final class SOCKSToSSHHandler: ChannelInboundHandler, @unchecked Sendabl
         state = .opening(id: id)
         let channel = self.channel
         let service = self.service
-        let destination = "\(request.host):\(request.port)"
+        // The web view asks for the host's own loopback by a stand-in address,
+        // because it keeps `localhost` to itself. The host is asked for
+        // `localhost`, and that is the name everything else hears.
+        let host = request.host == HostBrowserAddress.hostItself ? "localhost" : request.host
+        let destination = "\(host):\(request.port)"
         onRequest(destination)
 
         // A destination that never answers must not leave the browser waiting
@@ -421,7 +425,7 @@ private final class SOCKSToSSHHandler: ChannelInboundHandler, @unchecked Sendabl
             do {
                 // The name goes to the SSH host exactly as the browser gave it.
                 let opened = try await service.openDirectTCPIP(
-                    targetHost: request.host,
+                    targetHost: host,
                     targetPort: request.port,
                     onOutput: { data in
                         channel.eventLoop.execute {

@@ -181,20 +181,53 @@ enum HostBrowserAddress {
         guard let url = URL(string: withScheme),
               let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
               let host = url.host, !host.isEmpty else { return nil }
-        return onTheHost(url)
+        return standIn(for: url) ?? url
     }
 
-    /// A browser never hands a proxy the loopback addresses: it takes
-    /// `127.0.0.1` and `::1` for the device it runs on, and the page fails with
-    /// "Could not connect to the server" without the host ever being asked
-    /// (seen 2026-11-24). An address is typed here as it would be on the host,
-    /// where those mean the host itself; `localhost` says the same and is
-    /// handed to the proxy, so that is what is opened.
-    private static func onTheHost(_ url: URL) -> URL {
-        guard let host = url.host, host == "127.0.0.1" || host == "::1",
-              var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
+    /// The address the web view is given for the host's own loopback.
+    ///
+    /// An address is typed here as it would be on the host, where `localhost`,
+    /// `127.0.0.1` and `::1` mean the host. A web view never hands those to a
+    /// proxy: it takes them for the device it runs on, tries them there, and
+    /// the page fails with "Could not connect to the server" without the host
+    /// ever being asked. The loopback addresses do that on the simulator too;
+    /// `localhost` only on a device, which is how it got out (user report with
+    /// the page's own words, 2026-11-24). Addresses that are not the device's
+    /// own do go to the proxy, so the web view is given this one instead, and
+    /// the proxy opens it as the host's `localhost` (`SOCKSToSSHHandler`).
+    ///
+    /// It is from the range set aside for documentation (RFC 5737), where no
+    /// machine is: nothing the user could mean is taken away by it.
+    static let hostItself = "192.0.2.1"
+
+    private static let loopback: Set<String> = ["localhost", "127.0.0.1", "::1"]
+
+    /// `url` with the stand-in where it names the host's own loopback; nil
+    /// when it does not, or is no web page.
+    static func standIn(for url: URL) -> URL? {
+        guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
+              let host = url.host?.lowercased(), loopback.contains(host),
+              var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
+        parts.host = hostItself
+        return parts.url
+    }
+
+    /// The name the user reads for a site: `localhost` for the stand-in.
+    static func shownHost(_ host: String) -> String {
+        host == hostItself ? "localhost" : host
+    }
+
+    /// An address as the user reads it, and as they would type it.
+    static func shown(_ url: URL) -> URL {
+        guard url.host == hostItself, var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
         parts.host = "localhost"
         return parts.url ?? url
+    }
+
+    static func shown(_ address: String) -> String {
+        // Anything but the stand-in is given back as it was written, not as a URL writes it.
+        guard let url = URL(string: address), url.host == hostItself else { return address }
+        return shown(url).absoluteString
     }
 }
 
@@ -209,7 +242,8 @@ struct HostBrowserFailure: Equatable {
     /// it listens on.
     static func destination(of url: URL) -> String? {
         guard let host = url.host?.lowercased(), !host.isEmpty else { return nil }
-        return "\(host):\(url.port ?? (url.scheme?.lowercased() == "https" ? 443 : 80))"
+        // By the name the host is asked for, which is also what the user typed.
+        return "\(HostBrowserAddress.shownHost(host)):\(url.port ?? (url.scheme?.lowercased() == "https" ? 443 : 80))"
     }
 
     /// Nil for a load that was merely replaced by another one.
@@ -223,7 +257,7 @@ struct HostBrowserFailure: Equatable {
         if failure.domain == "WebKitErrorDomain", failure.code == 102 { return nil }
 
         if HostBrowseCertificateExceptions.isCertificateProblem(error), url?.scheme?.lowercased() == "https" {
-            let site = url?.host ?? "this site"
+            let site = url?.host.map(HostBrowserAddress.shownHost) ?? "this site"
             return HostBrowserFailure(
                 message: "The certificate of \(site) is not trusted by this device. \(failure.localizedDescription)",
                 canVisitAnyway: true)

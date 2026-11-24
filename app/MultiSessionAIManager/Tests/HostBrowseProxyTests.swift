@@ -331,6 +331,44 @@ import Testing
         #expect(throws: POSIXError.self) { _ = try Client(port: port) }
     }
 
+    /// The web view cannot be given `localhost` for the host's own loopback (it
+    /// would keep it to itself), so it asks for a stand-in address instead.
+    @Test func theStandInForTheHostsOwnLoopbackIsOpenedAsLocalhost() async throws {
+        let (service, transport) = try await connectedService()
+        let asked = NIOLockedValueBox<[String]>([])
+        let listener = try await NIOHostBrowseProxyServer(service: service).start(
+            credentials: Self.credentials,
+            onRequest: { destination in asked.withLockedValue { $0.append(destination) } },
+            onRefusal: { _ in })
+        let browser = try Client(port: listener.localPort)
+        _ = browser.logIn(Self.credentials)
+
+        browser.ask(for: HostBrowserAddress.hostItself, port: 8443)
+
+        #expect(browser.receive(10) == SOCKS5.reply(.succeeded))
+        #expect(transport.openedDirectTCPIPTargets == [.init(host: "localhost", port: 8443)])
+        #expect(asked.withLockedValue { $0 } == ["localhost:8443"], "And it is spoken of as localhost")
+        await listener.stop()
+    }
+
+    @Test func aRefusalOfTheHostsOwnLoopbackNamesLocalhost() async throws {
+        let (service, transport) = try await connectedService()
+        transport.directTCPIPError = SSHTransportError.commandFailed(
+            "direct-tcpip localhost:8443 failed: NIOSSHError.channelSetupRejected: Reason: 2 Connection refused")
+        let refused = NIOLockedValueBox<[HostBrowseRefusal]>([])
+        let listener = try await NIOHostBrowseProxyServer(service: service).start(credentials: Self.credentials) { refusal in
+            refused.withLockedValue { $0.append(refusal) }
+        }
+        let browser = try Client(port: listener.localPort)
+        _ = browser.logIn(Self.credentials)
+
+        browser.ask(for: HostBrowserAddress.hostItself, port: 8443)
+
+        #expect(browser.receive(10) == SOCKS5.reply(.hostUnreachable))
+        #expect(refused.withLockedValue { $0 }.map(\.destination) == ["localhost:8443"])
+        await listener.stop()
+    }
+
     @Test func theProxySaysWhatTheBrowserAsksItFor() async throws {
         let (service, _) = try await connectedService()
         let asked = NIOLockedValueBox<[String]>([])

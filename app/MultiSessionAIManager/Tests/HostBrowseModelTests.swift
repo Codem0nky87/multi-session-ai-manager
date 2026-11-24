@@ -381,30 +381,67 @@ import Testing
         ("app.internal.example/wiki?page=1", "http://app.internal.example/wiki?page=1"),
         ("10.200.109.26:8443", "http://10.200.109.26:8443"),
         ("https://qas.internal.example:8443/login", "https://qas.internal.example:8443/login"),
-        ("  http://localhost:3000/  ", "http://localhost:3000/"),
+        ("  http://wiki.internal.example:3000/  ", "http://wiki.internal.example:3000/"),
         ("HTTPS://Example.internal", "HTTPS://Example.internal"),
     ])
     func whatIsTypedBecomesAnAddress(typed: String, address: String) {
         #expect(HostBrowserAddress.url(from: typed)?.absoluteString == address)
     }
 
-    /// A browser never hands its proxy the loopback addresses: it takes them
-    /// for the device it runs on. Typed here they mean the host, as `localhost`
-    /// does, which the proxy is handed.
+    /// A web view on an iPad never hands its proxy `localhost` or the loopback
+    /// addresses: it takes them for the iPad, and the page fails without the
+    /// host ever being asked (seen on a device, 2026-11-24; the simulator does
+    /// hand `localhost` over). Typed here they mean the host, so the web view
+    /// is given a stand-in address that it does hand over, and the proxy turns
+    /// that into the host's own `localhost`.
     @Test(arguments: [
-        ("127.0.0.1:8443", "http://localhost:8443"),
-        ("https://127.0.0.1:8443/app?tab=1#top", "https://localhost:8443/app?tab=1#top"),
-        ("http://127.0.0.1", "http://localhost"),
-        ("[::1]:3000/status", "http://localhost:3000/status"),
-        ("https://[::1]/", "https://localhost/"),
+        ("localhost:8443", "http://192.0.2.1:8443"),
+        ("https://localhost:8443/app?tab=1#top", "https://192.0.2.1:8443/app?tab=1#top"),
+        ("http://LocalHost/", "http://192.0.2.1/"),
+        ("127.0.0.1:8443", "http://192.0.2.1:8443"),
+        ("https://127.0.0.1:8443/app?tab=1#top", "https://192.0.2.1:8443/app?tab=1#top"),
+        ("[::1]:3000/status", "http://192.0.2.1:3000/status"),
+        ("https://[::1]/", "https://192.0.2.1/"),
     ])
-    func theHostsOwnAddressIsWrittenAsItsName(typed: String, address: String) {
-        #expect(HostBrowserAddress.url(from: typed)?.absoluteString == address)
+    func theHostsOwnAddressGoesToTheWebViewAsAStandIn(typed: String, loaded: String) {
+        #expect(HostBrowserAddress.url(from: typed)?.absoluteString == loaded)
     }
 
-    @Test(arguments: ["http://127.0.0.10:8080/", "http://10.127.0.0.1.internal.example/", "http://127.0.0.1.example/"])
+    @Test(arguments: ["http://127.0.0.10:8080/", "http://10.127.0.0.1.internal.example/", "http://127.0.0.1.example/",
+                      "http://localhost.internal.example/", "http://app.localhost:3000/"])
     func otherAddressesAreLeftAsTyped(typed: String) {
         #expect(HostBrowserAddress.url(from: typed)?.absoluteString == typed)
+    }
+
+    @Test func whatTheUserReadsIsLocalhostAgain() {
+        #expect(HostBrowserAddress.shown("https://192.0.2.1:8443/app?tab=1#top") == "https://localhost:8443/app?tab=1#top")
+        #expect(HostBrowserAddress.shown("http://192.0.2.1/") == "http://localhost/")
+        #expect(HostBrowserAddress.shownHost("192.0.2.1") == "localhost")
+        // Everything else reads as it is.
+        #expect(HostBrowserAddress.shown("https://qas.internal.example:8443/login") == "https://qas.internal.example:8443/login")
+        #expect(HostBrowserAddress.shown("http://192.0.2.10/") == "http://192.0.2.10/")
+        #expect(HostBrowserAddress.shown("") == "")
+        #expect(HostBrowserAddress.shown("not an address") == "not an address")
+        #expect(HostBrowserAddress.shownHost("qas.internal.example") == "qas.internal.example")
+    }
+
+    /// What is typed as it is shown opens the same page again: a tab's address
+    /// is saved as it is shown.
+    @Test func whatIsShownOpensTheSamePageWhenItIsTyped() {
+        let loaded = "https://192.0.2.1:8443/app?tab=1"
+        #expect(HostBrowserAddress.url(from: HostBrowserAddress.shown(loaded))?.absoluteString == loaded)
+    }
+
+    /// A page can send the browser to the host's own loopback itself: a link,
+    /// a redirect after signing in.
+    @Test func aPagesOwnLinkToTheHostsLoopbackIsSentTheSameWay() {
+        #expect(HostBrowserAddress.standIn(for: URL(string: "http://localhost:3000/callback?code=1")!)?.absoluteString
+                == "http://192.0.2.1:3000/callback?code=1")
+        #expect(HostBrowserAddress.standIn(for: URL(string: "https://127.0.0.1/")!)?.absoluteString == "https://192.0.2.1/")
+        // Anything else is left to go where it says, and so is what is not a web page.
+        #expect(HostBrowserAddress.standIn(for: URL(string: "https://qas.internal.example/")!) == nil)
+        #expect(HostBrowserAddress.standIn(for: URL(string: "https://192.0.2.1:8443/")!) == nil)
+        #expect(HostBrowserAddress.standIn(for: URL(string: "mailto:someone@localhost")!) == nil)
     }
 
     @Test(arguments: ["", "   ", "two words", "file:///etc/passwd", "javascript://alert(1)", "ftp://files.internal/", "http://"])
@@ -493,6 +530,28 @@ import Testing
         let unknown = HostBrowserFailure.describe(failure(NSURLErrorTimedOut, "The request timed out."),
                                                   url: page, refusal: nil, hostName: "Forge")
         #expect(unknown?.message == "The request timed out.")
+    }
+
+    /// The web view knows the host's own loopback by a stand-in address. The
+    /// user never typed that and must not be told it.
+    @Test func theHostsOwnLoopbackIsCalledLocalhostInWhatIsTold() {
+        let standIn = URL(string: "https://192.0.2.1:8443/")!
+        let neverAsked = HostBrowserFailure.describe(failure(NSURLErrorCannotConnectToHost, "Could not connect to the server."),
+                                                     url: standIn, refusal: nil, hostName: "Forge", wasAsked: false)
+        #expect(neverAsked?.message
+                == "Could not connect to the server. The request never reached Forge: the browser did not ask it for localhost:8443.")
+
+        // The proxy reports what it asked the host for, which is localhost.
+        let refused = HostBrowserFailure.describe(failure(NSURLErrorCannotConnectToHost), url: standIn,
+                                                  refusal: HostBrowseRefusal(destination: "localhost:8443", reason: "Connection refused"),
+                                                  hostName: "Forge")
+        #expect(refused?.message == "Forge could not open localhost:8443. Connection refused")
+
+        let certificate = HostBrowserFailure.describe(
+            failure(NSURLErrorServerCertificateUntrusted, "The certificate for this server is invalid."),
+            url: standIn, refusal: nil, hostName: "Forge")
+        #expect(certificate?.message == "The certificate of localhost is not trusted by this device. The certificate for this server is invalid.")
+        #expect(HostBrowserFailure.destination(of: standIn) == "localhost:8443")
     }
 
     @Test func whatTheHostSaidComesBeforeWhoWasAsked() {

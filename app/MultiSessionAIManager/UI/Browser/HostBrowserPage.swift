@@ -146,7 +146,8 @@ final class HostBrowserPage: NSObject, WKNavigationDelegate, WKUIDelegate {
         canGoBack = webView?.canGoBack ?? false
         canGoForward = webView?.canGoForward ?? false
         isLoading = webView?.isLoading ?? false
-        if let url = webView?.url { currentAddress = url.absoluteString }
+        // As the user typed it: the web view has a stand-in for the host's own `localhost`.
+        if let url = webView?.url { currentAddress = HostBrowserAddress.shown(url).absoluteString }
         refreshTitle()
     }
 
@@ -201,6 +202,33 @@ final class HostBrowserPage: NSObject, WKNavigationDelegate, WKUIDelegate {
         failed(error)
     }
 
+    /// A page can send the browser to the host's own loopback itself, with a
+    /// link or a redirect to `localhost`. Followed as written it would be tried
+    /// on this device, so it is opened by the stand-in, like an address that is
+    /// typed. Only the tab's own page can be sent on like that; a frame or a
+    /// script inside a page that asks for `localhost` still gets this device.
+    ///
+    /// Returns what to load in place of `request`, or nil to let it go where
+    /// it says.
+    static func replacement(for request: URLRequest, inMainFrame: Bool) -> URLRequest? {
+        guard inMainFrame, let url = request.url, let standIn = HostBrowserAddress.standIn(for: url) else { return nil }
+        var replacement = request
+        replacement.url = standIn
+        return replacement
+    }
+
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                 decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
+        guard let instead = Self.replacement(for: navigationAction.request,
+                                             inMainFrame: navigationAction.targetFrame?.isMainFrame == true) else {
+            decisionHandler(.allow)
+            return
+        }
+        decisionHandler(.cancel)
+        webView.load(instead)
+        isLoading = true
+    }
+
     func webView(_ webView: WKWebView, didReceive challenge: URLAuthenticationChallenge,
                  completionHandler: @escaping @MainActor @Sendable (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
         let space = challenge.protectionSpace
@@ -218,7 +246,7 @@ final class HostBrowserPage: NSObject, WKNavigationDelegate, WKUIDelegate {
                 completionHandler(.cancelAuthenticationChallenge, nil)
                 return
             }
-            signIns.ask(host: space.host, port: space.port, usesTLS: space.protocol == "https", kind: kind,
+            signIns.ask(host: HostBrowserAddress.shownHost(space.host), port: space.port, usesTLS: space.protocol == "https", kind: kind,
                         failures: challenge.previousFailureCount, user: challenge.proposedCredential?.user ?? "") { reply in
                 switch reply {
                 case .credentials(let user, let password):
