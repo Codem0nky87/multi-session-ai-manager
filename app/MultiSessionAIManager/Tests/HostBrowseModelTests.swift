@@ -32,11 +32,18 @@ import Testing
         private var made: [Listener] = []
         private var given: [HostBrowseProxyCredentials] = []
         private var refuse: [@Sendable (HostBrowseRefusal) -> Void] = []
+        private var request: [@Sendable (String) -> Void] = []
         var failure: Error?
         /// Holds `start` until released, to catch a stop that arrives meanwhile.
         var gate: (@Sendable () async -> Void)?
 
         func start(credentials: HostBrowseProxyCredentials,
+                   onRefusal: @escaping @Sendable (HostBrowseRefusal) -> Void) async throws -> any HostBrowseProxyListener {
+            try await start(credentials: credentials, onRequest: { _ in }, onRefusal: onRefusal)
+        }
+
+        func start(credentials: HostBrowseProxyCredentials,
+                   onRequest: @escaping @Sendable (String) -> Void,
                    onRefusal: @escaping @Sendable (HostBrowseRefusal) -> Void) async throws -> any HostBrowseProxyListener {
             await gate?()
             if let failure { throw failure }
@@ -45,8 +52,15 @@ import Testing
                 made.append(listener)
                 given.append(credentials)
                 refuse.append(onRefusal)
+                request.append(onRequest)
                 return listener
             }
+        }
+
+        /// The browser puts a destination to the proxy of the given session (the latest by default).
+        func browserAsks(for destination: String, session: Int? = nil) {
+            let all = lock.withLock { request }
+            (session.map { all[$0] } ?? all.last)?(destination)
         }
 
         var listeners: [Listener] { lock.withLock { made } }
@@ -186,6 +200,43 @@ import Testing
         // While the current one is heard.
         server.hostRefuses(HostBrowseRefusal(destination: "new.internal:80", reason: "refused"))
         await eventually("the current session's refusal") { model.lastRefusal?.destination == "new.internal:80" }
+    }
+
+    // MARK: What the browser asked for
+
+    /// A page that fails without a word from the host may never have been put
+    /// to the host at all: a web view keeps some addresses to itself.
+    @Test func whatTheBrowserPutToTheProxyIsRemembered() async {
+        let server = Server()
+        let model = HostBrowseModel(server: server, connect: { nil })
+        await model.start()
+        let before = ContinuousClock.now
+        #expect(!model.wasAsked(for: "localhost:8443", since: before))
+
+        server.browserAsks(for: "LocalHost:8443")
+        await eventually("the request to be noted") { model.wasAsked(for: "localhost:8443", since: before) }
+
+        #expect(model.wasAsked(for: "LOCALHOST:8443", since: before), "A name is the same name in capitals")
+        #expect(!model.wasAsked(for: "localhost:9000", since: before))
+        #expect(!model.wasAsked(for: "localhost:8443", since: .now), "Only what was asked since then counts")
+    }
+
+    @Test func whatAnEarlierSessionWasAskedIsForgotten() async {
+        let server = Server()
+        let model = HostBrowseModel(server: server, connect: { nil })
+        let before = ContinuousClock.now
+        await model.start()
+        server.browserAsks(for: "localhost:8443")
+        await eventually("the request to be noted") { model.wasAsked(for: "localhost:8443", since: before) }
+
+        await model.stop()
+        await model.start()
+
+        #expect(!model.wasAsked(for: "localhost:8443", since: before))
+        // And the first session's proxy reporting late is not taken for this one's.
+        server.browserAsks(for: "localhost:8443", session: 0)
+        try? await Task.sleep(for: .milliseconds(80))
+        #expect(!model.wasAsked(for: "localhost:8443", since: before))
     }
 
     // MARK: A proxy that has stopped listening
@@ -417,10 +468,43 @@ import Testing
     @Test func whatTheHostSaidIsToldInsteadOfAGenericProxyError() {
         let refusal = HostBrowseRefusal(destination: "QAS.internal.example:8443", reason: "administratively prohibited")
         let described = HostBrowserFailure.describe(failure(NSURLErrorCannotConnectToHost, "Could not connect to the proxy."),
-                                                    url: page, refusal: refusal, hostName: "Sithabile - 22")
+                                                    url: page, refusal: refusal, hostName: "Build host")
         #expect(described == HostBrowserFailure(
-            message: "Sithabile - 22 could not open QAS.internal.example:8443. administratively prohibited",
+            message: "Build host could not open QAS.internal.example:8443. administratively prohibited",
             canVisitAnyway: false))
+    }
+
+    /// The same words can mean two things: the host could not open the
+    /// address, or the web view never put the address to the host.
+    @Test func aPageTheHostWasNeverAskedForSaysSo() {
+        let described = HostBrowserFailure.describe(failure(NSURLErrorCannotConnectToHost, "Could not connect to the server."),
+                                                    url: URL(string: "https://LocalHost:8443/"), refusal: nil, hostName: "Forge",
+                                                    wasAsked: false)
+        #expect(described == HostBrowserFailure(
+            message: "Could not connect to the server. The request never reached Forge: the browser did not ask it for localhost:8443.",
+            canVisitAnyway: false))
+    }
+
+    @Test func aPageTheHostWasAskedForIsToldAsItFailed() {
+        let asked = HostBrowserFailure.describe(failure(NSURLErrorTimedOut, "The request timed out."),
+                                                url: page, refusal: nil, hostName: "Forge", wasAsked: true)
+        #expect(asked?.message == "The request timed out.")
+        // Not known is not "no".
+        let unknown = HostBrowserFailure.describe(failure(NSURLErrorTimedOut, "The request timed out."),
+                                                  url: page, refusal: nil, hostName: "Forge")
+        #expect(unknown?.message == "The request timed out.")
+    }
+
+    @Test func whatTheHostSaidComesBeforeWhoWasAsked() {
+        let refusal = HostBrowseRefusal(destination: "qas.internal.example:8443", reason: "Connection refused")
+        let described = HostBrowserFailure.describe(failure(NSURLErrorCannotConnectToHost), url: page, refusal: refusal,
+                                                    hostName: "Forge", wasAsked: false)
+        #expect(described?.message == "Forge could not open qas.internal.example:8443. Connection refused")
+        let certificate = HostBrowserFailure.describe(
+            failure(NSURLErrorServerCertificateUntrusted, "The certificate for this server is invalid."),
+            url: page, refusal: nil, hostName: "Forge", wasAsked: false)
+        #expect(certificate?.canVisitAnyway == true)
+        #expect(certificate?.message.contains("never reached") == false)
     }
 
     @Test func aRefusalForAnotherAddressIsNotBlamedOnThisPage() {

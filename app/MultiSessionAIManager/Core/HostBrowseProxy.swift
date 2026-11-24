@@ -59,6 +59,25 @@ protocol HostBrowseProxyServing: Sendable {
         credentials: HostBrowseProxyCredentials,
         onRefusal: @escaping @Sendable (HostBrowseRefusal) -> Void
     ) async throws -> any HostBrowseProxyListener
+
+    /// The same, and `onRequest` is told every destination ("name:port") the
+    /// browser puts to the proxy, before the host is asked for it. A page that
+    /// fails without that having happened was never the host's to open.
+    func start(
+        credentials: HostBrowseProxyCredentials,
+        onRequest: @escaping @Sendable (String) -> Void,
+        onRefusal: @escaping @Sendable (HostBrowseRefusal) -> Void
+    ) async throws -> any HostBrowseProxyListener
+}
+
+extension HostBrowseProxyServing {
+    func start(
+        credentials: HostBrowseProxyCredentials,
+        onRequest: @escaping @Sendable (String) -> Void,
+        onRefusal: @escaping @Sendable (HostBrowseRefusal) -> Void
+    ) async throws -> any HostBrowseProxyListener {
+        try await start(credentials: credentials, onRefusal: onRefusal)
+    }
 }
 
 /// The part of SOCKS5 (RFC 1928) and its password method (RFC 1929) a browser
@@ -177,6 +196,14 @@ final class NIOHostBrowseProxyServer: HostBrowseProxyServing, @unchecked Sendabl
         credentials: HostBrowseProxyCredentials,
         onRefusal: @escaping @Sendable (HostBrowseRefusal) -> Void
     ) async throws -> any HostBrowseProxyListener {
+        try await start(credentials: credentials, onRequest: { _ in }, onRefusal: onRefusal)
+    }
+
+    func start(
+        credentials: HostBrowseProxyCredentials,
+        onRequest: @escaping @Sendable (String) -> Void,
+        onRefusal: @escaping @Sendable (HostBrowseRefusal) -> Void
+    ) async throws -> any HostBrowseProxyListener {
         let connections = BrowseConnections()
         let service = self.service
         let connectTimeout = self.connectTimeout
@@ -188,7 +215,7 @@ final class NIOHostBrowseProxyServer: HostBrowseProxyServing, @unchecked Sendabl
                 connections.add(channel)
                 return channel.pipeline.addHandler(SOCKSToSSHHandler(
                     channel: channel, service: service, credentials: credentials,
-                    connectTimeout: connectTimeout, onRefusal: onRefusal))
+                    connectTimeout: connectTimeout, onRequest: onRequest, onRefusal: onRefusal))
             }
         // Loopback only, and a port of the system's choosing: nothing has to know
         // it but the browser this proxy is started for.
@@ -290,6 +317,7 @@ private final class SOCKSToSSHHandler: ChannelInboundHandler, @unchecked Sendabl
     private let service: SSHService
     private let credentials: HostBrowseProxyCredentials
     private let connectTimeout: TimeAmount
+    private let onRequest: @Sendable (String) -> Void
     private let onRefusal: @Sendable (HostBrowseRefusal) -> Void
     private var state = State.greeting
     /// What has arrived and not been understood yet. A handshake is a few dozen
@@ -301,11 +329,13 @@ private final class SOCKSToSSHHandler: ChannelInboundHandler, @unchecked Sendabl
     private var closedWhileOpening = false
 
     init(channel: Channel, service: SSHService, credentials: HostBrowseProxyCredentials,
-         connectTimeout: TimeAmount, onRefusal: @escaping @Sendable (HostBrowseRefusal) -> Void) {
+         connectTimeout: TimeAmount, onRequest: @escaping @Sendable (String) -> Void,
+         onRefusal: @escaping @Sendable (HostBrowseRefusal) -> Void) {
         self.channel = channel
         self.service = service
         self.credentials = credentials
         self.connectTimeout = connectTimeout
+        self.onRequest = onRequest
         self.onRefusal = onRefusal
     }
 
@@ -376,6 +406,7 @@ private final class SOCKSToSSHHandler: ChannelInboundHandler, @unchecked Sendabl
         let channel = self.channel
         let service = self.service
         let destination = "\(request.host):\(request.port)"
+        onRequest(destination)
 
         // A destination that never answers must not leave the browser waiting
         // for ever: the SSH host is given this long.

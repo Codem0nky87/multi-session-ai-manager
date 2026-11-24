@@ -35,15 +35,24 @@ import WebKit
     private final class Server: HostBrowseProxyServing, @unchecked Sendable {
         private let lock = NSLock()
         private var made: [Listener] = []
+        private var request: [@Sendable (String) -> Void] = []
         func start(credentials: HostBrowseProxyCredentials,
+                   onRefusal: @escaping @Sendable (HostBrowseRefusal) -> Void) async throws -> any HostBrowseProxyListener {
+            try await start(credentials: credentials, onRequest: { _ in }, onRefusal: onRefusal)
+        }
+        func start(credentials: HostBrowseProxyCredentials,
+                   onRequest: @escaping @Sendable (String) -> Void,
                    onRefusal: @escaping @Sendable (HostBrowseRefusal) -> Void) async throws -> any HostBrowseProxyListener {
             lock.withLock {
                 let listener = Listener(localPort: 52_000 + made.count)
                 made.append(listener)
+                request.append(onRequest)
                 return listener
             }
         }
         var listeners: [Listener] { lock.withLock { made } }
+        /// The browser puts a destination to the latest proxy.
+        func browserAsks(for destination: String) { lock.withLock { request }.last?(destination) }
     }
 
     /// A host with a browser space open.
@@ -125,7 +134,7 @@ import WebKit
 
             page.webView(view, didFailProvisionalNavigation: nil, withError: Self.couldNotConnect(to: wanted))
 
-            #expect(page.failure?.message == "Could not connect to the server.")
+            #expect(page.failure?.message.hasPrefix("Could not connect to the server.") == true)
             await eventually("a new proxy") { rig.endpoint?.port == 52_001 }
 
             // The pane then points the tab at the new proxy, which opens what failed.
@@ -155,8 +164,37 @@ import WebKit
             await eventually("a look at the proxy") { rig.server.listeners[0].timesAsked >= 1 }
             try await Task.sleep(for: .milliseconds(100))
             #expect(rig.server.listeners.count == 1)
-            #expect(page.failure?.message == "Could not connect to the server.", "The failure stays for the user to read")
+            #expect(page.failure?.message.hasPrefix("Could not connect to the server.") == true, "The failure stays for the user to read")
             #expect(page.webView === view)
+        }
+        await rig.session.shutdown()
+        await removeTestBrowserData(of: hostID)
+    }
+
+    /// "Could not connect to the server" does not say whether the host could
+    /// not open the address or was never asked. The page does.
+    @Test func aPageThatFailsSaysWhetherTheHostWasEverAsked() async throws {
+        let rig = try await Rig()
+        let hostID = UUID()
+        do {
+            let page = HostBrowserPage()
+            page.attach(to: try #require(rig.endpoint), hostID: hostID, hostName: "Forge", browse: rig.session.browse)
+            let view = try #require(page.webView)
+            let wanted = try #require(URL(string: "https://localhost:8443/"))
+
+            // The web view kept the address to itself.
+            page.webView(view, didStartProvisionalNavigation: nil)
+            page.webView(view, didFailProvisionalNavigation: nil, withError: Self.couldNotConnect(to: wanted))
+            #expect(page.failure?.message
+                    == "Could not connect to the server. The request never reached Forge: the browser did not ask it for localhost:8443.")
+
+            // It went to the host, and failed for a reason of its own.
+            let began = ContinuousClock.now
+            page.webView(view, didStartProvisionalNavigation: nil)
+            rig.server.browserAsks(for: "localhost:8443")
+            await eventually("the request to be noted") { rig.session.browse.wasAsked(for: "localhost:8443", since: began) }
+            page.webView(view, didFailProvisionalNavigation: nil, withError: Self.couldNotConnect(to: wanted))
+            #expect(page.failure?.message == "Could not connect to the server.")
         }
         await rig.session.shutdown()
         await removeTestBrowserData(of: hostID)

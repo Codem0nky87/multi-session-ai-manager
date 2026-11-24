@@ -35,6 +35,8 @@ final class HostBrowseModel {
     @ObservationIgnored private var listener: (any HostBrowseProxyListener)?
     @ObservationIgnored private var generation: UInt64 = 0
     @ObservationIgnored private var isLookingAtTheProxy = false
+    /// When the browser last put each destination to the proxy.
+    @ObservationIgnored private var asked: [String: ContinuousClock.Instant] = [:]
     @ObservationIgnored private let repairGap: Duration
     @ObservationIgnored private var lastReplacement: ContinuousClock.Instant?
 
@@ -78,12 +80,17 @@ final class HostBrowseModel {
         // never the password of a later proxy.
         let credentials = makeCredentials()
         do {
-            let started = try await server.start(credentials: credentials) { [weak self] refusal in
+            let started = try await server.start(credentials: credentials, onRequest: { [weak self] destination in
+                Task { @MainActor [weak self] in
+                    guard let self, self.generation == mine else { return }
+                    self.note(askedFor: destination)
+                }
+            }, onRefusal: { [weak self] refusal in
                 Task { @MainActor [weak self] in
                     guard let self, self.generation == mine else { return }
                     self.lastRefusal = refusal
                 }
-            }
+            })
             guard mine == generation else {
                 // Stopped while it was starting.
                 await started.stop()
@@ -103,12 +110,29 @@ final class HostBrowseModel {
         listener = nil
         state = .idle
         lastRefusal = nil
+        asked = [:]
         await stopping?.stop()
     }
 
     /// Forgets the last refusal once the page that failed has been left behind.
     func clearRefusal() {
         lastRefusal = nil
+    }
+
+    /// Whether the browser has put `destination` ("name:port") to the proxy
+    /// since `moment`. A page can fail without it: a web view keeps some
+    /// addresses to itself (the loopback ones, for one), and then the host was
+    /// never asked and has nothing to do with the failure.
+    func wasAsked(for destination: String, since moment: ContinuousClock.Instant) -> Bool {
+        asked[destination.lowercased()].map { $0 >= moment } ?? false
+    }
+
+    private func note(askedFor destination: String) {
+        // A page asks for a handful of destinations; this is not a history.
+        if asked.count >= 200, let oldest = asked.min(by: { $0.value < $1.value }) {
+            asked[oldest.key] = nil
+        }
+        asked[destination.lowercased()] = .now
     }
 
     /// Replaces a proxy that no longer takes connections, and says whether it
@@ -181,8 +205,18 @@ struct HostBrowserFailure: Equatable {
     /// user may choose to pass, for that site.
     let canVisitAnyway: Bool
 
+    /// The site of a page as the proxy is asked for it: its name and the port
+    /// it listens on.
+    static func destination(of url: URL) -> String? {
+        guard let host = url.host?.lowercased(), !host.isEmpty else { return nil }
+        return "\(host):\(url.port ?? (url.scheme?.lowercased() == "https" ? 443 : 80))"
+    }
+
     /// Nil for a load that was merely replaced by another one.
-    static func describe(_ error: Error, url: URL?, refusal: HostBrowseRefusal?, hostName: String) -> HostBrowserFailure? {
+    /// - Parameter wasAsked: whether the browser put the page's site to the
+    ///   host's proxy at all; nil when that is not known.
+    static func describe(_ error: Error, url: URL?, refusal: HostBrowseRefusal?, hostName: String,
+                         wasAsked: Bool? = nil) -> HostBrowserFailure? {
         let failure = error as NSError
         if failure.domain == NSURLErrorDomain, failure.code == NSURLErrorCancelled { return nil }
         // "Frame load interrupted": the page handed the navigation to something else.
@@ -196,10 +230,18 @@ struct HostBrowserFailure: Equatable {
         }
         // The host said why it would not open the address: more use than
         // WebKit's "could not connect to the proxy".
-        if let refusal, let url, let host = url.host,
-           refusal.destination.lowercased() == "\(host.lowercased()):\(url.port ?? (url.scheme?.lowercased() == "https" ? 443 : 80))" {
+        let destination = url.flatMap(destination(of:))
+        if let refusal, let destination, refusal.destination.lowercased() == destination {
             return HostBrowserFailure(message: "\(hostName) could not open \(refusal.destination). \(refusal.reason)",
                                       canVisitAnyway: false)
+        }
+        // The same words from the web view can mean that the host could not
+        // open the address or that the address never went to the host, and
+        // only the second is said here: the first has the host's own reason.
+        if wasAsked == false, let destination {
+            return HostBrowserFailure(
+                message: "\(failure.localizedDescription) The request never reached \(hostName): the browser did not ask it for \(destination).",
+                canVisitAnyway: false)
         }
         return HostBrowserFailure(message: failure.localizedDescription, canVisitAnyway: false)
     }

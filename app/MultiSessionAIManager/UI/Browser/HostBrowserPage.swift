@@ -27,6 +27,9 @@ final class HostBrowserPage: NSObject, WKNavigationDelegate, WKUIDelegate {
     @ObservationIgnored private var failedURL: URL?
     @ObservationIgnored private var titleWatch: NSKeyValueObservation?
     @ObservationIgnored private var signIns = HostBrowserSignIns()
+    /// When the page that is loading was begun: what the proxy was asked for
+    /// before that belongs to another page.
+    @ObservationIgnored private var loadBegan = ContinuousClock.now
 
     /// The proxy settings every request of this browser goes through. No
     /// fallback: when the proxy is gone a page fails, it is not fetched directly
@@ -74,6 +77,7 @@ final class HostBrowserPage: NSObject, WKNavigationDelegate, WKUIDelegate {
 
     func load(_ url: URL) {
         failure = nil
+        loadBegan = .now
         abandonSignIns()
         browse?.clearRefusal()
         guard let webView else { return }
@@ -84,6 +88,7 @@ final class HostBrowserPage: NSObject, WKNavigationDelegate, WKUIDelegate {
 
     func reload() {
         failure = nil
+        loadBegan = .now
         abandonSignIns()
         browse?.clearRefusal()
         if let failedURL, webView?.url == nil || !hasPage {
@@ -153,7 +158,13 @@ final class HostBrowserPage: NSObject, WKNavigationDelegate, WKUIDelegate {
     private func failed(_ error: Error) {
         let url = (error as NSError).userInfo[NSURLErrorFailingURLErrorKey] as? URL ?? webView?.url
         refresh()
-        guard let described = HostBrowserFailure.describe(error, url: url, refusal: browse?.lastRefusal, hostName: hostName) else { return }
+        let wasAsked: Bool? = if let browse, let url, let destination = HostBrowserFailure.destination(of: url) {
+            browse.wasAsked(for: destination, since: loadBegan)
+        } else {
+            nil
+        }
+        guard let described = HostBrowserFailure.describe(error, url: url, refusal: browse?.lastRefusal, hostName: hostName,
+                                                          wasAsked: wasAsked) else { return }
         failedURL = url
         failure = described
         // A page also fails when the proxy on this device has stopped
@@ -167,6 +178,7 @@ final class HostBrowserPage: NSObject, WKNavigationDelegate, WKUIDelegate {
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         failure = nil
+        loadBegan = .now
         // A sign-in still waiting now belongs to the page this one replaces.
         abandonSignIns()
         refresh()

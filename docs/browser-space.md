@@ -267,6 +267,14 @@ restricts forwarding (`AllowTcpForwarding`, `PermitOpen`) answers that it does
 not allow connections to that address. A destination that never answers is
 given up on after 20 seconds.
 
+A page can also fail without the host having been asked at all: a web view
+keeps some addresses to itself (`127.0.0.1`, for one), and tries them from this
+device. The web view's own words are then the same as for a host that could
+not connect, so the browser adds which it was: *The request never reached
+Forge: the browser did not ask it for localhost:8443.* The proxy tells the app
+every destination the browser puts to it (`HostBrowseModel.wasAsked`), and a
+page that fails is checked against that.
+
 ### When the proxy itself has died
 
 *Could not connect to the server*, with no word from the host, is what a page

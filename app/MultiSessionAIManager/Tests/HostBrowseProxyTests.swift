@@ -331,6 +331,23 @@ import Testing
         #expect(throws: POSIXError.self) { _ = try Client(port: port) }
     }
 
+    @Test func theProxySaysWhatTheBrowserAsksItFor() async throws {
+        let (service, _) = try await connectedService()
+        let asked = NIOLockedValueBox<[String]>([])
+        let listener = try await NIOHostBrowseProxyServer(service: service).start(
+            credentials: Self.credentials,
+            onRequest: { destination in asked.withLockedValue { $0.append(destination) } },
+            onRefusal: { _ in })
+        let browser = try Client(port: listener.localPort)
+        _ = browser.logIn(Self.credentials)
+
+        browser.ask(for: "app.internal.example", port: 8443)
+
+        #expect(browser.receive(10) == SOCKS5.reply(.succeeded))
+        #expect(asked.withLockedValue { $0 } == ["app.internal.example:8443"])
+        await listener.stop()
+    }
+
     @Test func aProxySaysWhetherItStillTakesConnections() async throws {
         let (service, transport) = try await connectedService()
         let listener = try await NIOHostBrowseProxyServer(service: service).start(credentials: Self.credentials) { _ in }
