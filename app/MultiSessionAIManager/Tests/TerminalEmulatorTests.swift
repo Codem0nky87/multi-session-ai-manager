@@ -979,6 +979,29 @@ final class TestTerminalFrameClock: TerminalFrameClock {
         #expect(link1 == URL(string: fullURL))
     }
 
+    /// On a Herdr screen the rows of a link that wraps are shared with the
+    /// sidebar, which has text of its own on them. The link was cut off at the
+    /// end of its first row (user report, 2026-11-24).
+    @Test func linkDetectionJoinsALinkWrappedInAPaneBesideASidebarWithText() async {
+        let clock = TestTerminalFrameClock()
+        let e = TerminalEmulator(cols: 60, rows: 8, frameClock: clock)
+        let link = "https://example.com/oauth/authorize?client_id=0000&scope=user%3Aprofile&state=NtNE"
+        // Fifteen columns of sidebar, its line, and a pane of 44 up to the right edge.
+        func draw(_ row: Int, _ sidebar: String, _ pane: String) -> String {
+            "\u{1b}[\(row);1H" + sidebar.padding(toLength: 15, withPad: " ", startingAt: 0) + "│" + pane
+        }
+        e.feed(Data((draw(1, " spaces", "  1   +") + draw(2, " ○ storefront", "Use the URL below")
+                     + draw(3, "   idle", String(link.prefix(44))) + draw(4, " ○ billing-api", String(link.dropFirst(44)))
+                     + draw(5, "   main", "") + draw(6, " new       menu", "Paste code here")).utf8))
+        await Task.yield()
+        clock.fire()
+
+        #expect(e.link(atRow: 2, col: 20) == URL(string: link))
+        #expect(e.link(atRow: 3, col: 20) == URL(string: link))
+        // The sidebar's own text is no link.
+        #expect(e.link(atRow: 3, col: 4) == nil)
+    }
+
     @Test func selectedTextDoesNotInsertNewlineOnWrappedLine() async {
         let clock = TestTerminalFrameClock()
         // cols = 20, feeding 35 continuous characters without newline

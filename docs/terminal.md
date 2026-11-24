@@ -48,6 +48,32 @@ The pan recognizers are restricted the *opposite* way — direct touches only �
 a mouse drag is not swallowed as a scroll before the click lands. The two
 restrictions look interchangeable and are not.
 
+## Links
+
+A tap on a web address in the terminal asks what to do with it: open it, or
+copy it. The address is taken whole when it is drawn over several rows
+(`Core/TerminalLinkFinder.swift`).
+
+- **Inside its pane.** A row of the screen is not always one line of one
+  program: Herdr draws its sidebar to the left and its panes side by side, each
+  behind a vertical line. A link that is too long for its pane goes on in the
+  next row of that pane, after the same line, so that is where the rest of it
+  is looked for. Looked for at the start of the row instead, a sign-in link
+  beside a sidebar full of text was cut off where its first row ended.
+- **What is the side of a pane.** A vertical line that runs down from a
+  corner, or from the top of the screen. The lines between the columns of a
+  table run down from a `┬`; they divide one pane's text, and a link in one
+  cell is not joined to the cell under it.
+- **When a link goes on below.** When its row is full to the edge of its pane
+  (a few columns short still counts, for programs that wrap their own lines),
+  when the terminal itself says it ran the row on, or when it stops after a
+  separator (`-` `/` `&` `=` `?` `#` `_`), where programs break a link they
+  wrap. A link that simply ends its line does not take the first word of the
+  next line with it.
+- **Where it ends.** At the first character that cannot be part of an address,
+  at a row that starts with a link of its own, or at a blank row.
+- An address a program marks as a link itself (OSC 8) is taken as marked.
+
 ## Geometry
 
 The grid is derived from the **scroll view's own bounds**, not the frame the

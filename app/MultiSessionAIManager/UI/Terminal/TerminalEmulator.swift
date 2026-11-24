@@ -627,166 +627,19 @@ final class TerminalEmulator {
 
     /// Clean trailing punctuation and validate standard URL schemes.
     static func cleanURL(_ raw: String) -> URL? {
-        var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !s.isEmpty else { return nil }
-
-        // Strip trailing punctuation often attached in prose: .,:;!?'">]
-        while let last = s.last, ".,:;!?'\">]".contains(last) {
-            if last == ")" {
-                let openCount = s.filter { $0 == "(" }.count
-                let closeCount = s.filter { $0 == ")" }.count
-                if closeCount > openCount {
-                    s.removeLast()
-                    continue
-                }
-                break
-            }
-            if last == "]" {
-                let openCount = s.filter { $0 == "[" }.count
-                let closeCount = s.filter { $0 == "]" }.count
-                if closeCount > openCount {
-                    s.removeLast()
-                    continue
-                }
-                break
-            }
-            s.removeLast()
-        }
-
-        guard let url = URL(string: s) ?? URL(string: s.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""),
-              let scheme = url.scheme?.lowercased(),
-              ["http", "https", "mailto", "file", "ssh", "git"].contains(scheme)
-        else {
-            return nil
-        }
-        return url
+        TerminalLinkFinder.clean(raw)
     }
 
-    private static let urlSchemePattern = #"(https?://|mailto:|file:|ssh://|git://)[a-zA-Z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+"#
-    private static let urlRegex: NSRegularExpression? = try? NSRegularExpression(pattern: urlSchemePattern)
-
-    private static func isBorderOrSpace(_ c: Character) -> Bool {
-        c.isWhitespace || "│┃║┆┊╎╏╽╿|".contains(c)
-    }
-
+    /// The link drawn at a cell, whole when it runs over several rows, also
+    /// when those rows are shared with Herdr's sidebar or another pane.
     private func unwrappedImplicitLink(atRow row: Int, col: Int) -> URL? {
         guard row >= 0, row < lines.count, col >= 0, col < cols else { return nil }
-        guard let regex = Self.urlRegex else { return nil }
-
-        // Long URLs (e.g. OAuth links) can wrap across 8-16 lines in narrow mobile terminals.
-        // Look back up to 16 lines, stopping early if a blank line is encountered.
-        var minStartRow = max(0, row - 16)
-        for r in stride(from: row, through: minStartRow, by: -1) {
-            if lines[r].plainText.trimmingCharacters(in: .whitespaces).isEmpty {
-                minStartRow = r + 1
-                break
-            }
+        return TerminalLinkFinder.link(in: lines.map(\.cells), atRow: row, column: col) { wrapped in
+            !terminal.getText(
+                start: Position(col: max(0, cols - 1), row: max(0, wrapped)),
+                end: Position(col: min(cols, 1), row: max(0, wrapped + 1))
+            ).contains("\n")
         }
-        guard minStartRow <= row else { return nil }
-
-        for candidateRow in minStartRow...row {
-            let lineText = lines[candidateRow].plainText
-            let nsText = lineText as NSString
-            let matches = regex.matches(in: lineText, range: NSRange(location: 0, length: nsText.length))
-
-            for match in matches {
-                let matchRange = match.range
-                let matchStr = nsText.substring(with: matchRange)
-                let startCol = matchRange.location
-                let endCol = matchRange.location + matchRange.length
-
-                var currentURLText = matchStr
-                var segments: [(row: Int, startCol: Int, endCol: Int)] = [(candidateRow, startCol, endCol)]
-                var currentRow = candidateRow
-
-                while currentRow + 1 < lines.count {
-                    let curText = lines[currentRow].plainText
-                    let curNS = curText as NSString
-                    let lastSegEnd = segments.last!.endCol
-
-                    // Check if anything other than borders/spaces follows on this row
-                    if lastSegEnd < curNS.length {
-                        let suffix = curNS.substring(from: lastSegEnd)
-                        if !suffix.allSatisfy(Self.isBorderOrSpace) {
-                            break
-                        }
-                    }
-
-                    // Check wrap indicators
-                    let isBufferWrapped = !terminal.getText(
-                        start: Position(col: max(0, cols - 1), row: max(0, currentRow)),
-                        end: Position(col: min(cols, 1), row: max(0, currentRow + 1))
-                    ).contains("\n")
-                    let hasWrapPunctuation = ["-", "/", "&", "=", "?", "#", "_"].contains(where: { currentURLText.hasSuffix($0) })
-                    let nearMargin = lastSegEnd >= (cols - max(2, cols / 5))
-                    let isLong = currentURLText.count >= 25
-                    let hasBoxBorder = curText.contains("│") || curText.contains("|")
-
-                    guard isBufferWrapped || hasWrapPunctuation || nearMargin || isLong || hasBoxBorder else {
-                        break
-                    }
-
-                    // Check next line
-                    let nextText = lines[currentRow + 1].plainText
-                    let nextNS = nextText as NSString
-
-                    // If next line has its own scheme, it is a new link, not a continuation
-                    let nextMatches = regex.matches(in: nextText, range: NSRange(location: 0, length: nextNS.length))
-                    if let firstNext = nextMatches.first, firstNext.range.location < 10 {
-                        break
-                    }
-
-                    // Find where content begins after leading borders and spaces
-                    var leadCol = 0
-                    while leadCol < nextNS.length {
-                        let unichar = nextNS.character(at: leadCol)
-                        let ch = Character(UnicodeScalar(unichar) ?? UnicodeScalar(32))
-                        if !Self.isBorderOrSpace(ch) { break }
-                        leadCol += 1
-                    }
-                    guard leadCol < nextNS.length else { break }
-
-                    // Extract continuation URL characters
-                    let validChars = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~:/?#[]@!$&'()*+,;=%")
-                    var contLength = 0
-                    while leadCol + contLength < nextNS.length {
-                        let unichar = nextNS.character(at: leadCol + contLength)
-                        guard let scalar = UnicodeScalar(unichar), validChars.contains(scalar) else { break }
-                        contLength += 1
-                    }
-                    guard contLength > 0 else { break }
-
-                    let contStr = nextNS.substring(with: NSRange(location: leadCol, length: contLength))
-                    let candidateFull = currentURLText + contStr
-                    guard Self.cleanURL(candidateFull) != nil else { break }
-
-                    currentURLText = candidateFull
-                    segments.append((currentRow + 1, leadCol, leadCol + contLength))
-                    currentRow += 1
-
-                    // If non-border text follows on the continuation line, the URL ended here
-                    if leadCol + contLength < nextNS.length {
-                        let rest = nextNS.substring(from: leadCol + contLength)
-                        if !rest.allSatisfy(Self.isBorderOrSpace) {
-                            break
-                        }
-                    }
-                }
-
-                // Check if target (row, col) is within any segment of this stitched URL
-                for (segIdx, seg) in segments.enumerated() {
-                    if seg.row == row {
-                        let hasContinuation = segIdx < segments.count - 1
-                        let maxCol = hasContinuation ? (cols - 1) : min(cols - 1, seg.endCol + 3)
-                        let minCol = max(0, seg.startCol - 3)
-                        if col >= minCol && col <= maxCol {
-                            return Self.cleanURL(currentURLText)
-                        }
-                    }
-                }
-            }
-        }
-        return nil
     }
 
     /// Returns a hyperlink or implicit URL at the given cell coordinates, unwrapping
