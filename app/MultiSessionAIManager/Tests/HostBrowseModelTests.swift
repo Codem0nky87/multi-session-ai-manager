@@ -337,6 +337,25 @@ import Testing
         #expect(HostBrowserAddress.url(from: typed)?.absoluteString == address)
     }
 
+    /// A browser never hands its proxy the loopback addresses: it takes them
+    /// for the device it runs on. Typed here they mean the host, as `localhost`
+    /// does, which the proxy is handed.
+    @Test(arguments: [
+        ("127.0.0.1:8443", "http://localhost:8443"),
+        ("https://127.0.0.1:8443/app?tab=1#top", "https://localhost:8443/app?tab=1#top"),
+        ("http://127.0.0.1", "http://localhost"),
+        ("[::1]:3000/status", "http://localhost:3000/status"),
+        ("https://[::1]/", "https://localhost/"),
+    ])
+    func theHostsOwnAddressIsWrittenAsItsName(typed: String, address: String) {
+        #expect(HostBrowserAddress.url(from: typed)?.absoluteString == address)
+    }
+
+    @Test(arguments: ["http://127.0.0.10:8080/", "http://10.127.0.0.1.internal.example/", "http://127.0.0.1.example/"])
+    func otherAddressesAreLeftAsTyped(typed: String) {
+        #expect(HostBrowserAddress.url(from: typed)?.absoluteString == typed)
+    }
+
     @Test(arguments: ["", "   ", "two words", "file:///etc/passwd", "javascript://alert(1)", "ftp://files.internal/", "http://"])
     func whatIsNotAWebAddressIsNotLoaded(typed: String) {
         #expect(HostBrowserAddress.url(from: typed) == nil)

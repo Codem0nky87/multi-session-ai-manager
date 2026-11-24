@@ -157,7 +157,20 @@ enum HostBrowserAddress {
         guard let url = URL(string: withScheme),
               let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
               let host = url.host, !host.isEmpty else { return nil }
-        return url
+        return onTheHost(url)
+    }
+
+    /// A browser never hands a proxy the loopback addresses: it takes
+    /// `127.0.0.1` and `::1` for the device it runs on, and the page fails with
+    /// "Could not connect to the server" without the host ever being asked
+    /// (seen 2026-11-24). An address is typed here as it would be on the host,
+    /// where those mean the host itself; `localhost` says the same and is
+    /// handed to the proxy, so that is what is opened.
+    private static func onTheHost(_ url: URL) -> URL {
+        guard let host = url.host, host == "127.0.0.1" || host == "::1",
+              var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
+        parts.host = "localhost"
+        return parts.url ?? url
     }
 }
 

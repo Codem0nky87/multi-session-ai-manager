@@ -89,6 +89,8 @@ over the page: **Sign in to** the site, a name, a password, **Sign In** or
 - **No Kerberos.** A site that accepts only Kerberos ("Negotiate" and nothing
   else) cannot be signed in to: the device has no ticket for it. A site that
   offers NTLM next to it, as IIS does unless told otherwise, can.
+- **A page's own links to `127.0.0.1`** reach this device, not the host: only
+  an address that is typed is rewritten. `localhost` in a link is the host.
 
 ## How it works
 
@@ -212,6 +214,11 @@ browser space  ──SOCKS5──▶ proxy on 127.0.0.1 ──direct-tcpip──
 - **No forward per site.** Every connection the page makes goes the same way.
 - **An address without a scheme is `http://`.** A site that wants HTTPS
   redirects there; type `https://` for one that listens only on 443.
+- **`localhost` is the host.** So are `127.0.0.1` and `::1` when they are
+  typed, though they are opened as `localhost`: a browser never hands a proxy
+  the loopback addresses, it takes them for the device it runs on, and the
+  page then fails with *Could not connect to the server* without the host ever
+  being asked (`HostBrowserAddress`).
 
 ### What protects it
 
