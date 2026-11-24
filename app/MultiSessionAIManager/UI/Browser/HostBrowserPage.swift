@@ -61,7 +61,8 @@ final class HostBrowserPage: NSObject, WKNavigationDelegate, WKUIDelegate {
         titleWatch = view.observe(\.title) { [weak self] _, _ in
             Task { @MainActor [weak self] in self?.refreshTitle() }
         }
-        let reopen = hasPage ? webView?.url : nil
+        // The page that just failed is what was wanted; else the page it was on.
+        let reopen = failure != nil ? failedURL : (hasPage ? webView?.url : nil)
         // What the old web view was asked is not this one's to answer.
         abandonSignIns()
         webView = view
@@ -155,6 +156,11 @@ final class HostBrowserPage: NSObject, WKNavigationDelegate, WKUIDelegate {
         guard let described = HostBrowserFailure.describe(error, url: url, refusal: browse?.lastRefusal, hostName: hostName) else { return }
         failedURL = url
         failure = described
+        // A page also fails when the proxy on this device has stopped
+        // listening, and then every page does until it is replaced. A new
+        // proxy changes the browser's state, and whoever shows this tab points
+        // it there, which opens the page again.
+        Task { [weak browse] in await browse?.repair() }
     }
 
     // MARK: WKNavigationDelegate

@@ -1,4 +1,5 @@
 import Foundation
+import NIOConcurrencyHelpers
 import Testing
 @testable import MultiSessionAIManager
 
@@ -9,9 +10,21 @@ import Testing
         let localPort: Int
         private let lock = NSLock()
         private var stops = 0
+        private var listening = true
+        private var asked = 0
+        /// Holds an `accepts` until released, to catch what arrives meanwhile.
+        var gate: (@Sendable () async -> Void)?
         init(localPort: Int) { self.localPort = localPort }
         var stopCount: Int { lock.withLock { stops } }
+        var timesAsked: Int { lock.withLock { asked } }
         func stop() async { lock.withLock { stops += 1 } }
+        /// What iOS does to a suspended app's sockets: the port answers nobody.
+        func dies() { lock.withLock { listening = false } }
+        func accepts() async -> Bool {
+            lock.withLock { asked += 1 }
+            await gate?()
+            return lock.withLock { listening }
+        }
     }
 
     private final class Server: HostBrowseProxyServing, @unchecked Sendable {
@@ -173,6 +186,141 @@ import Testing
         // While the current one is heard.
         server.hostRefuses(HostBrowseRefusal(destination: "new.internal:80", reason: "refused"))
         await eventually("the current session's refusal") { model.lastRefusal?.destination == "new.internal:80" }
+    }
+
+    // MARK: A proxy that has stopped listening
+
+    /// The proxy listens on this device. Once it had stopped (iOS takes the
+    /// sockets of an app it suspended) every page failed with "Could not
+    /// connect to the server" and went on failing, because nothing looked.
+    @Test func aProxyThatHasStoppedListeningIsReplacedByANewOne() async throws {
+        let server = Server()
+        let model = HostBrowseModel(server: server, connect: { nil })
+        await model.start()
+        server.listeners[0].dies()
+
+        let replaced = await model.repair()
+
+        #expect(replaced)
+        try #require(server.listeners.count == 2)
+        // A new port and a new password: the browser's pages have to be pointed at it.
+        #expect(model.state == .ready(.init(port: 51_001, credentials: server.credentials[1])))
+        #expect(server.credentials[0] != server.credentials[1])
+        #expect(server.listeners[0].stopCount == 1, "The dead one is let go of")
+        #expect(server.listeners[1].stopCount == 0)
+    }
+
+    @Test func aProxyThatStillListensIsLeftAlone() async {
+        let server = Server()
+        let model = HostBrowseModel(server: server, connect: { nil })
+        await model.start()
+        let before = model.state
+
+        let replaced = await model.repair()
+
+        #expect(!replaced)
+        #expect(model.state == before)
+        #expect(server.listeners.count == 1)
+        #expect(server.listeners[0].stopCount == 0)
+        #expect(server.listeners[0].timesAsked == 1)
+    }
+
+    @Test func aClosedBrowserHasNothingToRepair() async {
+        let server = Server()
+        let model = HostBrowseModel(server: server, connect: { nil })
+
+        #expect(await !model.repair())
+        #expect(server.listeners.isEmpty, "Looking at the proxy never opens the browser")
+
+        await model.start()
+        await model.stop()
+        #expect(await !model.repair())
+        #expect(server.listeners.count == 1)
+        #expect(model.state == .idle)
+    }
+
+    @Test func aRepairThatCannotReachTheHostSaysSo() async {
+        let server = Server()
+        let reachable = NIOLockedValueBox(true)
+        let model = HostBrowseModel(server: server, connect: {
+            reachable.withLockedValue { $0 } ? nil : "Forge is not reachable: connection timed out."
+        })
+        await model.start()
+        server.listeners[0].dies()
+        reachable.withLockedValue { $0 = false }
+
+        let replaced = await model.repair()
+
+        #expect(replaced, "The dead proxy is gone either way")
+        #expect(model.state == .failed("Forge is not reachable: connection timed out."))
+        #expect(server.listeners.count == 1)
+        #expect(server.listeners[0].stopCount == 1)
+    }
+
+    @Test func twoLooksAtOnceReplaceItOnce() async {
+        let server = Server()
+        let model = HostBrowseModel(server: server, connect: { nil })
+        await model.start()
+        let dead = server.listeners[0]
+        dead.dies()
+        let entered = NIOLockedValueBox(false)
+        let release = AsyncStream<Void>.makeStream()
+        dead.gate = {
+            entered.withLockedValue { $0 = true }
+            for await _ in release.stream { break }
+        }
+
+        let first = Task { await model.repair() }
+        await eventually("the first look to begin") { entered.withLockedValue { $0 } }
+        // A page fails and the app comes to the front in the same moment.
+        let second = await model.repair()
+        release.continuation.yield()
+
+        #expect(!second, "The look that is already under way will do")
+        #expect(await first.value)
+        #expect(server.listeners.count == 2)
+    }
+
+    /// Every start asks something of the host, so a proxy that will not stay
+    /// up must not be started over and over as fast as pages can fail.
+    @Test func aProxyThatWasJustReplacedIsNotReplacedAgainAtOnce() async throws {
+        let server = Server()
+        let model = HostBrowseModel(server: server, connect: { nil }, repairGap: .milliseconds(300))
+        await model.start()
+        server.listeners[0].dies()
+        #expect(await model.repair())
+        try #require(server.listeners.count == 2)
+        server.listeners[1].dies()
+
+        #expect(await !model.repair(), "Too soon after the last one")
+        #expect(server.listeners.count == 2)
+
+        try await Task.sleep(for: .milliseconds(350))
+        #expect(await model.repair())
+        #expect(server.listeners.count == 3)
+    }
+
+    @Test func aBrowserClosedWhileItsProxyWasLookedAtStaysClosed() async {
+        let server = Server()
+        let model = HostBrowseModel(server: server, connect: { nil })
+        await model.start()
+        let dead = server.listeners[0]
+        dead.dies()
+        let entered = NIOLockedValueBox(false)
+        let release = AsyncStream<Void>.makeStream()
+        dead.gate = {
+            entered.withLockedValue { $0 = true }
+            for await _ in release.stream { break }
+        }
+
+        let looking = Task { await model.repair() }
+        await eventually("the look to begin") { entered.withLockedValue { $0 } }
+        await model.stop()
+        release.continuation.yield()
+
+        #expect(await !looking.value)
+        #expect(model.state == .idle)
+        #expect(server.listeners.count == 1, "No proxy is started for a browser that was closed")
     }
 }
 

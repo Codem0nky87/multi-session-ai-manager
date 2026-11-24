@@ -260,6 +260,29 @@ restricts forwarding (`AllowTcpForwarding`, `PermitOpen`) answers that it does
 not allow connections to that address. A destination that never answers is
 given up on after 20 seconds.
 
+### When the proxy itself has died
+
+*Could not connect to the server*, with no word from the host, is what a page
+says when the proxy on this device no longer takes its connections. A dead SSH
+connection reads differently and is mended underneath the proxy
+([port-forwarding.md](port-forwarding.md#keeping-a-forward-alive)); this is the
+proxy's own listener. iOS takes the sockets of an app it has suspended, and
+nothing says so: the app still called the proxy ready, and every page failed
+until the app was closed.
+
+So the proxy is looked at (`HostBrowseModel.repair()`), by connecting to it as
+the browser would:
+
+- when the app comes back to the front,
+- on every keep-alive beat of the host's connection, and
+- whenever a page fails.
+
+A proxy that does not answer is replaced. The new one has a new port and
+password, so the tabs are pointed at it, and a tab whose page had just failed
+opens that page again. Nothing is asked of the host by the look itself; a
+start does ask, so a proxy is not replaced twice within five seconds, however
+fast pages fail.
+
 ### Non-secure pages
 
 iOS refuses plain `http://` to a dotted name before a request is even made

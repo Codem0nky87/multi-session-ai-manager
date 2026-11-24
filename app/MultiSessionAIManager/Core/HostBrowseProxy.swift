@@ -46,6 +46,10 @@ struct HostBrowseRefusal: Equatable, Sendable {
 protocol HostBrowseProxyListener: AnyObject, Sendable {
     var localPort: Int { get }
     func stop() async
+    /// Whether a connection to the proxy is still taken. A listener can die
+    /// underneath the app: iOS takes the sockets of an app it has suspended,
+    /// and nothing says so.
+    func accepts() async -> Bool
 }
 
 protocol HostBrowseProxyServing: Sendable {
@@ -216,6 +220,22 @@ final class NIOHostBrowseProxyServer: HostBrowseProxyServing, @unchecked Sendabl
             guard first else { return }
             connections.closeAll()
             try? await server.close()
+        }
+
+        /// Found out the only way that cannot be wrong: by connecting, as the
+        /// browser would. Nothing is said on the connection, so nothing is
+        /// asked of the host.
+        func accepts() async -> Bool {
+            guard !stopped.withLockedValue({ $0 }), server.isActive else { return false }
+            do {
+                let probe = try await ClientBootstrap(group: server.eventLoop)
+                    .connectTimeout(.seconds(2))
+                    .connect(host: "127.0.0.1", port: localPort).get()
+                try? await probe.close()
+                return true
+            } catch {
+                return false
+            }
         }
 
         /// A bound listener outlives whoever forgot it; see the same note on the

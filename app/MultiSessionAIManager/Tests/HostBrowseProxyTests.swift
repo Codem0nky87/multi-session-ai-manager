@@ -330,4 +330,21 @@ import Testing
         #expect(browser.isClosedByProxy)
         #expect(throws: POSIXError.self) { _ = try Client(port: port) }
     }
+
+    @Test func aProxySaysWhetherItStillTakesConnections() async throws {
+        let (service, transport) = try await connectedService()
+        let listener = try await NIOHostBrowseProxyServer(service: service).start(credentials: Self.credentials) { _ in }
+
+        #expect(await listener.accepts())
+        #expect(await listener.accepts(), "Looking does not wear it out")
+        #expect(transport.openedDirectTCPIPTargets.isEmpty, "And asks nothing of the host")
+
+        // The browser still gets through after it was looked at.
+        let browser = try Client(port: listener.localPort)
+        #expect(browser.logIn(Self.credentials).status == [1, 0])
+
+        await listener.stop()
+
+        #expect(await !listener.accepts())
+    }
 }

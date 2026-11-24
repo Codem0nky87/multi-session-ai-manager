@@ -47,8 +47,11 @@ final class PortForwardingSession {
     ///   - model: the forwards' model; by default one that forwards over this
     ///     session's own SSH connection.
     ///   - transport: the SSH transport of that connection.
+    ///   - browseServer: what serves the browser's proxy; by default one that
+    ///     reaches pages over this session's own SSH connection.
     init(host: Host, keyStore: KeyStore, knownHosts: KnownHostsStore, tunnels: [SessionWebTunnel],
          model: SessionWebTunnelModel? = nil, transport: SSHTransport = NIOSSHTransport(),
+         browseServer: (any HostBrowseProxyServing)? = nil,
          keepAlive: KeepAlive = KeepAlive()) {
         self.host = host
         self.tunnels = tunnels
@@ -56,7 +59,7 @@ final class PortForwardingSession {
         self.connection = connection
         self.model = model ?? SessionWebTunnelModel(server: connection.makeSessionWebTunnelServer())
         let owner = Owner()
-        self.browse = HostBrowseModel(server: connection.makeHostBrowseProxyServer()) { [connection] in
+        self.browse = HostBrowseModel(server: browseServer ?? connection.makeHostBrowseProxyServer()) { [connection] in
             await owner.session?.ensureLink()
             switch connection.state {
             case .connected:
@@ -162,12 +165,17 @@ final class PortForwardingSession {
                 do { try await Task.sleep(for: interval) } catch { return }
                 guard let self else { return }
                 await self.keepAlive()
+                await self.browse.repair()
             }
         }
         foregroundTask = Task { [weak self] in
             for await _ in NotificationCenter.default.notifications(named: UIApplication.didBecomeActiveNotification) {
                 guard let self else { return }
                 await self.keepAlive()
+                // The connection is mended underneath the browser's proxy, but
+                // the proxy's own listener can be gone too: iOS takes the
+                // sockets of an app it suspended.
+                await self.browse.repair()
             }
         }
     }

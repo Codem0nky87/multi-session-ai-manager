@@ -34,16 +34,22 @@ final class HostBrowseModel {
     @ObservationIgnored private let makeCredentials: () -> HostBrowseProxyCredentials
     @ObservationIgnored private var listener: (any HostBrowseProxyListener)?
     @ObservationIgnored private var generation: UInt64 = 0
+    @ObservationIgnored private var isLookingAtTheProxy = false
+    @ObservationIgnored private let repairGap: Duration
+    @ObservationIgnored private var lastReplacement: ContinuousClock.Instant?
 
     /// - Parameters:
     ///   - connect: makes sure the host's SSH connection is up. Returns nil when
     ///     it is, or what to tell the user when it is not.
+    ///   - repairGap: the least time between two replacements of a dead proxy.
     init(server: any HostBrowseProxyServing,
          connect: @escaping @MainActor () async -> String?,
-         makeCredentials: @escaping () -> HostBrowseProxyCredentials = HostBrowseProxyCredentials.random) {
+         makeCredentials: @escaping () -> HostBrowseProxyCredentials = HostBrowseProxyCredentials.random,
+         repairGap: Duration = .seconds(5)) {
         self.server = server
         self.connect = connect
         self.makeCredentials = makeCredentials
+        self.repairGap = repairGap
     }
 
     /// True from the moment browsing is asked for until it is stopped: the SSH
@@ -103,6 +109,38 @@ final class HostBrowseModel {
     /// Forgets the last refusal once the page that failed has been left behind.
     func clearRefusal() {
         lastRefusal = nil
+    }
+
+    /// Replaces a proxy that no longer takes connections, and says whether it
+    /// had to.
+    ///
+    /// The proxy listens on this device, and iOS takes the sockets of an app it
+    /// has suspended. Back in front the app still called the proxy ready, the
+    /// browser's every page failed with "Could not connect to the server", and
+    /// went on failing, because nothing looked (user report, 2026-11-24). A
+    /// dead SSH connection is a different matter and is mended underneath the
+    /// proxy; this is the proxy itself.
+    ///
+    /// The new proxy has a new port and password, so the state changes and
+    /// whoever shows the browser points its pages at it.
+    ///
+    /// A page that fails brings a look, and a new proxy opens that page again.
+    /// Should the new proxy not stay up either, that would go round as fast as
+    /// pages can fail, and every start asks something of the host. So a proxy
+    /// is not replaced twice within `repairGap`; the next beat looks again.
+    @discardableResult
+    func repair() async -> Bool {
+        guard case .ready = state, let listener, !isLookingAtTheProxy else { return false }
+        if let lastReplacement, ContinuousClock.now - lastReplacement < repairGap { return false }
+        isLookingAtTheProxy = true
+        defer { isLookingAtTheProxy = false }
+        let mine = generation
+        // Stopped or restarted while it was looked at: no longer this look's to settle.
+        guard await !listener.accepts(), mine == generation else { return false }
+        lastReplacement = .now
+        await stop()
+        await start()
+        return true
     }
 }
 
