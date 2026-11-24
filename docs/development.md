@@ -30,10 +30,15 @@ manage signing" in Xcode's UI is overwritten by the next run.
 | swift-nio-ssh | SSH transport |
 
 `swift-nio-ssh` is pinned to the **fork** `Wellz26/swift-nio-ssh` at exactly
-`0.3.4`, not Apple's upstream. Citadel depends on that fork because it
+`0.3.7`, not Apple's upstream. Citadel depends on that fork because it
 re-exports SPI symbols (`NIOSSHTransportProtection` and friends) that upstream
-does not, and upstream has no `0.3.4` tag at all. Pointing this at
+does not, and upstream has no such tags at all. Pointing this at
 `apple/swift-nio-ssh` makes SPM substitute it and Citadel fails to compile.
+
+Not older than `0.3.7`: before it the library trapped when data arrived on a
+channel the app had just closed (a page or a forward given up mid-download),
+which took the whole app down. `Tests/SSHChannelClosedMidTransferTests.swift`
+holds the app's transport against a server that keeps sending.
 
 ## Tests
 
