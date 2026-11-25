@@ -48,6 +48,49 @@ The pan recognizers are restricted the *opposite* way — direct touches only �
 a mouse drag is not swallowed as a scroll before the click lands. The two
 restrictions look interchangeable and are not.
 
+## The key bar
+
+Under the terminal floats one pill of icon buttons. An iOS keyboard has no Esc,
+Tab, arrows or Control, so the app supplies them. Left to right, in four groups:
+
+| Group | Buttons |
+|---|---|
+| Typing | keyboard (show or hide it), voice (hold to talk), Esc, Tab, Return |
+| Modifiers | Shift, Control, Alt: each is sticky and applies to the next key |
+| Moving | up, down, left, right, Home, End, page up, page down |
+| Sending | clipboard, shortcuts, function keys, password |
+
+The two buttons at the right end belong to the bar itself: the sliders choose
+which buttons show (a switch each, kept on the device), and the arrow collapses
+the bar to a small pill in the bottom-left corner with only the keyboard button
+and the way back.
+
+Where the buttons do not fit, on a phone or in a narrow window, the row scrolls
+sideways and fades at the edge; the two right-hand buttons stay put. It is one
+row on every device. Hiding buttons is how to see more of the rest at once.
+
+**Sticky Shift and Alt** change what the next button types. Shift with an arrow,
+Home, End or Tab sends xterm's Shift coding (Codex opens its queued messages on
+Shift-Left). Alt with left and right moves a word. Shift or Alt with Return sends
+Escape and then Return, which the agent TUIs take as "a new line, do not send".
+
+**Page up and down** send scroll-wheel notches while the host is on its alternate
+screen, because a TUI keeps its own scrollback, and the page keys otherwise.
+
+**Clipboard** holds Select text, Copy selection and Paste. Paste is the system's
+own paste button, which reads the clipboard without the "allow paste" question a
+plain button raises every time.
+
+**Shortcuts** holds the chords that mean the same in every shell, Ctrl-C to
+Ctrl-\, one tap each. For any other chord tap Control and then the key.
+
+**Password** types a password saved for this host into its terminal: at a sudo
+prompt, say. It is not the SSH sign-in, which uses keys. The first tap offers to
+save one; after that a tap asks for Face ID, Touch ID or the passcode and then
+types it. Nothing is typed after it, so the Return is pressed by the person who
+can see where the cursor is. Press and hold the button to replace or forget the
+password. See [the security model](security.md#secrets) for where it is kept.
+
 ## Links
 
 A tap on a web address in the terminal asks what to do with it: open it, or
@@ -90,10 +133,12 @@ repaints a fixed frame and keeps its own scrollback, so there is no tail to
 follow, and any mismatch would otherwise be absorbed by hiding the *first* rows —
 exactly where Herdr draws its tab bar and pane labels.
 
-A strip is reserved at the bottom for the window-resize grip iPadOS draws in the
-corners. That grip consumes clicks before the app sees them, so anything Herdr
-puts on its last row would otherwise be unclickable. There is no API to opt a
-corner out.
+While the key bar is collapsed, a strip is reserved at the bottom for the
+window-resize grip iPadOS draws in the corners. That grip consumes clicks before
+the app sees them, so anything Herdr puts on its last row would otherwise be
+unclickable. There is no API to opt a corner out. With the bar open, the bar is
+that margin: its pill stops short of both corners. A collapsed bar floats over
+the terminal's bottom-left corner and takes no rows from it.
 
 ## Agent status verbs
 

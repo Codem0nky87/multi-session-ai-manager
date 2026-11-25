@@ -293,6 +293,8 @@ struct HostListView: View {
         withAnimation(Theme.spring) {
             store.remove(host)
         }
+        // A password saved for its terminal goes with it.
+        KeychainHostTerminalPasswords().forget(for: host.id)
         toasts.success("Host removed")
     }
 

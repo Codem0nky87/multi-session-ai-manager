@@ -2,12 +2,15 @@
 //  TerminalQuickKeyBar.swift
 //  MultiSessionAIManager
 //
-//  The phone (compact-width) quick-key strip pinned above the software
-//  keyboard. A phone terminal without Esc / arrows / Ctrl / Tab is barely a
-//  terminal at all, and the iOS keyboard offers none of them, so the app
-//  supplies its own row. It also carries the keyboard hide/reveal control:
-//  dismissing the keyboard returns the terminal to full height so history can
-//  be scrolled with a plain swipe.
+//  The bar under the terminal: one floating pill of icon buttons. A terminal
+//  without Esc / arrows / Ctrl / Tab is barely a terminal at all, and the iOS
+//  keyboard offers none of them, so the app supplies its own. What is on the
+//  bar and what each button types is `TerminalKeyBar`; this file draws it.
+//
+//  The buttons scroll sideways where they do not fit (a phone, a narrow
+//  window). The two at the right end stay put: one chooses which buttons show,
+//  the other collapses the bar to a small pill in the corner, which gives its
+//  rows back to the terminal.
 //
 //  Page up / down send scroll-wheel notches at the grid centre while the
 //  remote is on its alternate screen (a TUI has no app-side scrollback), and
@@ -21,12 +24,26 @@ struct TerminalQuickKeyBar: View {
     let controller: KeyInputController
     let keyboard: KeyboardVisibilityModel
     var isLive: Bool = true
+    /// The terminal's modal text selection, for the clipboard button.
+    var selection: TerminalSelectionModel? = nil
+    /// The host this terminal belongs to, for the password button.
+    var hostID: UUID? = nil
+    var hostName: String = ""
+    /// What is already kept clear below the bar: the keyboard, or a phone's home strip.
+    var clearedInset: CGFloat = 0
+    var windowHomeInset: CGFloat = 0
     /// Routes bytes to the live PTY (the session's terminal feed).
     let onInputBytes: ([UInt8]) -> Void
 
     @ObservedObject var voiceEngine: VoiceDictationEngine = .shared
     @Environment(ToastCenter.self) private var toasts: ToastCenter?
+    @AppStorage(TerminalKeyBar.collapsedKey) private var isCollapsed = false
+    @AppStorage(TerminalKeyBar.hiddenKey) private var hiddenStored = ""
+    @State private var passwordKey = HostTerminalPasswordKey()
     @State private var isVoicePressed = false
+    /// Falls back to false by itself when the touch is taken away (the row
+    /// scrolled under the finger), which `onEnded` is not told about.
+    @GestureState private var isVoiceTouched = false
 
     /// Wheel notches per page-key press. Matches roughly a half-page of a
     /// phone-height Herdr pane without flying past the prompt.
@@ -38,70 +55,17 @@ struct TerminalQuickKeyBar: View {
     /// drawer on Shift+Left). Arming this latches the xterm Shift codings onto
     /// the next arrow/tab press, then disarms.
     @State private var isShiftArmed = false
-    @State private var showingFunctionKeys = false
 
-    /// One key of the bar, in canonical left-to-right order. `voice` sits 2nd from the
-    /// left (after `esc`) so it avoids both the iPadOS bottom-left corner gesture zone
-    /// and the centered Home Indicator bar; `fn` sits 2nd from the right, next to the
-    /// keyboard key.
-    ///
-    /// There is no key for a single chord such as Ctrl-C or Ctrl-/: sticky `ctrl`
-    /// followed by the key, on either keyboard, sends any of them.
-    enum Key: String, CaseIterable {
-        case esc, voice, tab, ctrl, alt
-        case shift
-        case left, up, down, right
-        case pageUp = "pageup"
-        case pageDown = "pagedown"
-        case functionKeys = "function-keys"
-        case keyboard
-
-        var identifier: String {
-            self == .functionKeys ? "msam.function-keys" : "msam.quickkey.\(rawValue)"
-        }
+    /// What a button has opened above the bar.
+    private enum Panel: Equatable {
+        case clipboard, shortcuts, functionKeys, password, chooser
     }
+    @State private var panel: Panel?
 
-    static let orderedKeyIdentifiers: [String] = Key.allCases.map(\.identifier)
-
-    // MARK: - Layout
-
-    static let keySpacing: CGFloat = 4
-    static let horizontalPadding: CGFloat = 6
-    /// The narrowest a key may get. Any narrower and its label ("ctrl", in the bar's
-    /// font) no longer fits on one line and the key is too small to hit reliably.
-    static let minimumKeyWidth: CGFloat = 36
-    /// Height of each row once the keys wrap onto more than one.
-    static let wrappedRowHeight: CGFloat = 40
-
-    /// Width the bar needs to show every key on a single row.
-    nonisolated static var singleRowMinimumWidth: CGFloat {
-        let count = CGFloat(Key.allCases.count)
-        return count * minimumKeyWidth + (count - 1) * keySpacing + 2 * horizontalPadding
-    }
-
-    /// Rows the keys need in `width` points. A phone held upright cannot give every
-    /// key a usable width on one row (they shrank to ~20pt and their labels broke in
-    /// two), so there they wrap onto two equal rows. An iPad, or a phone on its side,
-    /// keeps the single row and the terminal keeps the height.
-    nonisolated static func rowCount(forWidth width: CGFloat) -> Int {
-        width >= singleRowMinimumWidth ? 1 : 2
-    }
-
-    /// The keys of each row: canonical order, split evenly.
-    nonisolated static func keyRows(_ count: Int) -> [[Key]] {
-        let keys = Key.allCases
-        guard count > 1 else { return [Array(keys)] }
-        let perRow = (keys.count + count - 1) / count
-        return stride(from: 0, to: keys.count, by: perRow).map {
-            Array(keys[$0..<min($0 + perRow, keys.count)])
-        }
-    }
-
-    /// Total height of the bar for a row count. The terminal above gives up exactly this.
-    nonisolated static func height(rows: Int) -> CGFloat {
-        rows <= 1
-            ? HerdrChromeMetrics.minimumHitTarget
-            : CGFloat(rows) * wrappedRowHeight + CGFloat(rows - 1) * keySpacing
+    private var isPhone: Bool { UIDevice.current.userInterfaceIdiom == .phone }
+    private var keyWidth: CGFloat { TerminalKeyBarMetrics.keyWidth(isPhone: isPhone) }
+    private var pillShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: TerminalKeyBarMetrics.pillHeight / 2, style: .continuous)
     }
 
     private var isRecordingVoice: Bool {
@@ -111,15 +75,20 @@ struct TerminalQuickKeyBar: View {
     }
 
     var body: some View {
-        // Decided inside the layout pass, from the width actually offered: the first
-        // arrangement whose keys all keep `minimumKeyWidth` wins.
-        ViewThatFits(in: .horizontal) {
-            keyGrid(rows: 1).frame(minWidth: Self.singleRowMinimumWidth)
-            keyGrid(rows: 2)
+        Group {
+            if isCollapsed {
+                collapsedPill
+            } else {
+                openPill
+            }
         }
-        .background(HerdrTheme.panel)
+        .padding(.horizontal, TerminalKeyBarMetrics.sideMargin(isPhone: isPhone))
+        .padding(.top, TerminalKeyBarMetrics.topGap)
+        .padding(.bottom, TerminalKeyBarMetrics.bottomGap(clearedInset: clearedInset,
+                                                         windowHomeInset: windowHomeInset))
+        .frame(maxWidth: isCollapsed ? nil : .infinity, alignment: .leading)
         .overlay(alignment: .top) {
-            // Floats just above the bar, whatever its height.
+            // Floats just above the bar.
             VoiceTranscriptionHUD(engine: voiceEngine)
                 .alignmentGuide(.top) { $0[.bottom] + 10 }
         }
@@ -128,147 +97,228 @@ struct TerminalQuickKeyBar: View {
                 toasts?.error(msg)
             }
         }
+        .onChange(of: isVoiceTouched) { _, touched in
+            // The touch went away without ending: nothing was said on purpose.
+            if !touched, isVoicePressed {
+                isVoicePressed = false
+                voiceEngine.cancelRecording()
+            }
+        }
+        .task(id: hostID) {
+            if let hostID { passwordKey.refresh(for: hostID) }
+        }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("msam.quickkeys")
     }
 
-    private func keyGrid(rows count: Int) -> some View {
-        let rows = Self.keyRows(count)
-        return VStack(spacing: Self.keySpacing) {
-            ForEach(rows.indices, id: \.self) { index in
-                HStack(spacing: Self.keySpacing) {
-                    ForEach(rows[index], id: \.self) { key in
-                        keyView(key)
-                    }
+    // MARK: - The pill
+
+    private var openPill: some View {
+        let groups = TerminalKeyBar.groups(hiding: TerminalKeyBar.hidden(from: hiddenStored))
+        return HStack(spacing: 0) {
+            // Where every button fits (an iPad) the row is a plain row: nothing
+            // competes with a held button for the touch. Where it does not, it
+            // scrolls sideways.
+            ViewThatFits(in: .horizontal) {
+                keyRow(groups)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    keyRow(groups)
                 }
-                .frame(height: count > 1 ? Self.wrappedRowHeight : HerdrChromeMetrics.minimumHitTarget)
+                .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+                // Buttons that do not fit fade out at the edge instead of being
+                // cut in half: it says there are more that way.
+                .mask(
+                    HStack(spacing: 0) {
+                        Color.black
+                        LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing)
+                            .frame(width: 16)
+                    }
+                )
             }
+
+            iconButton("slider.horizontal.3", name: "Choose buttons", id: "msam.quickkey.choose",
+                       active: panel == .chooser) {
+                panel = .chooser
+            }
+            .frame(width: keyWidth, height: TerminalKeyBarMetrics.pillHeight)
+            .popover(isPresented: showing(.chooser)) {
+                TerminalKeyBarChooser(hiddenStored: $hiddenStored)
+            }
+
+            iconButton("chevron.compact.left", name: "Collapse the bar", id: "msam.quickkey.collapse") {
+                withAnimation(.easeInOut(duration: 0.2)) { isCollapsed = true }
+            }
+            .frame(width: 34, height: TerminalKeyBarMetrics.pillHeight)
+            .padding(.trailing, 8)
         }
-        .padding(.horizontal, Self.horizontalPadding)
+        .frame(height: TerminalKeyBarMetrics.pillHeight)
+        .background(pillShape.fill(TerminalKeyBarStyle.fill))
+        .clipShape(pillShape)
+        .overlay(pillShape.strokeBorder(TerminalKeyBarStyle.edge, lineWidth: 1))
     }
 
+    /// The buttons in their groups, a wider gap between one group and the next.
+    private func keyRow(_ groups: [[TerminalBarKey]]) -> some View {
+        HStack(spacing: 0) {
+            ForEach(Array(groups.enumerated()), id: \.offset) { index, group in
+                if index > 0 {
+                    Color.clear.frame(width: TerminalKeyBarMetrics.groupGap)
+                }
+                ForEach(group, id: \.self) { key in
+                    keyView(key)
+                        .frame(width: keyWidth, height: TerminalKeyBarMetrics.pillHeight)
+                }
+            }
+        }
+        .padding(.leading, 10)
+        .padding(.trailing, 4)
+    }
+
+    /// What is left of a collapsed bar: the keyboard button, and the way back.
+    private var collapsedPill: some View {
+        HStack(spacing: 0) {
+            keyView(.keyboard)
+                .frame(width: keyWidth, height: TerminalKeyBarMetrics.pillHeight)
+            iconButton("chevron.compact.right", name: "Show the bar", id: "msam.quickkey.expand") {
+                withAnimation(.easeInOut(duration: 0.2)) { isCollapsed = false }
+            }
+            .frame(width: 34, height: TerminalKeyBarMetrics.pillHeight)
+        }
+        .padding(.leading, 6)
+        .padding(.trailing, 8)
+        .background(pillShape.fill(TerminalKeyBarStyle.fill))
+        .clipShape(pillShape)
+        .overlay(pillShape.strokeBorder(TerminalKeyBarStyle.edge, lineWidth: 1))
+    }
+
+    // MARK: - The buttons
+
     @ViewBuilder
-    private func keyView(_ key: Key) -> some View {
+    private func keyView(_ key: TerminalBarKey) -> some View {
         switch key {
-        case .esc:
-            textKey("esc", id: "esc") {
-                isShiftArmed = false
-                controller.disarmAlt()
-                send(EscapeSequences.meta)
-            }
-        case .voice:
-            voiceKey
-        case .tab:
-            textKey("tab", id: "tab") {
-                if isShiftArmed {
-                    isShiftArmed = false
-                    send(EscapeSequences.backtab)
-                } else if controller.isAltArmed {
-                    controller.disarmAlt()
-                    send(EscapeSequences.meta + EscapeSequences.tab)
-                } else {
-                    send(EscapeSequences.tab)
-                }
-            }
-        case .ctrl:
-            textKey("ctrl", id: "ctrl", active: controller.isCtrlArmed) {
-                controller.toggleCtrl()
-            }
-        case .alt:
-            textKey("alt", id: "alt", active: controller.isAltArmed) {
-                controller.toggleAlt()
-            }
-        case .shift:
-            symbolKey("shift", id: "shift", active: isShiftArmed) {
-                isShiftArmed.toggle()
-            }
-            .accessibilityLabel("shift")
-        case .left:
-            symbolKey("arrow.left", id: "left") {
-                if controller.isAltArmed {
-                    controller.disarmAlt()
-                    send(EscapeSequences.meta + EscapeSequences.leftMeta)
-                } else {
-                    send(shifted(emulator.applicationCursor ? EscapeSequences.leftShiftApp : EscapeSequences.leftShift,
-                                 plain: emulator.applicationCursor ? EscapeSequences.leftApp : EscapeSequences.left))
-                }
-            }
-        case .up:
-            symbolKey("arrow.up", id: "up") {
-                if controller.isAltArmed {
-                    controller.disarmAlt()
-                    send(EscapeSequences.meta + (emulator.applicationCursor ? EscapeSequences.upApp : EscapeSequences.up))
-                } else {
-                    send(shifted(emulator.applicationCursor ? EscapeSequences.upShiftApp : EscapeSequences.upShift,
-                                 plain: emulator.applicationCursor ? EscapeSequences.upApp : EscapeSequences.up))
-                }
-            }
-        case .down:
-            symbolKey("arrow.down", id: "down") {
-                if controller.isAltArmed {
-                    controller.disarmAlt()
-                    send(EscapeSequences.meta + (emulator.applicationCursor ? EscapeSequences.downApp : EscapeSequences.down))
-                } else {
-                    send(shifted(emulator.applicationCursor ? EscapeSequences.downShiftApp : EscapeSequences.downShift,
-                                 plain: emulator.applicationCursor ? EscapeSequences.downApp : EscapeSequences.down))
-                }
-            }
-        case .right:
-            symbolKey("arrow.right", id: "right") {
-                if controller.isAltArmed {
-                    controller.disarmAlt()
-                    send(EscapeSequences.meta + EscapeSequences.rightMeta)
-                } else {
-                    send(shifted(emulator.applicationCursor ? EscapeSequences.rightShiftApp : EscapeSequences.rightShift,
-                                 plain: emulator.applicationCursor ? EscapeSequences.rightApp : EscapeSequences.right))
-                }
-            }
-        case .pageUp:
-            symbolKey("chevron.compact.up", id: "pageup") { page(up: true) }
-        case .pageDown:
-            symbolKey("chevron.compact.down", id: "pagedown") { page(up: false) }
-        case .functionKeys:
-            textKey("fn", id: "msam.function-keys", active: showingFunctionKeys, disabled: !isLive) {
-                showingFunctionKeys.toggle()
-            }
-            .popover(isPresented: $showingFunctionKeys) {
-                FunctionKeyPalette { number in
-                    if let bytes = TerminalFunctionKey.bytes(for: number) {
-                        send(bytes)
-                    }
-                    showingFunctionKeys = false
-                }
-                .presentationCompactAdaptation(.popover)
-            }
         case .keyboard:
-            symbolKey(keyboard.isVisible ? "keyboard.chevron.compact.down" : "keyboard",
-                      id: "keyboard",
-                      active: false) {
+            keyButton(key, symbol: keyboard.isVisible ? "keyboard.chevron.compact.down" : "keyboard") {
                 if keyboard.isVisible {
                     controller.blur()
                 } else {
                     controller.focus()
                 }
             }
+        case .voice:
+            voiceKey
+        case .esc, .tab, .enter, .up, .down, .left, .right, .home, .end:
+            keyButton(key) { press(key) }
+        case .shift:
+            keyButton(key, symbol: isShiftArmed ? "shift.fill" : key.symbol, active: isShiftArmed) {
+                isShiftArmed.toggle()
+            }
+        case .ctrl:
+            keyButton(key, active: controller.isCtrlArmed) { controller.toggleCtrl() }
+        case .alt:
+            keyButton(key, active: controller.isAltArmed) { controller.toggleAlt() }
+        case .pageUp:
+            keyButton(key) { page(up: true) }
+        case .pageDown:
+            keyButton(key) { page(up: false) }
+        case .clipboard:
+            keyButton(key, active: panel == .clipboard || selection?.isSelecting == true) {
+                panel = .clipboard
+            }
+            .popover(isPresented: showing(.clipboard)) {
+                TerminalClipboardPanel(selection: selection, canPaste: isLive) { bytes in
+                    send(bytes)
+                } close: {
+                    panel = nil
+                }
+                .presentationCompactAdaptation(.popover)
+            }
+        case .shortcuts:
+            keyButton(key, active: panel == .shortcuts, disabled: !isLive) {
+                panel = .shortcuts
+            }
+            .popover(isPresented: showing(.shortcuts)) {
+                TerminalShortcutPalette { shortcut in
+                    send(shortcut.bytes)
+                    panel = nil
+                }
+                .presentationCompactAdaptation(.popover)
+            }
+        case .functionKeys:
+            keyButton(key, active: panel == .functionKeys, disabled: !isLive) {
+                panel = .functionKeys
+            }
+            .popover(isPresented: showing(.functionKeys)) {
+                FunctionKeyPalette { number in
+                    if let bytes = TerminalFunctionKey.bytes(for: number) {
+                        send(bytes)
+                    }
+                    panel = nil
+                }
+                .presentationCompactAdaptation(.popover)
+            }
+        case .password:
+            passwordButton
+        }
+    }
+
+    /// Types the host's saved password after the device owner has been asked, or
+    /// offers to save one. Press and hold to replace or forget it.
+    private var passwordButton: some View {
+        let saved = hostID.map(passwordKey.isSaved(for:)) ?? false
+        return keyButton(.password, active: panel == .password, disabled: !isLive || hostID == nil) {
+            guard let hostID else { return }
+            if saved {
+                typePassword(for: hostID)
+            } else {
+                panel = .password
+            }
+        }
+        .contextMenu {
+            if saved, let hostID {
+                Button("Replace saved password…") { panel = .password }
+                Button("Forget saved password", role: .destructive) {
+                    passwordKey.forget(for: hostID)
+                    toasts?.info("The saved password for \(hostName) is forgotten.")
+                }
+            }
+        }
+        .popover(isPresented: showing(.password)) {
+            HostTerminalPasswordForm(hostName: hostName, isReplacing: saved) { password in
+                guard let hostID else { return "There is no host to save it for." }
+                let failure = passwordKey.save(password, for: hostID)
+                if failure == nil {
+                    panel = nil
+                    toasts?.success("Saved. Tap the key button to type it.")
+                }
+                return failure
+            } cancel: {
+                panel = nil
+            }
+            .presentationCompactAdaptation(.popover)
+        }
+    }
+
+    private func typePassword(for hostID: UUID) {
+        Task {
+            let outcome = await passwordKey.type(for: hostID, named: hostName) { send($0) }
+            if case .failed(let text) = outcome {
+                toasts?.error(text)
+            }
         }
     }
 
     private var voiceKey: some View {
         Button(action: {}) {
-            Image(systemName: "mic.fill")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(isRecordingVoice ? Color.white : (isLive ? HerdrTheme.subtext : HerdrTheme.muted))
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(
-                    isRecordingVoice ? Color.red.opacity(0.85) : HerdrTheme.selection,
-                    in: RoundedRectangle(cornerRadius: 6)
-                )
-                .contentShape(Rectangle())
+            Image(systemName: isRecordingVoice ? "mic.fill" : "mic")
+                .font(.system(size: TerminalKeyBarStyle.symbolSize, weight: .regular))
+                .foregroundStyle(isRecordingVoice ? Color.white : (isLive ? HerdrTheme.text : HerdrTheme.muted))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(TerminalKeyBarButtonStyle(highlight: isRecordingVoice ? Color.red.opacity(0.85) : nil))
         .disabled(!isLive)
         .simultaneousGesture(
             DragGesture(minimumDistance: 0)
+                .updating($isVoiceTouched) { _, touched, _ in touched = true }
                 .onChanged { _ in
                     guard isLive else { return }
                     if !isVoicePressed {
@@ -298,21 +348,22 @@ struct TerminalQuickKeyBar: View {
                 }
         )
         .accessibilityLabel("Push-to-talk voice input")
-        .accessibilityIdentifier("msam.quickkey.voice")
+        .accessibilityIdentifier(TerminalBarKey.voice.identifier)
     }
+
+    // MARK: - What the buttons do
 
     private func send(_ bytes: [UInt8]) {
         onInputBytes(bytes)
     }
 
-    /// If sticky Shift is armed, send the Shift coding and disarm; otherwise
-    /// the plain sequence.
-    private func shifted(_ shift: [UInt8], plain: [UInt8]) -> [UInt8] {
-        if isShiftArmed {
-            isShiftArmed = false
-            return shift
-        }
-        return plain
+    /// A button that types: with sticky Shift or Alt where one is armed.
+    private func press(_ key: TerminalBarKey) {
+        guard let press = TerminalBarKeyPress.of(key, shift: isShiftArmed, alt: controller.isAltArmed,
+                                                 applicationCursor: emulator.applicationCursor) else { return }
+        if press.clearsShift { isShiftArmed = false }
+        if press.clearsAlt { controller.disarmAlt() }
+        send(press.bytes)
     }
 
     /// Scroll a page of history. On the alternate screen the remote owns the
@@ -334,35 +385,115 @@ struct TerminalQuickKeyBar: View {
         }
     }
 
-    private func textKey(_ label: String, id: String, active: Bool = false, disabled: Bool = false, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(label)
-                .font(HerdrTheme.mono(.footnote, weight: .semibold))
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-                .foregroundStyle(disabled ? HerdrTheme.muted : (active ? HerdrTheme.background : HerdrTheme.subtext))
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(active ? HerdrTheme.accent : HerdrTheme.selection,
-                            in: RoundedRectangle(cornerRadius: 6))
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(disabled)
-        .accessibilityLabel(label)
-        .accessibilityIdentifier(id.contains(".") ? id : "msam.quickkey.\(id)")
+    private func showing(_ which: Panel) -> Binding<Bool> {
+        Binding(get: { panel == which },
+                set: { isShown in
+                    if isShown { panel = which } else if panel == which { panel = nil }
+                })
     }
 
-    private func symbolKey(_ symbol: String, id: String, active: Bool = false, action: @escaping () -> Void) -> some View {
+    // MARK: - Drawing a button
+
+    private func keyButton(_ key: TerminalBarKey, symbol: String? = nil, active: Bool = false,
+                           disabled: Bool = false, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            TerminalBarKeyIcon(key: key, symbol: symbol)
+                .foregroundStyle(disabled ? HerdrTheme.muted : (active ? HerdrTheme.accent : HerdrTheme.text))
+        }
+        .buttonStyle(TerminalKeyBarButtonStyle(highlight: active ? HerdrTheme.selection : nil))
+        .disabled(disabled)
+        .accessibilityLabel(key.name)
+        .accessibilityAddTraits(active ? .isSelected : [])
+        .accessibilityIdentifier(key.identifier)
+    }
+
+    /// One of the bar's own two buttons at its right end.
+    private func iconButton(_ symbol: String, name: String, id: String, active: Bool = false,
+                            action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(active ? HerdrTheme.background : HerdrTheme.subtext)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(active ? HerdrTheme.accent : HerdrTheme.selection,
-                            in: RoundedRectangle(cornerRadius: 6))
-                .contentShape(Rectangle())
+                .font(.system(size: TerminalKeyBarStyle.symbolSize, weight: .regular))
+                .foregroundStyle(active ? HerdrTheme.accent : HerdrTheme.text)
         }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("msam.quickkey.\(id)")
+        .buttonStyle(TerminalKeyBarButtonStyle(highlight: active ? HerdrTheme.selection : nil))
+        .accessibilityLabel(name)
+        .accessibilityIdentifier(id)
+    }
+}
+
+/// The pill's colours.
+enum TerminalKeyBarStyle {
+    /// A shade above the terminal's background, so the pill reads as floating on it.
+    static let fill = HerdrTheme.activeRow
+    static let edge = Color.white.opacity(0.10)
+    static let symbolSize: CGFloat = 19
+}
+
+/// A bare icon that fills its slot, lights up under a finger, and can carry a
+/// standing highlight (an armed modifier, an open panel).
+private struct TerminalKeyBarButtonStyle: ButtonStyle {
+    var highlight: Color?
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(highlight ?? (configuration.isPressed ? Color.white.opacity(0.14) : Color.clear))
+                    .padding(.horizontal, 3)
+                    .padding(.vertical, 5)
+            )
+            .contentShape(Rectangle())
+    }
+}
+
+/// A button's icon, as the bar and the list of buttons both draw it.
+struct TerminalBarKeyIcon: View {
+    let key: TerminalBarKey
+    /// Another symbol for the same button: the keyboard button while the keyboard is up.
+    var symbol: String? = nil
+    /// What the icon stands on, for the cut-out behind a badge.
+    var ground: Color = TerminalKeyBarStyle.fill
+
+    var body: some View {
+        Group {
+            switch key {
+            case .shortcuts:
+                TerminalKeyBarBadge(ground: ground) { Image(systemName: key.symbol) }
+            case .functionKeys:
+                TerminalKeyBarBadge(ground: ground) { TerminalKeyBarFunctionIcon() }
+            default:
+                Image(systemName: symbol ?? key.symbol)
+            }
+        }
+        .font(.system(size: TerminalKeyBarStyle.symbolSize, weight: .regular))
+    }
+}
+
+/// An icon with the small "send" arrow at its corner: these buttons send keys
+/// rather than being one.
+private struct TerminalKeyBarBadge<Icon: View>: View {
+    let ground: Color
+    @ViewBuilder var icon: Icon
+
+    var body: some View {
+        icon.overlay(alignment: .bottomTrailing) {
+            Image(systemName: "arrowshape.turn.up.right.fill")
+                .font(.system(size: 9, weight: .bold))
+                .padding(1.5)
+                // Cuts the icon away behind the arrow.
+                .background(ground, in: Circle())
+                .offset(x: 5, y: 4)
+        }
+    }
+}
+
+/// "F1" on a key cap. The system has no symbol for it.
+private struct TerminalKeyBarFunctionIcon: View {
+    var body: some View {
+        Text("F1")
+            .font(.system(size: 10, weight: .semibold, design: .rounded))
+            .frame(width: 21, height: 18)
+            .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).strokeBorder(lineWidth: 1.4))
     }
 }

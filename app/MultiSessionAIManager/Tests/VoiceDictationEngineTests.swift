@@ -192,12 +192,12 @@ import UIKit
     }
 
     @Test func quickKeyBarPlacesVoiceSecondFromLeftAndIncludesAlt() {
-        // Voice key must be at index 1 (2nd from left, right after esc) so it avoids both
-        // the iPadOS bottom-left corner swipe zone and the centered iPad Home Indicator,
-        // and "alt" must be present in the quick-key bar.
-        #expect(TerminalQuickKeyBar.orderedKeyIdentifiers[0] == "msam.quickkey.esc")
-        #expect(TerminalQuickKeyBar.orderedKeyIdentifiers[1] == "msam.quickkey.voice")
-        #expect(TerminalQuickKeyBar.orderedKeyIdentifiers.contains("msam.quickkey.alt"))
+        // Voice key must be at index 1 (2nd from left) so it avoids the iPadOS
+        // bottom-left corner swipe zone, and "alt" must be present in the bar.
+        let keys = TerminalKeyBar.groups.flatMap { $0 }.map(\.identifier)
+        #expect(keys.first == "msam.quickkey.keyboard")
+        #expect(keys.dropFirst().first == "msam.quickkey.voice")
+        #expect(keys.contains("msam.quickkey.alt"))
     }
 
     @MainActor

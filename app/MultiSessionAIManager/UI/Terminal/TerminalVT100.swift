@@ -80,6 +80,9 @@ enum EscapeSequences {
     static let homeApp   = "\u{1b}OH".utf8Array
     static let end       = "\u{1b}[F".utf8Array
     static let endApp    = "\u{1b}OF".utf8Array
+    /// xterm's Shift codings, the same in both cursor-key modes.
+    static let homeShift = "\u{1b}[1;2H".utf8Array
+    static let endShift  = "\u{1b}[1;2F".utf8Array
     static let pageUp    = "\u{1b}[5~".utf8Array
     static let pageDown  = "\u{1b}[6~".utf8Array
     static let delete    = "\u{1b}[3~".utf8Array

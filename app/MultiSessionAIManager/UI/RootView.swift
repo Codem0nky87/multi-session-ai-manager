@@ -850,6 +850,8 @@ struct HostTerminalView: View {
     /// The window's home-indicator inset, refreshed whenever this view's size
     /// changes (rotation, keyboard). See `KeyboardVisibilityModel.barBottomInset`.
     @State private var windowHomeInset: CGFloat = 0
+    /// The key bar's own setting: collapsed, it gives its rows to the terminal.
+    @AppStorage(TerminalKeyBar.collapsedKey) private var isKeyBarCollapsed = false
     /// The cell of Herdr's "new" that was tapped, while its choice is shown.
     @State private var newSpaceTap: NewSpaceTap?
 
@@ -885,9 +887,11 @@ struct HostTerminalView: View {
                     emulator: session.terminal,
                     // Keeps the remote's bottom row out of the window-resize grip,
                     // which swallows clicks before the app can forward them. iPad
-                    // only: a phone has no grip.
-                    bottomInset: HerdrChromeMetrics.terminalBottomClearance(
-                        isPhone: UIDevice.current.userInterfaceIdiom == .phone),
+                    // only: a phone has no grip. With the key bar open the bar is
+                    // that margin already.
+                    bottomInset: TerminalKeyBarMetrics.terminalClearance(
+                        isPhone: UIDevice.current.userInterfaceIdiom == .phone,
+                        isCollapsed: isKeyBarCollapsed),
                     inputEnabled: session.status == .live,
                     onInputBytes: { session.terminal.feedInputToPTY($0) },
                     onGridChange: { cols, rows in session.resize(cols: cols, rows: rows) },
@@ -969,20 +973,32 @@ struct HostTerminalView: View {
                 .frame(minWidth: 200)
                 .presentationCompactAdaptation(.popover)
             }
-            // The quick-key bar shows on iPhone AND iPad: TUIs bind actions to
-            // Shift+arrows (Codex queued messages on Shift+Left) and neither
-            // the software keyboard nor every hardware case delivers shift to
-            // the PTY, so the sticky-Shift strip must always be within reach.
+            // Room for the key bar, and for the keyboard (or the home-indicator
+            // strip when the keyboard is hidden) under it. The terminal above
+            // shrinks by the same amount, re-deriving cols/rows. A collapsed
+            // bar floats over the terminal's corner and takes no rows.
+            Color.clear.frame(height: barBottomInset + TerminalKeyBarMetrics.reservedHeight(
+                isCollapsed: isKeyBarCollapsed,
+                clearedInset: barBottomInset,
+                windowHomeInset: windowHomeInset))
+        }
+        // The key bar shows on iPhone AND iPad: TUIs bind actions to
+        // Shift+arrows (Codex queued messages on Shift+Left) and neither
+        // the software keyboard nor every hardware case delivers shift to
+        // the PTY, so sticky Shift must always be within reach.
+        .overlay(alignment: .bottomLeading) {
             TerminalQuickKeyBar(
                 emulator: session.terminal,
                 controller: inputController,
                 keyboard: keyboard,
                 isLive: session.status == .live,
+                selection: selection,
+                hostID: session.connection.host.id,
+                hostName: session.connection.host.name,
+                clearedInset: barBottomInset,
+                windowHomeInset: windowHomeInset,
                 onInputBytes: { session.terminal.feedInputToPTY($0) }
             )
-            // Lift the bar clear of the keyboard (or the home-indicator
-            // strip when the keyboard is hidden); the terminal above it
-            // shrinks by the same amount, re-deriving cols/rows.
             .padding(.bottom, barBottomInset)
         }
         .background(

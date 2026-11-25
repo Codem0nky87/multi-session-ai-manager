@@ -451,8 +451,9 @@ final class PhoneLayoutLiveUITests: XCTestCase {
             shot(fixture, "80-keyboard-\(index)")
             dumpTree(fixture, "80-keyboard-\(index)")
             print("Keyboard layout: window=\(app.windows.firstMatch.frame) terminal=\(terminal.frame) key=\(key.frame) keyboard=\(keyboard.frame)")
-            XCTAssertEqual(key.frame.maxY, keyboard.frame.minY, accuracy: 2,
-                           "Quick keys must touch the keyboard, without a second keyboard-sized gap")
+            // The bar is a pill that floats a few points above the keyboard.
+            XCTAssertEqual(key.frame.maxY, keyboard.frame.minY, accuracy: 8,
+                           "Quick keys must sit on the keyboard, without a second keyboard-sized gap")
             XCTAssertGreaterThan(terminal.frame.height, 50)
             XCTAssertGreaterThanOrEqual(terminal.frame.minY, app.windows.firstMatch.frame.minY)
         }
@@ -466,7 +467,7 @@ final class PhoneLayoutLiveUITests: XCTestCase {
         key.tap()
         XCTAssertTrue(waitForSoftwareKeyboard(visible: true))
         RunLoop.current.run(until: Date().addingTimeInterval(1))
-        XCTAssertEqual(key.frame.maxY, keyboard.frame.minY, accuracy: 2)
+        XCTAssertEqual(key.frame.maxY, keyboard.frame.minY, accuracy: 8)
         if app.windows.firstMatch.frame.width > 700 {
             // iPad's sidebar shares the root keyboard policy. Its composer must
             // remain above a keyboard raised by either the terminal or its input.

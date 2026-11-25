@@ -102,8 +102,10 @@ turn terminal output into a stored transcript.
 - **AI CLI installers** — host settings can install and verify Codex, Claude
   Code, and Antigravity with their official native installers. Existing working
   installations are retained; account sign-in remains in the host terminal.
-- **Function keys** — the **fn** button beside Attach sends F1–F12 to the
-  currently selected session and its focused terminal split.
+- **Key bar** — a floating bar under the terminal with Esc, Tab, Return, sticky
+  Shift / Control / Alt, arrows, Home, End and paging, plus clipboard actions,
+  one-tap shortcuts, F1–F12 and a saved password typed behind Face ID. Choose
+  which buttons show, or collapse it ([details](docs/terminal.md#the-key-bar)).
 - **Direct SSH** — SwiftNIO SSH + [Citadel](https://github.com/orlandos-nl/Citadel),
   with on-device key generation and import, OpenSSH public-key export, and
   trust-on-first-use known-hosts pinning.

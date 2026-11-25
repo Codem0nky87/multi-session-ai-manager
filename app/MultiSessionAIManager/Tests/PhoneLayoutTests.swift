@@ -75,46 +75,29 @@ import SwiftUI
         #expect(offenders.isEmpty, "\(offenders)")
     }
 
-    /// On one row of a phone the keys were ~20pt wide each: too small to hit, and
-    /// their labels broke in two ("ct" over "rl"). They wrap onto two rows instead.
-    @Test func quickKeysWrapOntoTwoRowsWhenOneRowCannotFitThem() {
-        // iPhone upright (SE, mini, standard, Pro Max).
-        for width: CGFloat in [320, 375, 393, 402, 440] {
-            #expect(TerminalQuickKeyBar.rowCount(forWidth: width) == 2, "\(width)")
-        }
-        // iPhone on its side (inside the safe area) and every iPad: one row, as before.
-        for width: CGFloat in [734, 744, 820, 1024, 1366] {
-            #expect(TerminalQuickKeyBar.rowCount(forWidth: width) == 1, "\(width)")
-        }
-
-        let wrapped = TerminalQuickKeyBar.keyRows(2)
-        #expect(wrapped.map(\.count) == [7, 7])
-        // Wrapping never reorders or drops a key.
-        #expect(wrapped.flatMap { $0 }.map(\.identifier) == TerminalQuickKeyBar.orderedKeyIdentifiers)
-        #expect(TerminalQuickKeyBar.keyRows(1).map(\.count) == [14])
-
-        // On the narrowest phone each wrapped key is still wider than the minimum.
-        let perRow = CGFloat(wrapped[0].count)
-        let keyWidth = (320 - 2 * TerminalQuickKeyBar.horizontalPadding
-                        - (perRow - 1) * TerminalQuickKeyBar.keySpacing) / perRow
-        #expect(keyWidth >= TerminalQuickKeyBar.minimumKeyWidth - 2)
-
-        #expect(TerminalQuickKeyBar.height(rows: 1) == HerdrChromeMetrics.minimumHitTarget)
-        #expect(TerminalQuickKeyBar.height(rows: 2) == 84)
+    /// On one row of a phone the keys were ~20pt wide each: too small to hit. They
+    /// keep a width a thumb can hit on every device, and the row scrolls sideways
+    /// where it does not fit, so the bar is one row high everywhere.
+    @Test func quickKeysKeepAHittableWidthAndTheBarStaysOneRowHigh() {
+        #expect(TerminalKeyBarMetrics.keyWidth(isPhone: true) >= 40)
+        #expect(TerminalKeyBarMetrics.keyWidth(isPhone: false) >= HerdrChromeMetrics.minimumHitTarget)
+        #expect(TerminalKeyBarMetrics.pillHeight == HerdrChromeMetrics.minimumHitTarget)
+        // A phone's home strip is already cleared under the bar, so the bar adds
+        // one row of keys and its two gaps: less than the two rows it used to be.
+        let onPhone = TerminalKeyBarMetrics.reservedHeight(isCollapsed: false, clearedInset: 34, windowHomeInset: 34)
+        #expect(onPhone == 56)
+        #expect(onPhone < 84)
     }
 
     /// The bar has no key of its own for a single chord (it had `^c` and `^/`): sticky
-    /// `ctrl` and then the key sends any of them. `fn` sits next to the keyboard key.
-    @Test func quickKeysEndWithFnAndTheKeyboardKeyAndCarryNoSingleChordKeys() {
-        let keys = TerminalQuickKeyBar.orderedKeyIdentifiers
-        #expect(keys == [
-            "msam.quickkey.esc", "msam.quickkey.voice", "msam.quickkey.tab",
-            "msam.quickkey.ctrl", "msam.quickkey.alt", "msam.quickkey.shift",
-            "msam.quickkey.left", "msam.quickkey.up", "msam.quickkey.down", "msam.quickkey.right",
-            "msam.quickkey.pageup", "msam.quickkey.pagedown",
-            "msam.function-keys", "msam.quickkey.keyboard",
-        ])
-        #expect(keys[keys.count - 2] == "msam.function-keys", "fn is second from the right")
+    /// Control and then the key sends any of them, and the shortcuts button holds the
+    /// common ones.
+    @Test func quickKeysCarryNoSingleChordKeys() {
+        let keys = TerminalKeyBar.groups.flatMap { $0 }.map(\.identifier)
+        #expect(keys.allSatisfy { !$0.contains("ctrl-") && !$0.contains("^") })
+        #expect(keys.contains("msam.quickkey.ctrl"))
+        #expect(keys.contains("msam.quickkey.shortcuts"))
+        #expect(keys.contains("msam.function-keys"))
     }
 
     /// Sticky `ctrl` is the only way to send Ctrl-C and Ctrl-/ from the bar, so it has

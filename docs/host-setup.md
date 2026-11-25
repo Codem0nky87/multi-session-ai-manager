@@ -247,7 +247,7 @@ installation, and verification separately.
 
 ## Function keys on iPad
 
-Tap **fn** beside the attachment button to display F1–F12. Selecting a key sends
+Tap the **F1** button on the bar under the terminal to display F1–F12. Selecting a key sends
 the same terminal escape sequence as a physical keyboard to the selected host
 session. Herdr routes it to the currently focused tab or split. The button is
 disabled when the selected session is disconnected.

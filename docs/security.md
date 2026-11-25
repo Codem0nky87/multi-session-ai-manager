@@ -18,11 +18,22 @@ remote attack surface is SSH alone.
 | Host definitions, tabs, tunnels | `UserDefaults`, on-device |
 | Install-key password | Held for one connection, never persisted |
 | Hop password | Held while the sheet is open, never persisted |
+| Terminal password (optional, one per host) | iOS Keychain, this device only, behind Face ID, Touch ID or the passcode |
 | Network transport credentials | **None exist.** The app holds no VPN/WARP/tunnel token of any kind |
 | App Store Connect API key | Environment only; `**/*.p8` is gitignored |
 
 No credential is transmitted anywhere except to the host it authenticates
 against.
+
+The terminal password is the one secret a user can ask the app to type. It is
+saved only if the user saves one from the key bar, for typing into that host's
+terminal. The Keychain item requires the device owner to be present for every
+read, so the system asks each time and the app cannot read it silently; it is
+not included in backups and is deleted if the device passcode is removed. It is
+typed only into the terminal of the host it was saved for, never shown again,
+never placed on the clipboard, and removed when the host is deleted. Whatever is
+on that terminal receives it: typing it at anything other than a password prompt
+puts it on the screen.
 
 ## Host-key verification
 
