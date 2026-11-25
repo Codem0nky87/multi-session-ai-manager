@@ -95,6 +95,9 @@ enum TerminalKeyBar {
     /// Where the device keeps which buttons are hidden, and whether the bar is collapsed.
     static let hiddenKey = "msam.keybar.hidden"
     static let collapsedKey = "msam.keybar.collapsed"
+    /// The button at the bar's right end that opens Settings: the sliders it has
+    /// had there from the start. A cog was tried and was not wanted.
+    static let settingsSymbol = "slider.horizontal.3"
 
     /// Left to right as drawn. A wider gap separates one group from the next.
     static let groups: [[TerminalBarKey]] = [
@@ -132,6 +135,11 @@ enum TerminalKeyBar {
         var hidden = hidden(from: stored)
         if isShown { hidden.remove(key) } else { hidden.insert(key) }
         return self.stored(hidden)
+    }
+
+    /// What a collapsed bar still shows, beside the arrow that opens it again.
+    static func collapsedKeys(hiding hidden: Set<TerminalBarKey>) -> [TerminalBarKey] {
+        [TerminalBarKey.keyboard, .voice].filter { !hidden.contains($0) }
     }
 
     /// The hidden buttons as one line of text, in the bar's own order.

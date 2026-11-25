@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Settings: which buttons the bar under the terminal shows. A switch per
-/// button, in the bar's own order, kept on the device. The cog and the collapse
+/// button, in the bar's own order, kept on the device. The settings button and the collapse
 /// arrow are the bar's own and are always there.
 struct TerminalToolbarSection: View {
     @AppStorage(TerminalKeyBar.hiddenKey) private var hiddenStored = ""

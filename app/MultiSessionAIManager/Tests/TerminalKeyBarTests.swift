@@ -69,6 +69,20 @@ import Testing
         #expect(source.contains(".padding(.trailing, HerdrChromeMetrics.topBarTrailingInset)"))
     }
 
+    /// The button at the bar's right end opens Settings, and is drawn with the
+    /// sliders it always had there. A cog was tried and was not wanted.
+    @Test func theSettingsButtonOnTheBarKeepsItsSlidersIcon() {
+        #expect(TerminalKeyBar.settingsSymbol == "slider.horizontal.3")
+    }
+
+    /// Collapsed, the bar keeps the two buttons used without looking for them:
+    /// the keyboard and the microphone. One hidden in Settings stays hidden.
+    @Test func aCollapsedBarKeepsTheKeyboardAndTheMicrophone() {
+        #expect(TerminalKeyBar.collapsedKeys(hiding: []) == [.keyboard, .voice])
+        #expect(TerminalKeyBar.collapsedKeys(hiding: [.voice, .home]) == [.keyboard])
+        #expect(TerminalKeyBar.collapsedKeys(hiding: [.keyboard, .voice]).isEmpty)
+    }
+
     /// A button with nothing behind it here is not drawn.
     @Test func anAppButtonWithNothingBehindItIsLeftOff() {
         #expect(TerminalKeyBar.unavailable(canSendFile: true, hasIntelligence: true).isEmpty)

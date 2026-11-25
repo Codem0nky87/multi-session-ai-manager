@@ -8,7 +8,7 @@
 //  bar and what each button types is `TerminalKeyBar`; this file draws it.
 //
 //  The buttons scroll sideways where they do not fit (a phone, a narrow
-//  window). The two at the right end stay put: the cog opens the app's
+//  window). The two at the right end stay put: the sliders open the app's
 //  settings, where the buttons to show are chosen, and the arrow collapses the
 //  bar to a small pill in the corner, which gives its rows back to the terminal.
 //
@@ -89,9 +89,12 @@ struct TerminalQuickKeyBar: View {
         .padding(.bottom, TerminalKeyBarMetrics.bottomGap(clearedInset: clearedInset,
                                                          windowHomeInset: windowHomeInset))
         .frame(maxWidth: isCollapsed ? nil : .infinity, alignment: .leading)
-        .overlay(alignment: .top) {
-            // Floats just above the bar.
+        .overlay(alignment: isCollapsed ? .topLeading : .top) {
+            // Floats just above the bar. Over a collapsed bar it starts where
+            // the small pill does, so what is being said is not pushed off the
+            // side of the screen.
             VoiceTranscriptionHUD(engine: voiceEngine)
+                .padding(.leading, isCollapsed ? TerminalKeyBarMetrics.sideMargin(isPhone: isPhone) : 0)
                 .alignmentGuide(.top) { $0[.bottom] + 10 }
         }
         .onChange(of: voiceEngine.state) { _, newState in
@@ -143,9 +146,11 @@ struct TerminalQuickKeyBar: View {
             }
 
             // The app's settings, which is also where the buttons to show are
-            // chosen. Always here, so nothing hidden is ever out of reach.
+            // chosen. Always here, so nothing hidden is ever out of reach. It
+            // keeps the sliders icon the bar has had from the start.
             if let openSettings = app.openSettings {
-                iconButton("gearshape", name: "MSAM settings", id: "msam.settings", action: openSettings)
+                iconButton(TerminalKeyBar.settingsSymbol, name: "MSAM settings", id: "msam.settings",
+                           action: openSettings)
                     .frame(width: keyWidth, height: TerminalKeyBarMetrics.pillHeight)
             }
 
@@ -178,11 +183,14 @@ struct TerminalQuickKeyBar: View {
         .padding(.trailing, 4)
     }
 
-    /// What is left of a collapsed bar: the keyboard button, and the way back.
+    /// What is left of a collapsed bar: the keyboard, the microphone, and the way back.
     private var collapsedPill: some View {
         HStack(spacing: 0) {
-            keyView(.keyboard)
-                .frame(width: keyWidth, height: TerminalKeyBarMetrics.pillHeight)
+            ForEach(TerminalKeyBar.collapsedKeys(hiding: TerminalKeyBar.hidden(from: hiddenStored)),
+                    id: \.self) { key in
+                keyView(key)
+                    .frame(width: keyWidth, height: TerminalKeyBarMetrics.pillHeight)
+            }
             iconButton("chevron.compact.right", name: "Show the bar", id: "msam.quickkey.expand") {
                 withAnimation(.easeInOut(duration: 0.2)) { isCollapsed = false }
             }
