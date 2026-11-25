@@ -37,6 +37,9 @@ struct TerminalQuickKeyBar: View {
     /// A narrow screen (a phone, an iPad window beside another): seven buttons
     /// on the bar, the rest behind "more".
     var isCompact = false
+    /// Whether the panel behind "more" is open, for a parent that wants to hold
+    /// that itself. Left out, the bar keeps it.
+    var moreOpen: Binding<Bool>? = nil
     /// Routes bytes to the live PTY (the session's terminal feed).
     let onInputBytes: ([UInt8]) -> Void
 
@@ -66,8 +69,13 @@ struct TerminalQuickKeyBar: View {
         case clipboard, shortcuts, functionKeys, password
     }
     @State private var panel: Panel?
-    /// The panel behind "more" on a narrow screen.
-    @State private var isMoreOpen = false
+    /// The panel behind "more" on a narrow screen: the bar's own, unless a
+    /// parent holds it in `moreOpen`.
+    @State private var ownMoreOpen = false
+    private var isMoreOpen: Bool { moreOpen?.wrappedValue ?? ownMoreOpen }
+    private func setMoreOpen(_ open: Bool) {
+        if let moreOpen { moreOpen.wrappedValue = open } else { ownMoreOpen = open }
+    }
     /// Changes with every press in that panel, which starts its idle count again.
     @State private var morePresses = 0
 
@@ -91,19 +99,32 @@ struct TerminalQuickKeyBar: View {
     }
 
     var body: some View {
-        Group {
-            if isCollapsed {
-                collapsedPill
-            } else if isCompact {
-                compactPill
-            } else {
-                openPill
+        VStack(spacing: 0) {
+            // The rest of the buttons, standing on the bar. They are part of the
+            // bar, which is laid over the terminal: growing upward covers some
+            // of the terminal for a moment and does not resize what the host
+            // draws. (As an overlay with an alignment guide the panel hung down
+            // from the bar's top edge instead, off the bottom of the screen: a
+            // guide on a view inside an `if` is not the overlay's to read.)
+            if isCompact, isMoreOpen, !isCollapsed {
+                morePanel
+                    .padding(.horizontal, TerminalKeyBarMetrics.sideMargin(isPhone: isPhone))
+                    .transition(.opacity)
             }
+            Group {
+                if isCollapsed {
+                    collapsedPill
+                } else if isCompact {
+                    compactPill
+                } else {
+                    openPill
+                }
+            }
+            .padding(.horizontal, TerminalKeyBarMetrics.sideMargin(isPhone: isPhone))
+            .padding(.top, TerminalKeyBarMetrics.topGap)
+            .padding(.bottom, TerminalKeyBarMetrics.bottomGap(clearedInset: clearedInset,
+                                                             windowHomeInset: windowHomeInset))
         }
-        .padding(.horizontal, TerminalKeyBarMetrics.sideMargin(isPhone: isPhone))
-        .padding(.top, TerminalKeyBarMetrics.topGap)
-        .padding(.bottom, TerminalKeyBarMetrics.bottomGap(clearedInset: clearedInset,
-                                                         windowHomeInset: windowHomeInset))
         .frame(maxWidth: isCollapsed ? nil : .infinity, alignment: .leading)
         .overlay(alignment: isCollapsed ? .topLeading : .top) {
             // Floats just above the bar. Over a collapsed bar it starts where
@@ -113,20 +134,10 @@ struct TerminalQuickKeyBar: View {
                 .padding(.leading, isCollapsed ? TerminalKeyBarMetrics.sideMargin(isPhone: isPhone) : 0)
                 .alignmentGuide(.top) { $0[.bottom] + 10 }
         }
-        .overlay(alignment: .top) {
-            // The rest of the buttons, standing on the bar. It floats over the
-            // terminal, so opening it does not resize what the host draws.
-            if isCompact, isMoreOpen, !isCollapsed {
-                morePanel
-                    .padding(.horizontal, TerminalKeyBarMetrics.sideMargin(isPhone: isPhone))
-                    .alignmentGuide(.top) { $0[.bottom] }
-                    .transition(.opacity)
-            }
-        }
         .onChange(of: panel) { was, now in
             // A panel that hung from a button behind "more" has closed.
             if was != nil, now == nil, isMoreOpen {
-                withAnimation(.easeInOut(duration: 0.15)) { isMoreOpen = false }
+                withAnimation(.easeInOut(duration: 0.15)) { setMoreOpen(false) }
             }
         }
         .onChange(of: voiceEngine.state) { _, newState in
@@ -223,7 +234,7 @@ struct TerminalQuickKeyBar: View {
                     .frame(height: TerminalKeyBarMetrics.pillHeight)
             }
             iconButton("ellipsis", name: "More keys", id: "msam.quickkey.more", active: isMoreOpen) {
-                withAnimation(.easeInOut(duration: 0.15)) { isMoreOpen.toggle() }
+                withAnimation(.easeInOut(duration: 0.15)) { setMoreOpen(!isMoreOpen) }
                 morePresses += 1
             }
             .frame(maxWidth: .infinity)
@@ -246,7 +257,7 @@ struct TerminalQuickKeyBar: View {
                     .simultaneousGesture(TapGesture().onEnded { pressedBehindMore(key) })
             } else {
                 iconButton(TerminalKeyBar.settingsSymbol, name: "MSAM settings", id: "msam.settings") {
-                    isMoreOpen = false
+                    setMoreOpen(false)
                     app.openSettings?()
                 }
             }
@@ -259,7 +270,7 @@ struct TerminalQuickKeyBar: View {
         case .stays:
             morePresses += 1
         case .closes:
-            withAnimation(.easeInOut(duration: 0.15)) { isMoreOpen = false }
+            withAnimation(.easeInOut(duration: 0.15)) { setMoreOpen(false) }
         case .closesWithItsOwnPanel:
             // Its own panel hangs from the button; see `onChange(of: panel)`.
             morePresses += 1
@@ -274,7 +285,7 @@ struct TerminalQuickKeyBar: View {
             try? await Task.sleep(for: .seconds(6))
             if Task.isCancelled { return }
             if isShiftArmed || controller.isCtrlArmed || controller.isAltArmed || panel != nil { continue }
-            withAnimation(.easeInOut(duration: 0.15)) { isMoreOpen = false }
+            withAnimation(.easeInOut(duration: 0.15)) { setMoreOpen(false) }
         }
     }
 

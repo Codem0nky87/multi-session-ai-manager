@@ -16,6 +16,64 @@ import UIKit
         return condition()
     }
 
+    /// Where a view ended up in the window.
+    private struct FrameKey: PreferenceKey {
+        static let defaultValue = CGRect.zero
+        static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+            let next = nextValue()
+            if next != .zero { value = next }
+        }
+    }
+
+    /// The narrow bar's frame in a phone-sized window, with its "more" panel open or not.
+    private func barFrame(moreOpen: Bool) async throws -> CGRect {
+        final class Seen { var frame = CGRect.zero }
+        let seen = Seen()
+        let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 390, height: 700)
+        let screen = ZStack(alignment: .bottomLeading) {
+            Color.black
+            TerminalQuickKeyBar(emulator: TerminalEmulator(frameClock: TestTerminalFrameClock()),
+                                controller: KeyInputController(), keyboard: KeyboardVisibilityModel(),
+                                app: TerminalBarAppActions(sendFile: {}, toggleIntelligence: {}, openSettings: {}),
+                                isCompact: true, moreOpen: .constant(moreOpen), onInputBytes: { _ in })
+                .background(GeometryReader { proxy in
+                    Color.clear.preference(key: FrameKey.self, value: proxy.frame(in: .global))
+                })
+        }
+        .onPreferenceChange(FrameKey.self) { seen.frame = $0 }
+        .ignoresSafeArea()
+        window.rootViewController = UIHostingController(rootView: screen)
+        window.isHidden = false
+        defer { window.isHidden = true }
+        #expect(await soon { seen.frame.height > 0 })
+        try await Task.sleep(for: .milliseconds(200))
+        return seen.frame
+    }
+
+    /// The panel behind "more" stands on the bar, inside the bar's own frame: the
+    /// bar grows upward by it and its foot stays where it was. It once hung down
+    /// from the bar's top edge instead, off the bottom of the screen.
+    @Test func theMorePanelStandsOnTheBarAndTheBarsFootStaysPut() async throws {
+        let setting = UserDefaults.standard
+        setting.set(false, forKey: TerminalKeyBar.collapsedKey)
+        setting.set("", forKey: TerminalKeyBar.hiddenKey)
+        defer {
+            setting.removeObject(forKey: TerminalKeyBar.collapsedKey)
+            setting.removeObject(forKey: TerminalKeyBar.hiddenKey)
+        }
+
+        let closed = try await barFrame(moreOpen: false)
+        let open = try await barFrame(moreOpen: true)
+
+        #expect(abs(open.maxY - closed.maxY) < 1, "foot: \(open.maxY) against \(closed.maxY)")
+        // Four rows of tiles and their frame.
+        #expect(open.height > closed.height + 200, "open \(open.height), closed \(closed.height)")
+        #expect(open.minY >= 0, "the panel is on the screen")
+        #expect(abs(open.width - closed.width) < 1)
+    }
+
     @Test func collapsingTheBarGivesTheTerminalItsRowsAndOpeningItTakesThemBack() async throws {
         let setting = UserDefaults.standard
         setting.set(false, forKey: TerminalKeyBar.collapsedKey)
