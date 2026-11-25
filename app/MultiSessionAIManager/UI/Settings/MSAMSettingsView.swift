@@ -31,6 +31,8 @@ struct MSAMSettingsView: View {
 
                 TerminalPreferencesSection(settings: terminalSettings)
 
+                VoiceInputSection()
+
                 TerminalToolbarSection()
 
                 Section("About") {

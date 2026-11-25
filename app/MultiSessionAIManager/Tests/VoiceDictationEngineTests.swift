@@ -442,6 +442,7 @@ enum BackgroundCallbackSimulator {
 
 @MainActor
 final class AsyncControllableMockSpeechRecognitionService: SpeechRecognitionService {
+    var contextualStrings: [String] = []
     var isRecording = false
     var startRecognitionCalled = false
     private var permissionContinuation: CheckedContinuation<Bool, Never>?

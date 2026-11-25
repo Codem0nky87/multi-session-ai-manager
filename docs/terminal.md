@@ -64,15 +64,15 @@ Tab, arrows or Control, so the app supplies them. Left to right, in five groups:
 | Sending | clipboard, shortcuts, function keys, password |
 | App | send a file to the host, Apple Intelligence |
 
-The two buttons at the right end belong to the bar itself. The cog opens the
+The two buttons at the right end belong to the bar itself. The sliders open the
 app's settings, whose **Toolbar** section has a switch for every button (kept on
 the device). The arrow collapses the bar to a small pill in the bottom-left
-corner with only the keyboard button and the way back.
+corner with only the keyboard, the microphone and the way back.
 
 Everything that acts on the terminal is on this bar. The strip above the
 terminal only informs: the host tabs, the host's metrics and the state of the
-AI providers. With no host open there is no bar, so the cog is in the top strip
-for that case alone.
+AI providers. With no host open there is no bar, so a settings cog is in the top
+strip for that case alone.
 
 Where the buttons do not fit, on a phone or in a narrow window, the row scrolls
 sideways and fades at the edge; the two right-hand buttons stay put. It is one
@@ -82,6 +82,16 @@ row on every device. Hiding buttons is how to see more of the rest at once.
 Home, End or Tab sends xterm's Shift coding (Codex opens its queued messages on
 Shift-Left). Alt with left and right moves a word. Shift or Alt with Return sends
 Escape and then Return, which the agent TUIs take as "a new line, do not send".
+
+**Voice** is hold-to-talk: what is said is typed into the terminal when the
+button is let go. A dictation model writes ordinary words well and names badly
+("Codex" came out as "Kodak"), so Settings has two lists under **Voice input**.
+*Words to listen for* is given to the speech recogniser as what to expect.
+*Corrections*, written `heard = written`, put right what it still gets wrong:
+whole words only, in any letter case, in what is shown while speaking as well as
+in what is typed. Both start with a built-in list and are kept on the device.
+The words are a hint to the recogniser, not a guarantee; a correction always
+applies.
 
 **Page up and down** send scroll-wheel notches while the host is on its alternate
 screen, because a TUI keeps its own scrollback, and the page keys otherwise.

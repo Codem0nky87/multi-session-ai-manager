@@ -27,6 +27,8 @@ public enum VoiceDictationState: Equatable, Sendable {
 @MainActor
 public protocol SpeechRecognitionService: AnyObject {
     var isRecording: Bool { get }
+    /// Words and names the recogniser should expect. Set before recognition starts.
+    var contextualStrings: [String] { get set }
     func requestPermissions() async -> Bool
     func startRecognition(
         onDeviceOnly: Bool,
@@ -46,12 +48,19 @@ public final class VoiceDictationEngine: ObservableObject {
     @Published public private(set) var state: VoiceDictationState = .idle
 
     private let service: SpeechRecognitionService
+    /// Reads the user's words and corrections. Asked each time recording starts,
+    /// so a change in Settings counts from the next thing said.
+    private let vocabulary: @MainActor () -> VoiceVocabulary
+    /// The lists as they were when this recording started.
+    private var sessionVocabulary = VoiceVocabulary(words: [], corrections: [])
     private var currentLiveText: String = ""
     private var currentAudioLevel: Float = 0.0
     private var currentSessionID = UUID()
 
-    public init(service: SpeechRecognitionService? = nil) {
+    init(service: SpeechRecognitionService? = nil,
+         vocabulary: @escaping @MainActor () -> VoiceVocabulary = { VoiceVocabulary.stored() }) {
         self.service = service ?? AppleSpeechRecognitionService()
+        self.vocabulary = vocabulary
     }
 
     // MARK: - Static Helpers
@@ -97,11 +106,18 @@ public final class VoiceDictationEngine: ObservableObject {
         currentAudioLevel = 0.0
         state = .listening(liveText: "", audioLevel: 0.0)
 
+        // The recogniser is told which names to expect, and what it still gets
+        // wrong is put right in what is shown as well as in what is typed.
+        let words = vocabulary()
+        sessionVocabulary = words
+        service.contextualStrings = words.hints
+
         do {
             try await service.startRecognition(
                 onDeviceOnly: true,
-                onPartialResult: { [weak self] partialText in
+                onPartialResult: { [weak self] heard in
                     guard let self = self, self.currentSessionID == session else { return }
+                    let partialText = words.corrected(heard)
                     self.currentLiveText = partialText
                     if case .listening = self.state {
                         self.state = .listening(liveText: partialText, audioLevel: self.currentAudioLevel)
@@ -135,7 +151,9 @@ public final class VoiceDictationEngine: ObservableObject {
             return nil
         }
 
-        let candidate = finalRaw ?? currentLiveText
+        // The live text is corrected already; correcting it twice could turn
+        // what one correction wrote into another.
+        let candidate = finalRaw.map(sessionVocabulary.corrected) ?? currentLiveText
         let cleaned = Self.cleanTranscriptionText(candidate)
 
         state = .idle
@@ -172,6 +190,22 @@ public final class AppleSpeechRecognitionService: SpeechRecognitionService {
 
     public init(locale: Locale = Locale.current) {
         self.locale = locale
+    }
+
+    public var contextualStrings: [String] = []
+
+    /// The request speech is fed into, told which words to expect.
+    static func makeRequest(contextualStrings: [String]) -> SFSpeechAudioBufferRecognitionRequest {
+        let request = SFSpeechAudioBufferRecognitionRequest()
+        request.shouldReportPartialResults = true
+
+        // Default to false so iOS prefers on-device recognition when available,
+        // but gracefully falls back without crashing if local models are not yet downloaded.
+        request.requiresOnDeviceRecognition = false
+
+        // Names a dictation model does not expect ("Codex" came out as "Kodak").
+        request.contextualStrings = contextualStrings
+        return request
     }
 
     private func getOrCreateRecognizer() -> SFSpeechRecognizer? {
@@ -313,12 +347,7 @@ public final class AppleSpeechRecognitionService: SpeechRecognitionService {
         try audioSession.setActive(true)
 
         let engine = AVAudioEngine()
-        let request = SFSpeechAudioBufferRecognitionRequest()
-        request.shouldReportPartialResults = true
-
-        // Default to false so iOS prefers on-device recognition when available,
-        // but gracefully falls back without crashing if local models are not yet downloaded.
-        request.requiresOnDeviceRecognition = false
+        let request = Self.makeRequest(contextualStrings: contextualStrings)
 
         let inputNode = engine.inputNode
         let inputFormat = inputNode.inputFormat(forBus: 0)
@@ -444,6 +473,10 @@ public final class MockSpeechRecognitionService: SpeechRecognitionService {
     private var onPartial: (@MainActor @Sendable (String) -> Void)?
     private var onLevel: (@MainActor @Sendable (Float) -> Void)?
 
+    public var contextualStrings: [String] = []
+    /// What the recogniser had been told when it was started.
+    public var contextualStringsAtStart: [String]?
+
     public init() {}
 
     public func requestPermissions() async -> Bool {
@@ -456,6 +489,7 @@ public final class MockSpeechRecognitionService: SpeechRecognitionService {
         onAudioLevel: @MainActor @Sendable @escaping (Float) -> Void
     ) async throws {
         isRecording = true
+        contextualStringsAtStart = contextualStrings
         self.onPartial = onPartialResult
         self.onLevel = onAudioLevel
     }
