@@ -276,15 +276,14 @@ final class PhoneLayoutLiveUITests: XCTestCase {
             }
             dismissSheet()
         }
-        app.buttons["msam.compact.intelligence"].tap()
+        // Apple Intelligence is on the bar under the terminal, at the far end of
+        // a row that scrolls on a phone.
+        let intelligence = app.buttons["msam.intelligence.toggle"]
+        for _ in 0..<6 where !intelligence.isHittable { bar.swipeLeft() }
+        intelligence.tap()
         RunLoop.current.run(until: Date().addingTimeInterval(3))
         shot(fixture, "42-intelligence")
         dismissSheet()
-        app.buttons["msam.compact.menu"].tap()
-        RunLoop.current.run(until: Date().addingTimeInterval(1))
-        shot(fixture, "43-menu")
-        // Outside the menu (a tap in the middle of the screen lands on one of its F-keys).
-        app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.08, dy: 0.118)).tap()
         let fn = app.buttons["msam.function-keys"]
         if fn.exists { fn.tap(); RunLoop.current.run(until: Date().addingTimeInterval(1)); shot(fixture, "44-function-keys") }
 

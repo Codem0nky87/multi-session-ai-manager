@@ -104,8 +104,9 @@ turn terminal output into a stored transcript.
   installations are retained; account sign-in remains in the host terminal.
 - **Key bar** — a floating bar under the terminal with Esc, Tab, Return, sticky
   Shift / Control / Alt, arrows, Home, End and paging, plus clipboard actions,
-  one-tap shortcuts, F1–F12 and a saved password typed behind Face ID. Choose
-  which buttons show, or collapse it ([details](docs/terminal.md#the-key-bar)).
+  one-tap shortcuts, F1–F12, a saved password typed behind Face ID, sending a
+  file and Apple Intelligence. Choose which buttons show in Settings, or
+  collapse it ([details](docs/terminal.md#the-key-bar)).
 - **Direct SSH** — SwiftNIO SSH + [Citadel](https://github.com/orlandos-nl/Citadel),
   with on-device key generation and import, OpenSSH public-key export, and
   trust-on-first-use known-hosts pinning.

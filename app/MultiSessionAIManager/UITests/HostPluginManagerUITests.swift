@@ -54,7 +54,8 @@ final class HostPluginManagerUITests: XCTestCase {
         let functionKeys = app.buttons["msam.function-keys"]
         XCTAssertTrue(functionKeys.waitForExistence(timeout: 10), app.debugDescription)
         XCTAssertFalse(functionKeys.isEnabled, "function keys require a connected session")
-        XCTAssertGreaterThan(functionKeys.frame.minY, app.buttons["msam.send.file"].frame.minY)
+        // Sending a file sits on the same bar, under the terminal.
+        XCTAssertEqual(functionKeys.frame.midY, app.buttons["msam.send.file"].frame.midY, accuracy: 2)
         app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND identifier != %@", "host.tab.", "host.tab.add"))
             .firstMatch.press(forDuration: 1)
         app.buttons["Close"].tap()

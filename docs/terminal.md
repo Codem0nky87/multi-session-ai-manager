@@ -6,7 +6,8 @@ getting input to it and pixels back.
 
 ## Text selection
 
-Selection is **modal**, reached with the **⬚** button in the top bar.
+Selection is **modal**, reached with **Select text** behind the scissors button
+on the [key bar](#the-key-bar).
 
 It works that way because a one-finger drag is already scrollback. An inline
 long-press-to-select recognizer competed with the scroll view's pan and lost —
@@ -21,12 +22,14 @@ While selecting:
 - dragging near the top or bottom edge auto-scrolls, so a selection can run past
   what is on screen.
 
-**📄 Copy** puts the selection on the iPad pasteboard. It is inert until a range
-exists, so the control states plainly whether tapping it will do anything.
+**Copy selection**, behind the same button, puts the selection on the iPad
+pasteboard. It is inert until a range exists, so the control states plainly
+whether tapping it will do anything.
 
 ## Sending files in
 
-The **paperclip** button uploads from the clipboard, Photos, or Files, and types
+The **paperclip** button on the [key bar](#the-key-bar) uploads from the
+clipboard, Photos, or Files, and types
 the resulting remote path into the pane. See [file-transfer.md](file-transfer.md).
 
 ## Pointer and touch
@@ -51,7 +54,7 @@ restrictions look interchangeable and are not.
 ## The key bar
 
 Under the terminal floats one pill of icon buttons. An iOS keyboard has no Esc,
-Tab, arrows or Control, so the app supplies them. Left to right, in four groups:
+Tab, arrows or Control, so the app supplies them. Left to right, in five groups:
 
 | Group | Buttons |
 |---|---|
@@ -59,11 +62,17 @@ Tab, arrows or Control, so the app supplies them. Left to right, in four groups:
 | Modifiers | Shift, Control, Alt: each is sticky and applies to the next key |
 | Moving | up, down, left, right, Home, End, page up, page down |
 | Sending | clipboard, shortcuts, function keys, password |
+| App | send a file to the host, Apple Intelligence |
 
-The two buttons at the right end belong to the bar itself: the sliders choose
-which buttons show (a switch each, kept on the device), and the arrow collapses
-the bar to a small pill in the bottom-left corner with only the keyboard button
-and the way back.
+The two buttons at the right end belong to the bar itself. The cog opens the
+app's settings, whose **Toolbar** section has a switch for every button (kept on
+the device). The arrow collapses the bar to a small pill in the bottom-left
+corner with only the keyboard button and the way back.
+
+Everything that acts on the terminal is on this bar. The strip above the
+terminal only informs: the host tabs, the host's metrics and the state of the
+AI providers. With no host open there is no bar, so the cog is in the top strip
+for that case alone.
 
 Where the buttons do not fit, on a phone or in a narrow window, the row scrolls
 sideways and fades at the edge; the two right-hand buttons stay put. It is one

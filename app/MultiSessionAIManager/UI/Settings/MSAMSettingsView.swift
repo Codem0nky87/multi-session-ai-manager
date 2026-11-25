@@ -31,6 +31,8 @@ struct MSAMSettingsView: View {
 
                 TerminalPreferencesSection(settings: terminalSettings)
 
+                TerminalToolbarSection()
+
                 Section("About") {
                     LabeledContent("App", value: "MSAM Herdr Client")
                     LabeledContent("Version", value: Self.version)

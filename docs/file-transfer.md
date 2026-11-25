@@ -10,7 +10,7 @@ tab that is not live rather than quietly connecting behind your back.
 
 ## iPad → host
 
-The **paperclip** button offers three sources:
+The **paperclip** button on the bar under the terminal offers three sources:
 
 - **Paste** — an image on the iPad clipboard
 - **Photos** — the photo library picker

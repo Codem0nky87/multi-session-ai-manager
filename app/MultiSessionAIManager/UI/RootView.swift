@@ -137,8 +137,8 @@ struct RootView: View {
     /// so the quick-key bar can sit above it and the grid can shrink with it.
     @State private var keyboard = KeyboardVisibilityModel()
     /// True while a pane copy is in flight, so the button cannot be double-fired.
-    /// Modal text selection, shared with the terminal so the top bar can enable
-    /// Copy only when a range exists, and so a tab switch can force-exit.
+    /// Modal text selection, shared with the terminal and its key bar so Copy is
+    /// enabled only when a range exists, and so a tab switch can force-exit.
     @State private var selection = TerminalSelectionModel()
     private let keyStore = KeyStore(backing: RealKeychain())
     private let knownHosts = KnownHostsStore()
@@ -148,99 +148,22 @@ struct RootView: View {
             HStack(spacing: 0) {
                 HostTabStrip(store: tabStore, hosts: hostStore.hosts, attention: tabs.attention,
                              onNewBrowserSpace: { openBrowserSpace(in: $0) }) { showingPicker = true }
-                // Copies the focused Herdr pane's text to the iPad pasteboard.
-                // Only shown with a live tab: it asks Herdr over that tab's own
-                // authenticated SSH connection.
-                if selectedTab != nil, !isCompact {
-                    if let tab = selectedTab {
-                        HostMetricsBarView(metricsModel: tabs.session(for: tab).metrics, hostID: tab.hostID,
-                                           volumeUsage: tabs.session(for: tab).volumeUsage)
-                            .background(HerdrTheme.panel, ignoresSafeAreaEdges: [])
-                        ProviderPulseBarView(pulse: tabs.session(for: tab).metrics.pulse) { provider in
-                            selectedProviderForDetail = provider
-                        }
+                // With a terminal open the top bar only informs: the host's
+                // metrics and the providers' state. What acts on the terminal
+                // (selecting, copying, sending a file, Apple Intelligence, the
+                // settings) is on the bar under it.
+                if !isCompact, let tab = selectedTab {
+                    HostMetricsBarView(metricsModel: tabs.session(for: tab).metrics, hostID: tab.hostID,
+                                       volumeUsage: tabs.session(for: tab).volumeUsage)
                         .background(HerdrTheme.panel, ignoresSafeAreaEdges: [])
+                    ProviderPulseBarView(pulse: tabs.session(for: tab).metrics.pulse) { provider in
+                        selectedProviderForDetail = provider
                     }
-                    
-                    Button {
-                        if selection.isSelecting { selection.exit() } else { selection.isSelecting = true }
-                    } label: {
-                        Image(systemName: selection.isSelecting
-                              ? "selection.pin.in.out"
-                              : "square.dashed")
-                            .foregroundStyle(selection.isSelecting ? HerdrTheme.accent : HerdrTheme.subtext)
-                            .frame(
-                                width: HerdrChromeMetrics.hostTabBarHeight,
-                                height: HerdrChromeMetrics.hostTabBarHeight
-                            )
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(selection.isSelecting ? "Exit text selection" : "Select text")
-                    .accessibilityIdentifier("msam.select.text")
-                    .background(HerdrTheme.panel, ignoresSafeAreaEdges: [])
-
-                    // Copies the SELECTED text. Inert until a range exists, so the
-                    // control states plainly whether tapping it will do anything.
-                    Button {
-                        selection.requestCopy()
-                    } label: {
-                        Image(systemName: "doc.on.doc")
-                            .foregroundStyle(selection.hasSelection ? HerdrTheme.accent : HerdrTheme.muted)
-                            .frame(
-                                width: HerdrChromeMetrics.hostTabBarHeight,
-                                height: HerdrChromeMetrics.hostTabBarHeight
-                            )
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(!selection.hasSelection)
-                    .accessibilityLabel("Copy selected text")
-                    .accessibilityIdentifier("msam.copy.selection")
-                    .background(HerdrTheme.panel, ignoresSafeAreaEdges: [])
-                    // Sends a file (clipboard image, photo, or anything from
-                    // Files) to the host and types its path into the pane. Live
-                    // tabs only: the upload rides that tab's own SSH connection,
-                    // and the path is typed into that tab's PTY.
-                    Button {
-                        showingFileSend = true
-                    } label: {
-                        Image(systemName: "paperclip")
-                            .foregroundStyle(isSelectedTabLive ? HerdrTheme.subtext : HerdrTheme.muted)
-                            .frame(
-                                width: HerdrChromeMetrics.hostTabBarHeight,
-                                height: HerdrChromeMetrics.hostTabBarHeight
-                            )
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(!isSelectedTabLive)
-                    .accessibilityLabel("Send a file to host")
-                    .accessibilityIdentifier("msam.send.file")
-                    .background(HerdrTheme.panel, ignoresSafeAreaEdges: [])
-
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            showingIntelligence.toggle()
-                        }
-                    } label: {
-                        Image(systemName: "apple.intelligence")
-                            .foregroundStyle(showingIntelligence ? HerdrTheme.accent : HerdrTheme.subtext)
-                            .frame(
-                                width: HerdrChromeMetrics.hostTabBarHeight,
-                                height: HerdrChromeMetrics.hostTabBarHeight
-                            )
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Apple Intelligence")
-                    .accessibilityIdentifier("msam.intelligence.toggle")
                     .background(HerdrTheme.panel, ignoresSafeAreaEdges: [])
                 }
-                // Phone (compact width): the metrics bar and the five toolbar
-                // buttons cannot share 390pt with the tab strip, so every
-                // secondary action folds into one overflow menu, alongside 1 hardware
-                // icon and 1 AI provider icon.
+                // Phone (compact width): the metrics bar cannot share 390pt with
+                // the tab strip, so it folds into one hardware icon and one AI
+                // provider icon, each opening its sheet.
                 if isCompact, let tab = selectedTab {
                     let metrics = tabs.session(for: tab).metrics
 
@@ -270,35 +193,14 @@ struct RootView: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("AI Provider Pulse")
-
+                }
+                // With no host open there is no terminal and no bar under it, so
+                // the settings are reached from here.
+                if selectedTab == nil {
                     Button {
-                        showingIntelligence = true
+                        showingSettings = true
                     } label: {
-                        Image(systemName: "apple.intelligence")
-                            .foregroundStyle(showingIntelligence ? HerdrTheme.accent : HerdrTheme.subtext)
-                            .frame(width: HerdrChromeMetrics.hostTabBarHeight, height: HerdrChromeMetrics.hostTabBarHeight)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Apple Intelligence")
-                    .accessibilityIdentifier("msam.compact.intelligence")
-
-                    Menu {
-                        Button("Apple Intelligence") { showingIntelligence = true }
-                        Button(selection.isSelecting ? "Exit text selection" : "Select text") {
-                            if selection.isSelecting { selection.exit() } else { selection.isSelecting = true }
-                        }
-                        Button("Copy selection") { selection.requestCopy() }
-                            .disabled(!selection.hasSelection)
-                        Button("Send a file to host") { showingFileSend = true }
-                            .disabled(!isSelectedTabLive)
-                        Section("Function keys") {
-                            ForEach(TerminalFunctionKey.numbers, id: \.self) { number in
-                                Button("F\(number)") { tabs.sendFunctionKey(number) }
-                                    .disabled(!isSelectedTabLive)
-                            }
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis")
+                        Image(systemName: "gearshape")
                             .foregroundStyle(HerdrTheme.subtext)
                             .frame(
                                 width: HerdrChromeMetrics.hostTabBarHeight,
@@ -307,25 +209,10 @@ struct RootView: View {
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("Terminal actions")
-                    .accessibilityIdentifier("msam.compact.menu")
+                    .accessibilityLabel("MSAM settings")
+                    .accessibilityIdentifier("msam.settings")
                     .background(HerdrTheme.panel, ignoresSafeAreaEdges: [])
                 }
-                Button {
-                    showingSettings = true
-                } label: {
-                    Image(systemName: "gearshape")
-                        .foregroundStyle(HerdrTheme.subtext)
-                        .frame(
-                            width: HerdrChromeMetrics.hostTabBarHeight,
-                            height: HerdrChromeMetrics.hostTabBarHeight
-                        )
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("MSAM settings")
-                .accessibilityIdentifier("msam.settings")
-                .background(HerdrTheme.panel, ignoresSafeAreaEdges: [])
             }
             .background(HerdrTheme.panel, ignoresSafeAreaEdges: [])
 
@@ -337,6 +224,13 @@ struct RootView: View {
                         theme: tab.themeID.map { TerminalTheme.byID($0) },
                         isCompact: isCompact,
                         onNewBrowserSpace: { openBrowserSpace(in: tab) },
+                        barActions: TerminalBarAppActions(
+                            sendFile: { showingFileSend = true },
+                            toggleIntelligence: {
+                                withAnimation(.easeInOut(duration: 0.2)) { showingIntelligence.toggle() }
+                            },
+                            isIntelligenceShown: showingIntelligence,
+                            openSettings: { showingSettings = true }),
                         keyboard: keyboard
                     )
                     .padding(.horizontal, HerdrChromeMetrics.terminalEdgeInset)
@@ -835,6 +729,9 @@ struct HostTerminalView: View {
     var isCompact = false
     /// Opens a browser space in this tab's Herdr session.
     var onNewBrowserSpace: () -> Void = {}
+    /// The app's own actions on the key bar: sending a file, Apple Intelligence,
+    /// the settings.
+    var barActions = TerminalBarAppActions()
     /// Owned as @State so observation tracks its notification-driven updates;
     /// the value passed in only seeds a fresh instance (previews).
     @State var keyboard = KeyboardVisibilityModel()
@@ -997,6 +894,7 @@ struct HostTerminalView: View {
                 hostName: session.connection.host.name,
                 clearedInset: barBottomInset,
                 windowHomeInset: windowHomeInset,
+                app: barActions,
                 onInputBytes: { session.terminal.feedInputToPTY($0) }
             )
             .padding(.bottom, barBottomInset)

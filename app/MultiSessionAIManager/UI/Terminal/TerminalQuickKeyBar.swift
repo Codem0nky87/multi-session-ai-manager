@@ -8,9 +8,9 @@
 //  bar and what each button types is `TerminalKeyBar`; this file draws it.
 //
 //  The buttons scroll sideways where they do not fit (a phone, a narrow
-//  window). The two at the right end stay put: one chooses which buttons show,
-//  the other collapses the bar to a small pill in the corner, which gives its
-//  rows back to the terminal.
+//  window). The two at the right end stay put: the cog opens the app's
+//  settings, where the buttons to show are chosen, and the arrow collapses the
+//  bar to a small pill in the corner, which gives its rows back to the terminal.
 //
 //  Page up / down send scroll-wheel notches at the grid centre while the
 //  remote is on its alternate screen (a TUI has no app-side scrollback), and
@@ -32,6 +32,8 @@ struct TerminalQuickKeyBar: View {
     /// What is already kept clear below the bar: the keyboard, or a phone's home strip.
     var clearedInset: CGFloat = 0
     var windowHomeInset: CGFloat = 0
+    /// The app's own actions, which used to be buttons in the top bar.
+    var app = TerminalBarAppActions()
     /// Routes bytes to the live PTY (the session's terminal feed).
     let onInputBytes: ([UInt8]) -> Void
 
@@ -58,7 +60,7 @@ struct TerminalQuickKeyBar: View {
 
     /// What a button has opened above the bar.
     private enum Panel: Equatable {
-        case clipboard, shortcuts, functionKeys, password, chooser
+        case clipboard, shortcuts, functionKeys, password
     }
     @State private var panel: Panel?
 
@@ -114,7 +116,10 @@ struct TerminalQuickKeyBar: View {
     // MARK: - The pill
 
     private var openPill: some View {
-        let groups = TerminalKeyBar.groups(hiding: TerminalKeyBar.hidden(from: hiddenStored))
+        let groups = TerminalKeyBar.groups(
+            hiding: TerminalKeyBar.hidden(from: hiddenStored)
+                .union(TerminalKeyBar.unavailable(canSendFile: app.sendFile != nil,
+                                                  hasIntelligence: app.toggleIntelligence != nil)))
         return HStack(spacing: 0) {
             // Where every button fits (an iPad) the row is a plain row: nothing
             // competes with a held button for the touch. Where it does not, it
@@ -137,13 +142,11 @@ struct TerminalQuickKeyBar: View {
                 )
             }
 
-            iconButton("slider.horizontal.3", name: "Choose buttons", id: "msam.quickkey.choose",
-                       active: panel == .chooser) {
-                panel = .chooser
-            }
-            .frame(width: keyWidth, height: TerminalKeyBarMetrics.pillHeight)
-            .popover(isPresented: showing(.chooser)) {
-                TerminalKeyBarChooser(hiddenStored: $hiddenStored)
+            // The app's settings, which is also where the buttons to show are
+            // chosen. Always here, so nothing hidden is ever out of reach.
+            if let openSettings = app.openSettings {
+                iconButton("gearshape", name: "MSAM settings", id: "msam.settings", action: openSettings)
+                    .frame(width: keyWidth, height: TerminalKeyBarMetrics.pillHeight)
             }
 
             iconButton("chevron.compact.left", name: "Collapse the bar", id: "msam.quickkey.collapse") {
@@ -259,6 +262,12 @@ struct TerminalQuickKeyBar: View {
             }
         case .password:
             passwordButton
+        case .attach:
+            // Live sessions only: the upload rides the session's own SSH
+            // connection, and the path is typed into its terminal.
+            keyButton(key, disabled: !isLive) { app.sendFile?() }
+        case .intelligence:
+            keyButton(key, active: app.isIntelligenceShown) { app.toggleIntelligence?() }
         }
     }
 
@@ -419,6 +428,15 @@ struct TerminalQuickKeyBar: View {
         .accessibilityLabel(name)
         .accessibilityIdentifier(id)
     }
+}
+
+/// What the app's own buttons on the bar do. A button with nothing behind it
+/// is not drawn.
+struct TerminalBarAppActions {
+    var sendFile: (() -> Void)?
+    var toggleIntelligence: (() -> Void)?
+    var isIntelligenceShown = false
+    var openSettings: (() -> Void)?
 }
 
 /// The pill's colours.

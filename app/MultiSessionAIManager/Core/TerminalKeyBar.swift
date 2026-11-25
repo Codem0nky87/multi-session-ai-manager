@@ -20,10 +20,17 @@ enum TerminalBarKey: String, CaseIterable, Sendable {
     case clipboard, shortcuts
     case functionKeys = "function-keys"
     case password
+    case attach, intelligence
 
-    /// What UI tests find the button by.
+    /// What UI tests find the button by. Sending a file and Apple Intelligence
+    /// keep the names they had in the top bar.
     var identifier: String {
-        self == .functionKeys ? "msam.function-keys" : "msam.quickkey.\(rawValue)"
+        switch self {
+        case .functionKeys: "msam.function-keys"
+        case .attach: "msam.send.file"
+        case .intelligence: "msam.intelligence.toggle"
+        default: "msam.quickkey.\(rawValue)"
+        }
     }
 
     /// What VoiceOver says and what the list of buttons calls it. The icons
@@ -50,6 +57,8 @@ enum TerminalBarKey: String, CaseIterable, Sendable {
         case .shortcuts: "Shortcuts"
         case .functionKeys: "Function keys"
         case .password: "Send password"
+        case .attach: "Send a file to host"
+        case .intelligence: "Apple Intelligence"
         }
     }
 
@@ -76,6 +85,8 @@ enum TerminalBarKey: String, CaseIterable, Sendable {
         case .clipboard: "scissors"
         case .functionKeys: "square"
         case .password: "key.radiowaves.forward"
+        case .attach: "paperclip"
+        case .intelligence: "apple.intelligence"
         }
     }
 }
@@ -91,6 +102,7 @@ enum TerminalKeyBar {
         [.shift, .ctrl, .alt],
         [.up, .down, .left, .right, .home, .end, .pageUp, .pageDown],
         [.clipboard, .shortcuts, .functionKeys, .password],
+        [.attach, .intelligence],
     ]
 
     /// The groups without the hidden buttons. A group with nothing left is
@@ -99,6 +111,27 @@ enum TerminalKeyBar {
         groups
             .map { $0.filter { !hidden.contains($0) } }
             .filter { !$0.isEmpty }
+    }
+
+    /// The app's own buttons that have nothing behind them where the bar is
+    /// shown, and so are not drawn.
+    static func unavailable(canSendFile: Bool, hasIntelligence: Bool) -> Set<TerminalBarKey> {
+        var keys: Set<TerminalBarKey> = []
+        if !canSendFile { keys.insert(.attach) }
+        if !hasIntelligence { keys.insert(.intelligence) }
+        return keys
+    }
+
+    /// Whether the stored choice shows this button.
+    static func shows(_ key: TerminalBarKey, in stored: String) -> Bool {
+        !hidden(from: stored).contains(key)
+    }
+
+    /// The stored choice with one button shown or hidden, the rest as they were.
+    static func stored(_ stored: String, showing key: TerminalBarKey, _ isShown: Bool) -> String {
+        var hidden = hidden(from: stored)
+        if isShown { hidden.remove(key) } else { hidden.insert(key) }
+        return self.stored(hidden)
     }
 
     /// The hidden buttons as one line of text, in the bar's own order.
@@ -174,7 +207,7 @@ struct TerminalBarKeyPress: Equatable {
             let plain = app ? E.endApp : E.end
             return cursorKey(plain: plain, shifted: E.endShift, alted: E.meta + plain)
         case .keyboard, .voice, .shift, .ctrl, .alt, .pageUp, .pageDown,
-             .clipboard, .shortcuts, .functionKeys, .password:
+             .clipboard, .shortcuts, .functionKeys, .password, .attach, .intelligence:
             return nil
         }
     }

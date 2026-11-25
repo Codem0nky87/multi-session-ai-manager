@@ -8,12 +8,13 @@ import Testing
 
     // MARK: - What is on the bar
 
-    @Test func theButtonsStandInFourGroupsInTheOrderTheyAreDrawn() {
+    @Test func theButtonsStandInFiveGroupsInTheOrderTheyAreDrawn() {
         #expect(TerminalKeyBar.groups.map { $0.map(\.rawValue) } == [
             ["keyboard", "voice", "esc", "tab", "return"],
             ["shift", "ctrl", "alt"],
             ["up", "down", "left", "right", "home", "end", "pageup", "pagedown"],
             ["clipboard", "shortcuts", "function-keys", "password"],
+            ["attach", "intelligence"],
         ])
         // Every button is in exactly one group.
         let all = TerminalKeyBar.groups.flatMap { $0 }
@@ -35,6 +36,55 @@ import Testing
         #expect(TerminalBarKey.allCases.allSatisfy { !$0.name.isEmpty })
     }
 
+    /// Sending a file and Apple Intelligence came down from the top bar, which only
+    /// informs now. They are found by the names they had up there.
+    @Test func theButtonsThatCameDownFromTheTopBarKeepTheirIdentifiers() {
+        #expect(TerminalBarKey.attach.identifier == "msam.send.file")
+        #expect(TerminalBarKey.intelligence.identifier == "msam.intelligence.toggle")
+        #expect(TerminalBarKey.attach.symbol == "paperclip")
+        #expect(TerminalBarKey.intelligence.symbol == "apple.intelligence")
+    }
+
+    /// Selecting and copying are behind the bar's scissors, so the top bar's own
+    /// buttons for them are gone, not moved.
+    @Test func theTopBarCarriesNoActionButtonsWhileATerminalIsOpen() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: root.appendingPathComponent("UI/RootView.swift"), encoding: .utf8)
+        for identifier in ["msam.select.text", "msam.copy.selection", "msam.send.file",
+                           "msam.intelligence.toggle", "msam.compact.intelligence", "msam.compact.menu"] {
+            #expect(!source.contains("\"\(identifier)\""), "\(identifier) is still declared in the top bar")
+        }
+        // With no host open there is no bar under a terminal, so the cog is up
+        // there for exactly that case.
+        #expect(source.contains("if selectedTab == nil {\n                    Button {\n                        showingSettings = true"))
+    }
+
+    /// A button with nothing behind it here is not drawn.
+    @Test func anAppButtonWithNothingBehindItIsLeftOff() {
+        #expect(TerminalKeyBar.unavailable(canSendFile: true, hasIntelligence: true).isEmpty)
+        #expect(TerminalKeyBar.unavailable(canSendFile: false, hasIntelligence: true) == [.attach])
+        #expect(TerminalKeyBar.unavailable(canSendFile: true, hasIntelligence: false) == [.intelligence])
+        // The whole group goes, and leaves no gap.
+        let neither = TerminalKeyBar.unavailable(canSendFile: false, hasIntelligence: false)
+        #expect(TerminalKeyBar.groups(hiding: neither).count == 4)
+    }
+
+    /// The switches in Settings: one button at a time, the rest left as they were.
+    @Test func aSwitchInSettingsShowsOrHidesOneButton() {
+        var stored = ""
+        stored = TerminalKeyBar.stored(stored, showing: .home, false)
+        stored = TerminalKeyBar.stored(stored, showing: .attach, false)
+        #expect(stored == "home,attach")
+        #expect(!TerminalKeyBar.shows(.home, in: stored))
+        #expect(TerminalKeyBar.shows(.end, in: stored))
+
+        stored = TerminalKeyBar.stored(stored, showing: .home, true)
+        #expect(stored == "attach")
+        // Showing what is shown, or hiding what is hidden, changes nothing.
+        #expect(TerminalKeyBar.stored(stored, showing: .home, true) == "attach")
+        #expect(TerminalKeyBar.stored(stored, showing: .attach, false) == "attach")
+    }
+
     /// The microphone stays second from the left, clear of the corner of the screen.
     @Test func theMicrophoneIsSecondFromTheLeft() {
         #expect(TerminalKeyBar.groups.first?.dropFirst().first == .voice)
@@ -48,6 +98,7 @@ import Testing
             ["keyboard", "voice", "esc", "tab", "return"],
             ["up", "down", "left", "right", "pageup", "pagedown"],
             ["clipboard", "shortcuts", "function-keys", "password"],
+            ["attach", "intelligence"],
         ])
         #expect(TerminalKeyBar.groups(hiding: []) == TerminalKeyBar.groups)
         #expect(TerminalKeyBar.groups(hiding: Set(TerminalBarKey.allCases)).isEmpty)
@@ -140,7 +191,8 @@ import Testing
     /// These open something or hold a modifier; pressing one types nothing by itself.
     @Test func buttonsThatOpenSomethingTypeNothingThemselves() {
         for key: TerminalBarKey in [.keyboard, .voice, .shift, .ctrl, .alt, .pageUp, .pageDown,
-                                    .clipboard, .shortcuts, .functionKeys, .password] {
+                                    .clipboard, .shortcuts, .functionKeys, .password,
+                                    .attach, .intelligence] {
             #expect(press(key) == nil, "\(key)")
         }
     }

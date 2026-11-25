@@ -3,7 +3,7 @@
 //  MultiSessionAIManager
 //
 //  What the bar's buttons open above it: the clipboard actions, the shortcuts,
-//  the form that saves a host's password, and the list of buttons to show.
+//  and the form that saves a host's password.
 //
 
 import SwiftUI
@@ -161,59 +161,5 @@ struct HostTerminalPasswordForm: View {
     private func submit() {
         failure = save(password)
         if failure == nil { password = "" }
-    }
-}
-
-/// A switch per button. The choice is kept on the device.
-struct TerminalKeyBarChooser: View {
-    @Binding var hiddenStored: String
-
-    private static let groupNames = ["Typing", "Modifiers", "Moving", "Sending"]
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                Text("Buttons on the bar").font(.headline)
-                ForEach(Array(TerminalKeyBar.groups.enumerated()), id: \.offset) { index, group in
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text(Self.groupNames.indices.contains(index) ? Self.groupNames[index] : "")
-                            .font(.caption).foregroundStyle(HerdrTheme.subtext)
-                            .padding(.bottom, 4)
-                        ForEach(group, id: \.self) { key in
-                            Toggle(isOn: shows(key)) {
-                                Label {
-                                    Text(key.name)
-                                } icon: {
-                                    TerminalBarKeyIcon(key: key, ground: HerdrTheme.background)
-                                        .frame(width: 30)
-                                }
-                            }
-                            .tint(HerdrTheme.accent)
-                            .frame(minHeight: 40)
-                            .accessibilityIdentifier("terminal.keybar.shows.\(key.rawValue)")
-                        }
-                    }
-                }
-                Button("Show every button") { hiddenStored = "" }
-                    .tint(HerdrTheme.accent)
-                    .disabled(hiddenStored.isEmpty)
-                    .accessibilityIdentifier("terminal.keybar.shows.all")
-            }
-            .padding(16)
-        }
-        .frame(minWidth: 300, idealWidth: 320, minHeight: 320, idealHeight: 560)
-        .foregroundStyle(HerdrTheme.text)
-        .background(HerdrTheme.background)
-    }
-
-    private func shows(_ key: TerminalBarKey) -> Binding<Bool> {
-        Binding(
-            get: { !TerminalKeyBar.hidden(from: hiddenStored).contains(key) },
-            set: { isShown in
-                var hidden = TerminalKeyBar.hidden(from: hiddenStored)
-                if isShown { hidden.remove(key) } else { hidden.insert(key) }
-                hiddenStored = TerminalKeyBar.stored(hidden)
-            }
-        )
     }
 }
