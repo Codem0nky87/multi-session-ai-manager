@@ -59,6 +59,16 @@ import Testing
         #expect(source.contains("if selectedTab == nil {\n                    Button {\n                        showingSettings = true"))
     }
 
+    /// The cog used to end the top bar. Without it the last provider pill lay
+    /// against the edge of the screen; it now stops where the key bar's pill does.
+    @Test func theTopBarsLastPillStopsShortOfTheScreenEdgeInLineWithTheKeyBar() throws {
+        #expect(HerdrChromeMetrics.topBarTrailingInset == TerminalKeyBarMetrics.sideMargin(isPhone: false))
+        #expect(HerdrChromeMetrics.topBarTrailingInset >= 12)
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: root.appendingPathComponent("UI/RootView.swift"), encoding: .utf8)
+        #expect(source.contains(".padding(.trailing, HerdrChromeMetrics.topBarTrailingInset)"))
+    }
+
     /// A button with nothing behind it here is not drawn.
     @Test func anAppButtonWithNothingBehindItIsLeftOff() {
         #expect(TerminalKeyBar.unavailable(canSendFile: true, hasIntelligence: true).isEmpty)

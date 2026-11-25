@@ -159,6 +159,8 @@ struct RootView: View {
                     ProviderPulseBarView(pulse: tabs.session(for: tab).metrics.pulse) { provider in
                         selectedProviderForDetail = provider
                     }
+                    // Nothing follows the pills now that the cog is on the key bar.
+                    .padding(.trailing, HerdrChromeMetrics.topBarTrailingInset)
                     .background(HerdrTheme.panel, ignoresSafeAreaEdges: [])
                 }
                 // Phone (compact width): the metrics bar cannot share 390pt with

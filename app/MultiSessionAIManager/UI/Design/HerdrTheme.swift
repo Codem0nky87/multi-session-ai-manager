@@ -44,6 +44,10 @@ enum HerdrChromeMetrics {
     /// this is a low-frequency control on a large screen, and every point it
     /// gives back goes to the remote Herdr TUI below it.
     static let hostTabBarHeight: CGFloat = 32
+    /// Kept clear at the right end of the top bar, so its last pill does not
+    /// lie against the edge of the screen. The same as the key bar's side
+    /// margin, so the two stop in line.
+    static let topBarTrailingInset: CGFloat = 16
     /// Hairline breathing room down each side of the terminal, so glyphs at the
     /// first and last column are not flush against the bezel.
     static let terminalEdgeInset: CGFloat = 1
