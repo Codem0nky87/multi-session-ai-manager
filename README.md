@@ -107,6 +107,9 @@ turn terminal output into a stored transcript.
   one-tap shortcuts, F1–F12, a saved password typed behind Face ID, sending a
   file and Apple Intelligence. Choose which buttons show in Settings, or
   collapse it ([details](docs/terminal.md#the-key-bar)).
+- **iPhone** — one line above the terminal and a drawer of hosts and Herdr
+  spaces with finger-sized rows; the key bar keeps seven buttons and opens the
+  rest as a panel ([details](docs/terminal.md#on-a-narrow-screen)).
 - **Direct SSH** — SwiftNIO SSH + [Citadel](https://github.com/orlandos-nl/Citadel),
   with on-device key generation and import, OpenSSH public-key export, and
   trust-on-first-use known-hosts pinning.

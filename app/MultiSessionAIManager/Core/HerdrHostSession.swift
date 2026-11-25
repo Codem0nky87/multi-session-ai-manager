@@ -80,6 +80,8 @@ final class HerdrHostSession {
 
     let connection: HostConnection
     let sessionName: String?
+    /// This session's spaces, for the drawer on a narrow screen.
+    let spaces = HerdrSpaceList()
     /// Identifies this tab's outbox watcher on the host. Stable across app
     /// launches so a relaunch evicts its own orphan rather than adding to it.
     let watchIdentity: String

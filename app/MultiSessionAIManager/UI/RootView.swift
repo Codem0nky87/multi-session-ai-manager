@@ -123,6 +123,8 @@ struct RootView: View {
     @State private var selectedProviderForDetail: ProviderQuota? = nil
     @State private var showingHardwareMetricsSheet = false
     @State private var showingProviderPulseSheet = false
+    /// The drawer of hosts and spaces on a narrow screen.
+    @State private var showingDrawer = false
     @State private var rolloverTargetTerminal: TerminalAgentSession? = nil
     @State private var activeAILoaderState: AILoaderState? = nil
     @State private var activeRolloverTask: Task<Void, Never>? = nil
@@ -146,8 +148,14 @@ struct RootView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 0) {
-                HostTabStrip(store: tabStore, hosts: hostStore.hosts, attention: tabs.attention,
-                             onNewBrowserSpace: { openBrowserSpace(in: $0) }) { showingPicker = true }
+                // A narrow screen with a terminal open has one line that says where
+                // you are; the hosts and spaces to go to are in its drawer.
+                if isCompact, let tab = selectedTab {
+                    phoneTopBar(for: tab)
+                } else {
+                    HostTabStrip(store: tabStore, hosts: hostStore.hosts, attention: tabs.attention,
+                                 onNewBrowserSpace: { openBrowserSpace(in: $0) }) { showingPicker = true }
+                }
                 // With a terminal open the top bar only informs: the host's
                 // metrics and the providers' state. What acts on the terminal
                 // (selecting, copying, sending a file, Apple Intelligence, the
@@ -162,39 +170,6 @@ struct RootView: View {
                     // Nothing follows the pills now that the cog is on the key bar.
                     .padding(.trailing, HerdrChromeMetrics.topBarTrailingInset)
                     .background(HerdrTheme.panel, ignoresSafeAreaEdges: [])
-                }
-                // Phone (compact width): the metrics bar cannot share 390pt with
-                // the tab strip, so it folds into one hardware icon and one AI
-                // provider icon, each opening its sheet.
-                if isCompact, let tab = selectedTab {
-                    let metrics = tabs.session(for: tab).metrics
-
-                    Button {
-                        showingHardwareMetricsSheet = true
-                    } label: {
-                        Image(systemName: "gauge.with.needle")
-                            .foregroundStyle(HerdrTheme.subtext)
-                            .frame(width: HerdrChromeMetrics.hostTabBarHeight, height: HerdrChromeMetrics.hostTabBarHeight)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Hardware metrics")
-
-                    Button {
-                        showingProviderPulseSheet = true
-                    } label: {
-                        HStack(spacing: 2) {
-                            Image(systemName: "sparkles")
-                                .foregroundStyle(metrics.pulse.hasRateLimitedProvider ? HerdrTheme.red : HerdrTheme.accent)
-                            if metrics.pulse.hasRateLimitedProvider {
-                                Circle()
-                                    .fill(HerdrTheme.red)
-                                    .frame(width: 5, height: 5)
-                            }
-                        }
-                        .frame(width: HerdrChromeMetrics.hostTabBarHeight, height: HerdrChromeMetrics.hostTabBarHeight)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("AI Provider Pulse")
                 }
                 // With no host open there is no terminal and no bar under it, so
                 // the settings are reached from here.
@@ -281,6 +256,15 @@ struct RootView: View {
         // the top strip pushed half off the screen.
         .ignoresSafeArea(Self.keyboardRegionsIgnoredByTheScreen, edges: .bottom)
         .background(HerdrTheme.background)
+        .overlay {
+            if showingDrawer, isCompact {
+                phoneDrawer
+                    .transition(.move(edge: .leading).combined(with: .opacity))
+            }
+        }
+        .onChange(of: isCompact) { _, compact in
+            if !compact { showingDrawer = false }
+        }
         .environment(terminalSettings)
         // The terminal hierarchy reports through toasts too (the quick-key bar's
         // dictation errors), so it needs the centre as much as the settings sheet
@@ -621,6 +605,85 @@ struct RootView: View {
         HostTabTitle.title(for: tab, hosts: hostStore.hosts)
     }
 
+    // MARK: - A narrow screen
+
+    private func setDrawer(_ shown: Bool) {
+        withAnimation(.easeOut(duration: 0.2)) { showingDrawer = shown }
+    }
+
+    private func phoneTopBar(for tab: HostTab) -> some View {
+        let session = tabs.session(for: tab)
+        let heading = HerdrSpace.heading(host: title(for: tab), spaces: session.spaces.spaces)
+        return PhoneTopBar(
+            title: heading.title,
+            subtitle: heading.subtitle,
+            waiting: HerdrSpace.waitingCount(in: session.spaces.spaces),
+            openDrawer: {
+                setDrawer(true)
+                Task { await session.refreshSpaces() }
+            },
+            openMetrics: { showingHardwareMetricsSheet = true })
+        // Herdr can be told to show another space from the terminal as well, so
+        // what the line says is read again now and then, and whenever the
+        // session comes up.
+        .task(id: "\(tab.id)-\(session.status == .live)") {
+            while !Task.isCancelled {
+                await session.refreshSpaces()
+                try? await Task.sleep(for: .seconds(15))
+            }
+        }
+    }
+
+    /// The drawer. Everything in it closes it first: a sheet cannot open over it,
+    /// and what was chosen is behind it.
+    private var phoneDrawer: some View {
+        let tab = selectedTab
+        let session = tab.map { tabs.session(for: $0) }
+        return PhoneDrawer(
+            hosts: tabStore.tabs.map { open in
+                PhoneDrawer.HostRow(id: open.id, title: title(for: open),
+                                    isSelected: open.id == tabStore.selectedTabID,
+                                    pill: tabs.attention.attention(for: open)?.pill)
+            },
+            hostName: tab.map { title(for: $0) } ?? "",
+            spaces: session?.spaces.spaces ?? [],
+            spacesFailure: session?.spaces.failure,
+            providersNeedAttention: session?.metrics.pulse.hasRateLimitedProvider ?? false,
+            selectHost: { id in
+                setDrawer(false)
+                tabStore.select(id)
+            },
+            openAnotherHost: {
+                setDrawer(false)
+                showingPicker = true
+            },
+            showSpace: { space in
+                setDrawer(false)
+                Task { await session?.showSpace(space) }
+            },
+            newWorkspace: {
+                setDrawer(false)
+                Task { await session?.newSpace() }
+            },
+            newBrowser: {
+                setDrawer(false)
+                if let tab { openBrowserSpace(in: tab) }
+            },
+            openSettings: {
+                setDrawer(false)
+                showingSettings = true
+            },
+            openMetrics: {
+                setDrawer(false)
+                showingHardwareMetricsSheet = true
+            },
+            openProviders: {
+                setDrawer(false)
+                showingProviderPulseSheet = true
+            },
+            close: { setDrawer(false) })
+    }
+
     var runtimeContext: AppRuntimeContext {
         AppRuntimeContext(
             availableHosts: hostStore.hosts.map(\.name),
@@ -897,6 +960,7 @@ struct HostTerminalView: View {
                 clearedInset: barBottomInset,
                 windowHomeInset: windowHomeInset,
                 app: barActions,
+                isCompact: isCompact,
                 onInputBytes: { session.terminal.feedInputToPTY($0) }
             )
             .padding(.bottom, barBottomInset)

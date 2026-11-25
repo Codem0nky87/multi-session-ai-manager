@@ -74,9 +74,15 @@ terminal only informs: the host tabs, the host's metrics and the state of the
 AI providers. With no host open there is no bar, so a settings cog is in the top
 strip for that case alone.
 
-Where the buttons do not fit, on a phone or in a narrow window, the row scrolls
-sideways and fades at the edge; the two right-hand buttons stay put. It is one
-row on every device. Hiding buttons is how to see more of the rest at once.
+On a narrow screen (a phone, or an iPad window beside another) the bar keeps the
+seven buttons used all the time, each wide enough for a thumb: keyboard, voice,
+Esc, Tab, up, down and Return. An eighth, **more**, opens the rest as a panel of
+tiles with a word under each, standing on the bar over the terminal. The panel
+closes by itself: at once when a button opens a sheet, together with the panel a
+button opens of its own, and otherwise after a few seconds without a press.
+Arrows and paging do not close it, since they are pressed several times in a
+row, and it waits while Shift, Control or Alt is lit. A wider window that still
+cannot fit every button scrolls the row sideways and fades it at the edge.
 
 **Sticky Shift and Alt** change what the next button types. Shift with an arrow,
 Home, End or Tab sends xterm's Shift coding (Codex opens its queued messages on
@@ -109,6 +115,29 @@ save one; after that a tap asks for Face ID, Touch ID or the passcode and then
 types it. Nothing is typed after it, so the Return is pressed by the person who
 can see where the cursor is. Press and hold the button to replace or forget the
 password. See [the security model](security.md#secrets) for where it is kept.
+
+## On a narrow screen
+
+A phone has no room for the tab strip, the metrics and Herdr's sidebar. Herdr
+knows it: below a certain width it draws no sidebar and lists its spaces behind
+a small `switch` word, as rows of terminal text that a thumb can hardly hit.
+
+So with a host open, a narrow screen has **one line** above the terminal: a menu
+button, the space Herdr is showing over its host and what the session's agents
+are doing, a count of the spaces whose agent is waiting for an answer, and the
+host's metrics. The menu button opens a **drawer**:
+
+| Section | What it holds |
+|---|---|
+| Hosts | the open host tabs with their attention counts, and *Open another host* |
+| Spaces | the session's spaces with what each one's agents are doing, *New workspace* and *New browser* |
+| Foot | Settings, Host metrics, AI providers |
+
+Choosing anything closes the drawer. A space is shown by asking Herdr
+(`herdr workspace focus`), and the list is what Herdr reports
+(`herdr workspace list`), read when the drawer opens and every fifteen seconds
+for the top line, because a space can also be changed from inside the terminal.
+Herdr's own two header rows stay: they are part of what the host draws.
 
 ## Links
 

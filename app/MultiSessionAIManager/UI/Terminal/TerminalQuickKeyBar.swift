@@ -34,6 +34,9 @@ struct TerminalQuickKeyBar: View {
     var windowHomeInset: CGFloat = 0
     /// The app's own actions, which used to be buttons in the top bar.
     var app = TerminalBarAppActions()
+    /// A narrow screen (a phone, an iPad window beside another): seven buttons
+    /// on the bar, the rest behind "more".
+    var isCompact = false
     /// Routes bytes to the live PTY (the session's terminal feed).
     let onInputBytes: ([UInt8]) -> Void
 
@@ -63,6 +66,17 @@ struct TerminalQuickKeyBar: View {
         case clipboard, shortcuts, functionKeys, password
     }
     @State private var panel: Panel?
+    /// The panel behind "more" on a narrow screen.
+    @State private var isMoreOpen = false
+    /// Changes with every press in that panel, which starts its idle count again.
+    @State private var morePresses = 0
+
+    /// Hidden in Settings, or with nothing behind them here.
+    private var hiddenKeys: Set<TerminalBarKey> {
+        TerminalKeyBar.hidden(from: hiddenStored)
+            .union(TerminalKeyBar.unavailable(canSendFile: app.sendFile != nil,
+                                              hasIntelligence: app.toggleIntelligence != nil))
+    }
 
     private var isPhone: Bool { UIDevice.current.userInterfaceIdiom == .phone }
     private var keyWidth: CGFloat { TerminalKeyBarMetrics.keyWidth(isPhone: isPhone) }
@@ -80,6 +94,8 @@ struct TerminalQuickKeyBar: View {
         Group {
             if isCollapsed {
                 collapsedPill
+            } else if isCompact {
+                compactPill
             } else {
                 openPill
             }
@@ -96,6 +112,22 @@ struct TerminalQuickKeyBar: View {
             VoiceTranscriptionHUD(engine: voiceEngine)
                 .padding(.leading, isCollapsed ? TerminalKeyBarMetrics.sideMargin(isPhone: isPhone) : 0)
                 .alignmentGuide(.top) { $0[.bottom] + 10 }
+        }
+        .overlay(alignment: .top) {
+            // The rest of the buttons, standing on the bar. It floats over the
+            // terminal, so opening it does not resize what the host draws.
+            if isCompact, isMoreOpen, !isCollapsed {
+                morePanel
+                    .padding(.horizontal, TerminalKeyBarMetrics.sideMargin(isPhone: isPhone))
+                    .alignmentGuide(.top) { $0[.bottom] }
+                    .transition(.opacity)
+            }
+        }
+        .onChange(of: panel) { was, now in
+            // A panel that hung from a button behind "more" has closed.
+            if was != nil, now == nil, isMoreOpen {
+                withAnimation(.easeInOut(duration: 0.15)) { isMoreOpen = false }
+            }
         }
         .onChange(of: voiceEngine.state) { _, newState in
             if case .error(let msg) = newState {
@@ -119,10 +151,7 @@ struct TerminalQuickKeyBar: View {
     // MARK: - The pill
 
     private var openPill: some View {
-        let groups = TerminalKeyBar.groups(
-            hiding: TerminalKeyBar.hidden(from: hiddenStored)
-                .union(TerminalKeyBar.unavailable(canSendFile: app.sendFile != nil,
-                                                  hasIntelligence: app.toggleIntelligence != nil)))
+        let groups = TerminalKeyBar.groups(hiding: hiddenKeys)
         return HStack(spacing: 0) {
             // Where every button fits (an iPad) the row is a plain row: nothing
             // competes with a held button for the touch. Where it does not, it
@@ -181,6 +210,72 @@ struct TerminalQuickKeyBar: View {
         }
         .padding(.leading, 10)
         .padding(.trailing, 4)
+    }
+
+    /// A narrow screen: the buttons used all the time, each wide enough for a
+    /// thumb, and one that opens the rest.
+    private var compactPill: some View {
+        let layout = TerminalKeyBar.compactLayout(hiding: hiddenKeys)
+        return HStack(spacing: 0) {
+            ForEach(layout.primary, id: \.self) { key in
+                keyView(key)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: TerminalKeyBarMetrics.pillHeight)
+            }
+            iconButton("ellipsis", name: "More keys", id: "msam.quickkey.more", active: isMoreOpen) {
+                withAnimation(.easeInOut(duration: 0.15)) { isMoreOpen.toggle() }
+                morePresses += 1
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: TerminalKeyBarMetrics.pillHeight)
+        }
+        .padding(.horizontal, 6)
+        .frame(height: TerminalKeyBarMetrics.pillHeight)
+        .background(pillShape.fill(TerminalKeyBarStyle.fill))
+        .clipShape(pillShape)
+        .overlay(pillShape.strokeBorder(TerminalKeyBarStyle.edge, lineWidth: 1))
+    }
+
+    /// Every other button, behind "more". It closes by itself: see
+    /// `TerminalKeyBar.morePanel(after:)` and `closeMoreWhenIdle`.
+    private var morePanel: some View {
+        TerminalMoreKeysPanel(keys: TerminalKeyBar.compactLayout(hiding: hiddenKeys).more,
+                              showsSettings: app.openSettings != nil) { key in
+            if let key {
+                keyView(key)
+                    .simultaneousGesture(TapGesture().onEnded { pressedBehindMore(key) })
+            } else {
+                iconButton(TerminalKeyBar.settingsSymbol, name: "MSAM settings", id: "msam.settings") {
+                    isMoreOpen = false
+                    app.openSettings?()
+                }
+            }
+        }
+        .task(id: morePresses) { await closeMoreWhenIdle() }
+    }
+
+    private func pressedBehindMore(_ key: TerminalBarKey) {
+        switch TerminalKeyBar.morePanel(after: key) {
+        case .stays:
+            morePresses += 1
+        case .closes:
+            withAnimation(.easeInOut(duration: 0.15)) { isMoreOpen = false }
+        case .closesWithItsOwnPanel:
+            // Its own panel hangs from the button; see `onChange(of: panel)`.
+            morePresses += 1
+        }
+    }
+
+    /// Closes the panel once nothing in it has been pressed for a while. A lit
+    /// modifier is waiting for its key, and an open panel hangs from a button
+    /// here, so neither is cut short.
+    private func closeMoreWhenIdle() async {
+        while isMoreOpen {
+            try? await Task.sleep(for: .seconds(6))
+            if Task.isCancelled { return }
+            if isShiftArmed || controller.isCtrlArmed || controller.isAltArmed || panel != nil { continue }
+            withAnimation(.easeInOut(duration: 0.15)) { isMoreOpen = false }
+        }
     }
 
     /// What is left of a collapsed bar: the keyboard, the microphone, and the way back.
@@ -435,6 +530,50 @@ struct TerminalQuickKeyBar: View {
         .buttonStyle(TerminalKeyBarButtonStyle(highlight: active ? HerdrTheme.selection : nil))
         .accessibilityLabel(name)
         .accessibilityIdentifier(id)
+    }
+}
+
+/// The panel behind "more" on a narrow screen: every button the bar has no room
+/// for, as tiles with a word under each. `tile` draws the button for a key, or
+/// for the bar's own settings button when it is given none.
+struct TerminalMoreKeysPanel<Tile: View>: View {
+    let keys: [TerminalBarKey]
+    let showsSettings: Bool
+    @ViewBuilder let tile: (TerminalBarKey?) -> Tile
+
+    var body: some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 8) {
+            ForEach(keys, id: \.self) { key in
+                cell(key.caption) { tile(key) }
+            }
+            if showsSettings {
+                cell("settings") { tile(nil) }
+            }
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(HerdrTheme.panel))
+        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous)
+            .strokeBorder(TerminalKeyBarStyle.edge, lineWidth: 1))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("msam.quickkeys.more")
+    }
+
+    private func cell<Content: View>(_ caption: String, @ViewBuilder content: () -> Content) -> some View {
+        content()
+            .frame(maxWidth: .infinity)
+            .frame(height: 48)
+            .padding(.bottom, 14)
+            .overlay(alignment: .bottom) {
+                Text(caption)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(HerdrTheme.subtext)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .padding(.horizontal, 3)
+                    .padding(.bottom, 6)
+                    .allowsHitTesting(false)
+            }
+            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(HerdrTheme.activeRow))
     }
 }
 

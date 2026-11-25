@@ -83,6 +83,38 @@ import Testing
         #expect(TerminalKeyBar.collapsedKeys(hiding: [.keyboard, .voice]).isEmpty)
     }
 
+    /// A phone has room for eight buttons a thumb can hit. Seven are the ones used
+    /// all the time; the eighth opens the rest.
+    @Test func onANarrowScreenSevenButtonsStayOnTheBarAndTheRestGoBehindMore() {
+        let layout = TerminalKeyBar.compactLayout(hiding: [])
+        #expect(layout.primary.map(\.rawValue) == ["keyboard", "voice", "esc", "tab", "up", "down", "return"])
+        #expect(layout.more.map(\.rawValue) == [
+            "shift", "ctrl", "alt", "left", "right", "home", "end", "pageup", "pagedown",
+            "clipboard", "shortcuts", "function-keys", "password", "attach", "intelligence",
+        ])
+        // Nothing is on both, and nothing is lost.
+        #expect(Set(layout.primary + layout.more) == Set(TerminalBarKey.allCases))
+
+        let fewer = TerminalKeyBar.compactLayout(hiding: [.tab, .home, .end, .password])
+        #expect(fewer.primary.map(\.rawValue) == ["keyboard", "voice", "esc", "up", "down", "return"])
+        #expect(!fewer.more.contains(.home) && !fewer.more.contains(.password))
+    }
+
+    /// Moving the cursor takes several presses and a modifier waits for its key, so
+    /// those leave the panel open. A button that opens its own panel closes this one
+    /// when that panel goes; one that opens a sheet closes it at once.
+    @Test func theMorePanelStaysForKeysPressedInARowAndClosesForTheRest() {
+        for key: TerminalBarKey in [.shift, .ctrl, .alt, .left, .right, .home, .end, .pageUp, .pageDown] {
+            #expect(TerminalKeyBar.morePanel(after: key) == .stays, "\(key)")
+        }
+        for key: TerminalBarKey in [.clipboard, .shortcuts, .functionKeys, .password] {
+            #expect(TerminalKeyBar.morePanel(after: key) == .closesWithItsOwnPanel, "\(key)")
+        }
+        for key: TerminalBarKey in [.attach, .intelligence] {
+            #expect(TerminalKeyBar.morePanel(after: key) == .closes, "\(key)")
+        }
+    }
+
     /// A button with nothing behind it here is not drawn.
     @Test func anAppButtonWithNothingBehindItIsLeftOff() {
         #expect(TerminalKeyBar.unavailable(canSendFile: true, hasIntelligence: true).isEmpty)

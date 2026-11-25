@@ -62,6 +62,35 @@ enum TerminalBarKey: String, CaseIterable, Sendable {
         }
     }
 
+    /// A word or two under the button where there is room for one: the panel
+    /// behind "more" on a narrow screen.
+    var caption: String {
+        switch self {
+        case .keyboard: "keyboard"
+        case .voice: "voice"
+        case .esc: "esc"
+        case .tab: "tab"
+        case .enter: "return"
+        case .shift: "shift"
+        case .ctrl: "ctrl"
+        case .alt: "alt"
+        case .up: "up"
+        case .down: "down"
+        case .left: "left"
+        case .right: "right"
+        case .home: "home"
+        case .end: "end"
+        case .pageUp: "page up"
+        case .pageDown: "page down"
+        case .clipboard: "clipboard"
+        case .shortcuts: "shortcuts"
+        case .functionKeys: "F1 to F12"
+        case .password: "password"
+        case .attach: "send file"
+        case .intelligence: "AI"
+        }
+    }
+
     /// The system symbol the button is drawn with. Shortcuts and function keys
     /// carry an arrow badge on top, and function keys a key cap in place of the
     /// symbol: `TerminalBarKeyIcon` draws those.
@@ -135,6 +164,38 @@ enum TerminalKeyBar {
         var hidden = hidden(from: stored)
         if isShown { hidden.remove(key) } else { hidden.insert(key) }
         return self.stored(hidden)
+    }
+
+    // MARK: - A narrow screen
+
+    /// The buttons a phone keeps on the bar itself: the ones used all the time,
+    /// seven so that each is wide enough for a thumb. An eighth opens the rest.
+    static let compactPrimary: [TerminalBarKey] = [.keyboard, .voice, .esc, .tab, .up, .down, .enter]
+
+    /// What is on the bar and what is behind "more" on a narrow screen, without
+    /// the hidden buttons. The rest keep the bar's own order.
+    static func compactLayout(hiding hidden: Set<TerminalBarKey>) -> (primary: [TerminalBarKey], more: [TerminalBarKey]) {
+        (compactPrimary.filter { !hidden.contains($0) },
+         groups.flatMap { $0 }.filter { !compactPrimary.contains($0) && !hidden.contains($0) })
+    }
+
+    /// What becomes of the "more" panel once one of its buttons is pressed.
+    enum MorePanelAfterPress: Equatable {
+        /// Pressed several times in a row, or waiting for the next key.
+        case stays
+        /// It opened a sheet; the panel is in the way.
+        case closes
+        /// It opened a panel of its own, which hangs from this button: the more
+        /// panel closes when that one does.
+        case closesWithItsOwnPanel
+    }
+
+    static func morePanel(after key: TerminalBarKey) -> MorePanelAfterPress {
+        switch key {
+        case .clipboard, .shortcuts, .functionKeys, .password: .closesWithItsOwnPanel
+        case .attach, .intelligence: .closes
+        default: .stays
+        }
     }
 
     /// What a collapsed bar still shows, beside the arrow that opens it again.

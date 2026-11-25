@@ -229,7 +229,7 @@ final class PhoneLayoutLiveUITests: XCTestCase {
         // Text size from Settings: smaller, then larger, looking at the terminal each time.
         for (name, taps, control) in [("33-text-smaller", 4, "settings.terminal.decrease"),
                                       ("35-text-larger", 8, "settings.terminal.increase")] {
-            app.buttons["msam.settings"].tap()
+            openSettings()
             let button = app.buttons[control]
             for _ in 0..<6 where !(button.exists && button.isHittable) { app.swipeUp() }
             XCTAssertTrue(button.waitForExistence(timeout: 5), app.debugDescription)
@@ -242,7 +242,7 @@ final class PhoneLayoutLiveUITests: XCTestCase {
             report.append("\(name): bar \(bar.frame)")
         }
         // Back to the default size.
-        app.buttons["msam.settings"].tap()
+        openSettings()
         let reset = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Reset to'")).firstMatch
         for _ in 0..<6 where !(reset.exists && reset.isHittable) { app.swipeUp() }
         if reset.exists { reset.tap() }
@@ -404,6 +404,14 @@ final class PhoneLayoutLiveUITests: XCTestCase {
         let window = app.windows.firstMatch
         window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.12))
             .press(forDuration: 0.05, thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.95)))
+    }
+
+    /// Settings are in the drawer on a narrow screen with a host open, and on a
+    /// button of the top strip or the key bar otherwise.
+    private func openSettings() {
+        let drawer = app.buttons["msam.drawer.open"]
+        if drawer.exists { drawer.tap() }
+        app.buttons["msam.settings"].firstMatch.tap()
     }
 
     private func openHostTab(_ fixture: Fixture) {
